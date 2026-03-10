@@ -221,7 +221,8 @@ pub async fn search_code(
         return tool_error(format!("Code search failed (HTTP {}): {}", status, body));
     }
     if status.is_server_error() {
-        return tool_error(format!("Internal error from Muninn: {}", status));
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Internal error from Muninn (HTTP {}): {}", status, body));
     }
 
     let api: SearchApiResponse = match resp.json().await {
@@ -321,7 +322,8 @@ pub async fn query_memory(
         return tool_error(format!("Memory query failed (HTTP {}): {}", status, body));
     }
     if status.is_server_error() {
-        return tool_error(format!("Internal error from Odin: {}", status));
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Internal error from Odin (HTTP {}): {}", status, body));
     }
 
     let api: QueryApiResponse = match resp.json().await {
@@ -425,7 +427,8 @@ pub async fn store_memory(
         return tool_error(format!("Memory store failed (HTTP {}): {}", status, body));
     }
     if status.is_server_error() {
-        return tool_error(format!("Internal error from Odin: {}", status));
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Internal error from Odin (HTTP {}): {}", status, body));
     }
 
     let api: StoreApiResponse = match resp.json().await {
@@ -516,7 +519,8 @@ pub async fn generate(
         return tool_error(format!("Generate failed (HTTP {}): {}", status, body));
     }
     if status.is_server_error() {
-        return tool_error(format!("Internal error from Odin: {}", status));
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Internal error from Odin (HTTP {}): {}", status, body));
     }
 
     let api: ChatApiResponse = match resp.json().await {
@@ -569,7 +573,8 @@ pub async fn list_models(client: &Client, config: &McpServerConfig) -> CallToolR
         return tool_error(format!("Model listing failed (HTTP {}): {}", status, body));
     }
     if status.is_server_error() {
-        return tool_error(format!("Internal error from Odin: {}", status));
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Internal error from Odin (HTTP {}): {}", status, body));
     }
 
     let api: ModelsApiResponse = match resp.json().await {
