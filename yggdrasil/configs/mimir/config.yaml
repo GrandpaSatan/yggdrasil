@@ -1,0 +1,12 @@
+listen_addr: "0.0.0.0:9090"
+database_url: "postgres://jhernandez:K6m4B129CF9u@localhost:5432/yggdrasil"
+qdrant_url: "http://REDACTED_HADES_IP:6334"
+sdr:
+  dim_bits: 256
+  model_dir: "/opt/yggdrasil/models/all-MiniLM-L6-v2"
+tiers:
+  recall_capacity: 1000
+  summarization_batch_size: 100
+  check_interval_secs: 300
+  min_age_secs: 86400
+  odin_url: "http://localhost:8080"

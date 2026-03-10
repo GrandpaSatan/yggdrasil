@@ -1,0 +1,21 @@
+[package]
+name = "ygg-mcp-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ygg-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+ygg-mcp = { path = "../ygg-mcp" }
+ygg-domain = { path = "../ygg-domain" }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }

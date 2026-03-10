@@ -1,0 +1,10 @@
+watch_paths:
+  - "/home/jesus/Documents/HardwareSetup/yggdrasil"
+  - "/home/jesus/Documents/Rust/Fergus_Agent/fergus-rs"
+database_url: "postgres://jhernandez:K6m4B129CF9u@REDACTED_MUNIN_IP:5432/yggdrasil"
+qdrant_url: "http://REDACTED_HADES_IP:6334"
+embed:
+  ollama_url: "http://localhost:11434"
+  model: "qwen3-embedding"
+debounce_ms: 500
+listen_addr: "0.0.0.0:9092"

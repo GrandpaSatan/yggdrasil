@@ -1,0 +1,10 @@
+listen_addr: "0.0.0.0:9091"
+database_url: "postgres://jhernandez:K6m4B129CF9u@REDACTED_MUNIN_IP:5432/yggdrasil"
+qdrant_url: "http://REDACTED_HADES_IP:6334"
+embed:
+  ollama_url: "http://localhost:11434"
+  model: "qwen3-embedding"
+search:
+  rrf_k: 60.0
+  context_token_budget: 32000
+  context_fill_ratio: 0.8

@@ -1,0 +1,14 @@
+[Unit]
+Description=Yggdrasil MCP Server for user %i
+After=yggdrasil-odin.service
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/opt/yggdrasil/bin/ygg-mcp-server --config /etc/yggdrasil/mcp-server/config.yaml
+Restart=on-failure
+RestartSec=5
+Environment="RUST_LOG=info"
+
+[Install]
+WantedBy=multi-user.target

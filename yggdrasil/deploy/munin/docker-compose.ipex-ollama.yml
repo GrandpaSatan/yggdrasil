@@ -1,0 +1,80 @@
+# IPEX-LLM Ollama for Munin (REDACTED_MUNIN_IP)
+# Intel Arc iGPU (Meteor Lake-P) acceleration via oneAPI/SYCL
+#
+# Replaces native Ollama systemd service.
+# Ollama API remains on localhost:11434 (--net=host).
+#
+# Usage:
+#   docker compose -f docker-compose.ipex-ollama.yml up -d
+#   docker compose -f docker-compose.ipex-ollama.yml logs -f ipex-ollama
+#
+# Sprint: 014 - Munin IPEX-LLM Ollama Migration
+
+services:
+  ipex-ollama:
+    image: intelanalytics/ipex-llm-inference-cpp-xpu:latest
+    container_name: ipex-ollama
+    restart: unless-stopped
+    network_mode: host
+
+    devices:
+      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri/renderD128:/dev/dri/renderD128
+
+    volumes:
+      # Mount existing Ollama model directory for model reuse
+      - /usr/share/ollama/.ollama:/root/.ollama
+      # Persist SYCL kernel compilation cache across restarts
+      - ollama-sycl-cache:/root/.cache
+
+    shm_size: "16g"
+
+    environment:
+      # -- Ollama server config --
+      OLLAMA_HOST: "0.0.0.0"
+      OLLAMA_NUM_PARALLEL: "4"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_CONTEXT_LENGTH: "16384"
+      OLLAMA_NUM_GPU: "999"
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_DEBUG: "1"
+      OLLAMA_INTEL_GPU: "true"
+
+      # -- Intel oneAPI / SYCL config --
+      DEVICE: "iGPU"
+      ZES_ENABLE_SYSMAN: "1"
+      SYCL_CACHE_PERSISTENT: "1"
+      SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "1"
+      BIGDL_LLM_XMX_DISABLED: "1"
+      ONEAPI_DEVICE_SELECTOR: "level_zero:0"
+      USE_XETLA: "OFF"
+
+      # -- Proxy bypass for local connections --
+      no_proxy: "localhost,127.0.0.1"
+
+    # Container entrypoint: initialize IPEX-LLM environment, then start Ollama in foreground
+    command: >
+      bash -c "
+        cd /llm/scripts &&
+        source ipex-llm-init --gpu --device iGPU &&
+        mkdir -p /llm/ollama &&
+        cd /llm/ollama &&
+        init-ollama &&
+        exec ./ollama serve
+      "
+
+    deploy:
+      resources:
+        limits:
+          memory: 40G
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  ollama-sycl-cache:
+    driver: local

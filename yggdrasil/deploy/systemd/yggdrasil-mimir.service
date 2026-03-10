@@ -1,0 +1,27 @@
+[Unit]
+Description=Yggdrasil Mimir - Engram Memory Service
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/mimir --config /etc/yggdrasil/mimir/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=15
+WatchdogSec=30
+Environment="RUST_LOG=info"
+Environment="MIMIR_DATABASE_URL=postgres://jhernandez:K6m4B129CF9u@localhost:5432/yggdrasil"
+Environment="ORT_DYLIB_PATH=/opt/yggdrasil/lib/libonnxruntime.so"
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

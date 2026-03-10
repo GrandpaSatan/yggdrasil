@@ -1,0 +1,23 @@
+[Unit]
+Description=Yggdrasil Huginn - Code Indexer
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/huginn --config /etc/yggdrasil/huginn/config.yaml watch
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=15
+WatchdogSec=30
+Environment="RUST_LOG=info"
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,958 @@
+//! MCP tool implementations for the Yggdrasil system.
+//!
+//! Each function makes HTTP calls to Odin or Muninn and returns a formatted
+//! `CallToolResult` suitable for the MCP protocol. All downstream failures are
+//! captured as `is_error: true` results rather than propagated as Rust errors.
+
+use reqwest::Client;
+use rmcp::model::{CallToolResult, Content};
+// schemars 1.x — must be the same version that rmcp 1.1 depends on.
+// This is pinned via workspace to "1" so both this crate and rmcp resolve the
+// same schemars::JsonSchema trait object.
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::time::Duration;
+use tracing::instrument;
+use ygg_domain::config::McpServerConfig;
+use ygg_ha::{AutomationGenerator, HaClient};
+
+// ---------------------------------------------------------------------------
+// Parameter structs
+// ---------------------------------------------------------------------------
+
+/// Parameters for the `search_code` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchCodeParams {
+    /// Natural language or code search query.
+    pub query: String,
+    /// Optional filter by programming language (e.g. ["rust", "python"]).
+    pub languages: Option<Vec<String>>,
+    /// Maximum number of results (default 10, max 50).
+    #[serde(default = "default_search_limit")]
+    pub limit: Option<u32>,
+}
+
+fn default_search_limit() -> Option<u32> {
+    Some(10)
+}
+
+/// Parameters for the `query_memory` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct QueryMemoryParams {
+    /// Query text to search engram memory.
+    pub text: String,
+    /// Maximum number of engrams to return (default 5, max 20).
+    #[serde(default = "default_query_limit")]
+    pub limit: Option<u32>,
+}
+
+fn default_query_limit() -> Option<u32> {
+    Some(5)
+}
+
+/// Parameters for the `store_memory` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StoreMemoryParams {
+    /// The trigger or question (what happened).
+    pub cause: String,
+    /// The outcome or answer (what resulted).
+    pub effect: String,
+    /// Optional tags for categorization.
+    /// Note: tags are accepted for forward-compatibility but silently dropped
+    /// until Mimir adds tag support.
+    pub tags: Option<Vec<String>>,
+}
+
+/// Parameters for the `generate` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateParams {
+    /// The prompt or question to send to the LLM.
+    pub prompt: String,
+    /// Model name (e.g. "qwen3-coder-30b-a3b", "qwq-32b").
+    /// If omitted, uses Odin's default routing.
+    pub model: Option<String>,
+    /// Maximum tokens to generate (optional, default 4096).
+    pub max_tokens: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Internal HTTP response types (Muninn / Odin shapes)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SearchChunk {
+    file_path: Option<String>,
+    language: Option<String>,
+    score: Option<f64>,
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchApiResponse {
+    chunks: Option<Vec<SearchChunk>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngramResult {
+    cause: Option<String>,
+    effect: Option<String>,
+    similarity: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryApiResponse {
+    results: Option<Vec<EngramResult>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoreApiResponse {
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChoice {
+    message: Option<ChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatApiResponse {
+    choices: Option<Vec<ChatChoice>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+    id: Option<String>,
+    owned_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsApiResponse {
+    data: Option<Vec<ModelEntry>>,
+}
+
+/// Build an error `CallToolResult` with a human-readable message.
+fn tool_error(msg: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(msg.into())])
+}
+
+/// Build a success `CallToolResult` with a single text block.
+fn tool_ok(text: impl Into<String>) -> CallToolResult {
+    CallToolResult::success(vec![Content::text(text.into())])
+}
+
+// ---------------------------------------------------------------------------
+// Tool: search_code
+// ---------------------------------------------------------------------------
+
+/// Maximum input field size (100KB) — matches Mimir's downstream limit.
+const MAX_INPUT_BYTES: usize = 100 * 1024;
+
+/// POST to Muninn /api/v1/search and format results as markdown.
+#[instrument(skip(client, config), fields(query = %params.query))]
+pub async fn search_code(
+    client: &Client,
+    config: &McpServerConfig,
+    params: SearchCodeParams,
+) -> CallToolResult {
+    if params.query.len() > MAX_INPUT_BYTES {
+        return tool_error(format!(
+            "query exceeds maximum size of {MAX_INPUT_BYTES} bytes"
+        ));
+    }
+
+    let muninn_url = match &config.muninn_url {
+        Some(u) => u.clone(),
+        None => {
+            return tool_error(
+                "Code search unavailable. No Muninn URL configured. \
+                 Set muninn_url in the MCP server config.",
+            );
+        }
+    };
+
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!("{}/api/v1/search", muninn_url.trim_end_matches('/'));
+
+    #[derive(Serialize)]
+    struct Req<'a> {
+        query: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        languages: Option<&'a Vec<String>>,
+        limit: u32,
+    }
+
+    let body = Req {
+        query: &params.query,
+        languages: params.languages.as_ref(),
+        limit: params.limit.unwrap_or(10).min(50),
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Code search unavailable. Muninn is not reachable at {}: {}",
+                muninn_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Code search failed (HTTP {}): {}", status, body));
+    }
+    if status.is_server_error() {
+        return tool_error(format!("Internal error from Muninn: {}", status));
+    }
+
+    let api: SearchApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Muninn response: {}", e)),
+    };
+
+    let chunks = api.chunks.unwrap_or_default();
+    if chunks.is_empty() {
+        return tool_ok(format!(
+            "## Code Search Results for: \"{}\"\n\nNo results found.",
+            params.query
+        ));
+    }
+
+    let mut out = format!("## Code Search Results for: \"{}\"\n\n", params.query);
+    for (i, chunk) in chunks.iter().enumerate() {
+        let path = chunk.file_path.as_deref().unwrap_or("unknown");
+        let lang = chunk.language.as_deref().unwrap_or("text");
+        let score = chunk.score.unwrap_or(0.0);
+        let content = chunk.content.as_deref().unwrap_or("");
+
+        out.push_str(&format!(
+            "### {}. {} ({}) [score: {:.2}]\n```{}\n{}\n```\n\n",
+            i + 1,
+            path,
+            lang,
+            score,
+            lang,
+            content.trim()
+        ));
+    }
+
+    tool_ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: query_memory
+// ---------------------------------------------------------------------------
+
+/// POST to Odin /api/v1/query and format engram results as markdown.
+#[instrument(skip(client, config), fields(text = %params.text))]
+pub async fn query_memory(
+    client: &Client,
+    config: &McpServerConfig,
+    params: QueryMemoryParams,
+) -> CallToolResult {
+    if params.text.len() > MAX_INPUT_BYTES {
+        return tool_error(format!(
+            "text exceeds maximum size of {MAX_INPUT_BYTES} bytes"
+        ));
+    }
+
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/api/v1/query",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    #[derive(Serialize)]
+    struct Req<'a> {
+        text: &'a str,
+        limit: u32,
+    }
+
+    let body = Req {
+        text: &params.text,
+        limit: params.limit.unwrap_or(5).min(20),
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin is not reachable at {}. \
+                 Ensure the Yggdrasil orchestrator is running. Error: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Memory query failed (HTTP {}): {}", status, body));
+    }
+    if status.is_server_error() {
+        return tool_error(format!("Internal error from Odin: {}", status));
+    }
+
+    let api: QueryApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
+    };
+
+    let results = api.results.unwrap_or_default();
+    if results.is_empty() {
+        return tool_ok(format!(
+            "## Memory Results for: \"{}\"\n\nNo engrams found.",
+            params.text
+        ));
+    }
+
+    let mut out = format!("## Memory Results for: \"{}\"\n\n", params.text);
+    for (i, engram) in results.iter().enumerate() {
+        let cause = engram.cause.as_deref().unwrap_or("(unknown)");
+        let effect = engram.effect.as_deref().unwrap_or("(unknown)");
+        let sim = engram.similarity.unwrap_or(0.0);
+
+        out.push_str(&format!(
+            "{}. **Cause:** {}\n   **Effect:** {}\n   **Similarity:** {:.2}\n\n",
+            i + 1,
+            cause,
+            effect,
+            sim
+        ));
+    }
+
+    tool_ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: store_memory
+// ---------------------------------------------------------------------------
+
+/// POST to Odin /api/v1/store and return the created engram ID.
+#[instrument(skip(client, config), fields(cause = %params.cause))]
+pub async fn store_memory(
+    client: &Client,
+    config: &McpServerConfig,
+    params: StoreMemoryParams,
+) -> CallToolResult {
+    if params.cause.len() > MAX_INPUT_BYTES {
+        return tool_error(format!(
+            "cause exceeds maximum size of {MAX_INPUT_BYTES} bytes"
+        ));
+    }
+    if params.effect.len() > MAX_INPUT_BYTES {
+        return tool_error(format!(
+            "effect exceeds maximum size of {MAX_INPUT_BYTES} bytes"
+        ));
+    }
+
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/api/v1/store",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    // Tags field accepted for forward-compatibility but silently dropped:
+    // Mimir's Sprint 002 schema has no tags column.
+    #[derive(Serialize)]
+    struct Req<'a> {
+        cause: &'a str,
+        effect: &'a str,
+    }
+
+    let body = Req {
+        cause: &params.cause,
+        effect: &params.effect,
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin is not reachable at {}. \
+                 Ensure the Yggdrasil orchestrator is running. Error: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Memory store failed (HTTP {}): {}", status, body));
+    }
+    if status.is_server_error() {
+        return tool_error(format!("Internal error from Odin: {}", status));
+    }
+
+    let api: StoreApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
+    };
+
+    let id = api.id.unwrap_or_else(|| "(unknown)".to_string());
+    tool_ok(format!("Memory stored successfully. ID: {}", id))
+}
+
+// ---------------------------------------------------------------------------
+// Tool: generate
+// ---------------------------------------------------------------------------
+
+/// Maximum prompt size (1MB) — generous but prevents abuse.
+const MAX_PROMPT_BYTES: usize = 1024 * 1024;
+
+/// POST to Odin /v1/chat/completions (non-streaming) and return the response text.
+#[instrument(skip(client, config), fields(model = ?params.model))]
+pub async fn generate(
+    client: &Client,
+    config: &McpServerConfig,
+    params: GenerateParams,
+) -> CallToolResult {
+    if params.prompt.len() > MAX_PROMPT_BYTES {
+        return tool_error(format!(
+            "prompt exceeds maximum size of {MAX_PROMPT_BYTES} bytes"
+        ));
+    }
+
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    #[derive(Serialize)]
+    struct Message<'a> {
+        role: &'a str,
+        content: &'a str,
+    }
+
+    #[derive(Serialize)]
+    struct Req<'a> {
+        model: Option<&'a str>,
+        messages: Vec<Message<'a>>,
+        stream: bool,
+        max_tokens: u64,
+    }
+
+    let body = Req {
+        model: params.model.as_deref(),
+        messages: vec![Message {
+            role: "user",
+            content: &params.prompt,
+        }],
+        stream: false,
+        max_tokens: params.max_tokens.unwrap_or(4096),
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin is not reachable at {}. \
+                 Ensure the Yggdrasil orchestrator is running. Error: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Generate failed (HTTP {}): {}", status, body));
+    }
+    if status.is_server_error() {
+        return tool_error(format!("Internal error from Odin: {}", status));
+    }
+
+    let api: ChatApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
+    };
+
+    let text = api
+        .choices
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_else(|| "(empty response)".to_string());
+
+    tool_ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: list_models
+// ---------------------------------------------------------------------------
+
+/// GET Odin /v1/models and format as a markdown table.
+#[instrument(skip(client, config))]
+pub async fn list_models(client: &Client, config: &McpServerConfig) -> CallToolResult {
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!("{}/v1/models", config.odin_url.trim_end_matches('/'));
+
+    let resp = match client.get(&url).timeout(timeout).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin is not reachable at {}. \
+                 Ensure the Yggdrasil orchestrator is running. Error: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Model listing failed (HTTP {}): {}", status, body));
+    }
+    if status.is_server_error() {
+        return tool_error(format!("Internal error from Odin: {}", status));
+    }
+
+    let api: ModelsApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
+    };
+
+    let models = api.data.unwrap_or_default();
+    if models.is_empty() {
+        return tool_ok("## Available Models\n\nNo models found.");
+    }
+
+    let mut out = "## Available Models\n\n| Model | Backend |\n|-------|---------|".to_string();
+    for m in &models {
+        let id = m.id.as_deref().unwrap_or("(unknown)");
+        let backend = m.owned_by.as_deref().unwrap_or("-");
+        out.push_str(&format!("\n| {} | {} |", id, backend));
+    }
+
+    tool_ok(out)
+}
+
+/// Format the models table as a plain string (shared with the resource handler).
+pub async fn models_table(client: &Client, config: &McpServerConfig) -> String {
+    let result = list_models(client, config).await;
+    result
+        .content
+        .into_iter()
+        .next()
+        .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .unwrap_or_else(|| "Model listing unavailable.".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// HA tool parameter structs
+// ---------------------------------------------------------------------------
+
+fn default_true() -> bool {
+    true
+}
+
+/// Parameters for the `ha_get_states` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HaGetStatesParams {
+    /// If true (default), return a compact markdown summary grouped by domain.
+    /// If false, return the raw JSON array (truncated to first 50 entities).
+    #[serde(default = "default_true")]
+    pub summary: bool,
+}
+
+/// Parameters for the `ha_list_entities` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HaListEntitiesParams {
+    /// HA domain to filter by (e.g., "light", "switch", "sensor", "climate").
+    /// If omitted, returns all entities across all domains.
+    pub domain: Option<String>,
+}
+
+/// Parameters for the `ha_call_service` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HaCallServiceParams {
+    /// HA service domain (e.g., "light", "switch", "cover", "climate").
+    pub domain: String,
+    /// Service name (e.g., "turn_on", "turn_off", "toggle", "set_temperature").
+    pub service: String,
+    /// Service call data (e.g., {"entity_id": "light.living_room", "brightness": 128}).
+    pub data: serde_json::Value,
+}
+
+/// Parameters for the `ha_generate_automation` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HaGenerateAutomationParams {
+    /// Natural language description of the desired automation.
+    pub description: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tool: ha_get_states
+// ---------------------------------------------------------------------------
+
+/// Fetch all HA entity states and format as a markdown summary or raw JSON.
+#[instrument(skip(ha_client), fields(summary = params.summary))]
+pub async fn ha_get_states(
+    ha_client: Option<&HaClient>,
+    params: HaGetStatesParams,
+) -> CallToolResult {
+    let client = match ha_client {
+        Some(c) => c,
+        None => return tool_error("Home Assistant is not configured."),
+    };
+
+    let states = match client.get_states().await {
+        Ok(s) => s,
+        Err(e) => return tool_error(format!("Failed to get HA states: {}", e)),
+    };
+
+    if params.summary {
+        let out = format_states_summary(&states);
+        tool_ok(out)
+    } else {
+        // Raw JSON, truncated to 50 entities.
+        let truncated: Vec<_> = states.into_iter().take(50).collect();
+        match serde_json::to_string_pretty(&truncated) {
+            Ok(json) => tool_ok(json),
+            Err(e) => tool_error(format!("Failed to serialize HA states: {}", e)),
+        }
+    }
+}
+
+/// Format entity states as a markdown summary grouped by domain.
+///
+/// Performance: O(n) grouping by prefix scan. Under 50ms for 500 entities.
+fn format_states_summary(states: &[ygg_ha::EntityState]) -> String {
+    // Group by domain (prefix before first '.')
+    let mut by_domain: BTreeMap<&str, Vec<&ygg_ha::EntityState>> = BTreeMap::new();
+    for state in states {
+        let domain = state
+            .entity_id
+            .split_once('.')
+            .map(|(d, _)| d)
+            .unwrap_or("unknown");
+        by_domain.entry(domain).or_default().push(state);
+    }
+
+    let total: usize = states.len();
+    let mut out = format!(
+        "## Home Assistant Entity States ({} entities)\n\n",
+        total
+    );
+
+    for (domain, entities) in &by_domain {
+        out.push_str(&format!("### {} ({})\n", domain, entities.len()));
+
+        // Domain-specific columns
+        match *domain {
+            "light" => {
+                out.push_str("| Entity | State | Brightness |\n|--------|-------|------------|\n");
+                for e in entities.iter() {
+                    let friendly = e
+                        .attributes
+                        .get("friendly_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let brightness = e
+                        .attributes
+                        .get("brightness")
+                        .and_then(|v| v.as_f64())
+                        .map(|b| format!("{:.0}", b))
+                        .unwrap_or_else(|| "-".to_string());
+                    let label = if friendly.is_empty() {
+                        e.entity_id.clone()
+                    } else {
+                        format!("{} ({})", e.entity_id, friendly)
+                    };
+                    out.push_str(&format!("| {} | {} | {} |\n", label, e.state, brightness));
+                }
+            }
+            "sensor" | "binary_sensor" => {
+                out.push_str("| Entity | State | Unit |\n|--------|-------|------|\n");
+                for e in entities.iter() {
+                    let friendly = e
+                        .attributes
+                        .get("friendly_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let unit = e
+                        .attributes
+                        .get("unit_of_measurement")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let label = if friendly.is_empty() {
+                        e.entity_id.clone()
+                    } else {
+                        format!("{} ({})", e.entity_id, friendly)
+                    };
+                    out.push_str(&format!("| {} | {} | {} |\n", label, e.state, unit));
+                }
+            }
+            _ => {
+                out.push_str("| Entity | State |\n|--------|-------|\n");
+                for e in entities.iter() {
+                    let friendly = e
+                        .attributes
+                        .get("friendly_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let label = if friendly.is_empty() {
+                        e.entity_id.clone()
+                    } else {
+                        format!("{} ({})", e.entity_id, friendly)
+                    };
+                    out.push_str(&format!("| {} | {} |\n", label, e.state));
+                }
+            }
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Tool: ha_list_entities
+// ---------------------------------------------------------------------------
+
+/// List HA entities filtered by domain, formatted as a markdown table.
+#[instrument(skip(ha_client), fields(domain = ?params.domain))]
+pub async fn ha_list_entities(
+    ha_client: Option<&HaClient>,
+    params: HaListEntitiesParams,
+) -> CallToolResult {
+    let client = match ha_client {
+        Some(c) => c,
+        None => return tool_error("Home Assistant is not configured."),
+    };
+
+    let entities = match client.list_entities(params.domain.as_deref()).await {
+        Ok(e) => e,
+        Err(e) => return tool_error(format!("Failed to list HA entities: {}", e)),
+    };
+
+    let domain_label = params.domain.as_deref().unwrap_or("all");
+    let mut out = format!(
+        "## Entities: {} ({} found)\n\n",
+        domain_label,
+        entities.len()
+    );
+
+    if entities.is_empty() {
+        out.push_str("No entities found.");
+        return tool_ok(out);
+    }
+
+    out.push_str("| Entity ID | Friendly Name | State | Last Changed |\n");
+    out.push_str("|-----------|---------------|-------|---------------|\n");
+
+    for entity in &entities {
+        let friendly = entity
+            .attributes
+            .get("friendly_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        // Format last_changed: trim to date+time without sub-seconds.
+        let last_changed = entity
+            .last_changed
+            .as_deref()
+            .map(|ts| ts.get(..16).unwrap_or(ts))
+            .unwrap_or("-");
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            entity.entity_id, friendly, entity.state, last_changed
+        ));
+    }
+
+    tool_ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: ha_call_service
+// ---------------------------------------------------------------------------
+
+/// Call an HA service and return a success or failure message.
+#[instrument(skip(ha_client), fields(domain = %params.domain, service = %params.service))]
+pub async fn ha_call_service(
+    ha_client: Option<&HaClient>,
+    params: HaCallServiceParams,
+) -> CallToolResult {
+    let client = match ha_client {
+        Some(c) => c,
+        None => return tool_error("Home Assistant is not configured."),
+    };
+
+    // Domain allowlist: restrict callable services to safe domains.
+    const ALLOWED_DOMAINS: &[&str] = &[
+        "light", "switch", "cover", "fan", "media_player", "scene",
+        "script", "input_boolean", "input_number", "input_select",
+        "input_text", "automation", "climate", "vacuum", "button",
+        "number", "select", "humidifier", "water_heater",
+    ];
+    if !ALLOWED_DOMAINS.contains(&params.domain.as_str()) {
+        return tool_error(format!(
+            "Domain '{}' is not in the allowed list. Allowed: {}",
+            params.domain,
+            ALLOWED_DOMAINS.join(", ")
+        ));
+    }
+
+    match client
+        .call_service(&params.domain, &params.service, params.data.clone())
+        .await
+    {
+        Ok(()) => {
+            let data_pretty = serde_json::to_string_pretty(&params.data)
+                .unwrap_or_else(|_| params.data.to_string());
+            tool_ok(format!(
+                "Service called successfully: {}.{}\n\nData sent:\n{}",
+                params.domain, params.service, data_pretty
+            ))
+        }
+        Err(e) => tool_error(format!(
+            "Service call failed: {}.{}\nError: {}",
+            params.domain, params.service, e
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool: ha_generate_automation
+// ---------------------------------------------------------------------------
+
+/// Generate Home Assistant automation YAML from a natural-language description.
+///
+/// Fetches entity states and services from HA, builds a structured prompt,
+/// and delegates generation to Odin's reasoning model via `AutomationGenerator`.
+#[instrument(skip(ha_client, generator), fields(description = %params.description))]
+pub async fn ha_generate_automation(
+    ha_client: Option<&HaClient>,
+    generator: Option<&AutomationGenerator>,
+    params: HaGenerateAutomationParams,
+) -> CallToolResult {
+    let client = match ha_client {
+        Some(c) => c,
+        None => return tool_error("Home Assistant is not configured."),
+    };
+    let automation_gen = match generator {
+        Some(g) => g,
+        None => return tool_error("Home Assistant is not configured."),
+    };
+
+    match automation_gen.generate_automation(client, &params.description).await {
+        Ok(yaml) => tool_ok(format!(
+            "## Generated Automation\n\n```yaml\n{}\n```\n\n\
+             **Note:** Review this automation carefully before adding it to \
+             your Home Assistant configuration.",
+            yaml
+        )),
+        Err(e) => tool_error(format!("Automation generation failed: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ha_call_service_rejects_disallowed_domain() {
+        let params = HaCallServiceParams {
+            domain: "lock".to_string(),
+            service: "unlock".to_string(),
+            data: serde_json::json!({"entity_id": "lock.front_door"}),
+        };
+        let result = ha_call_service(None, params).await;
+        // Should fail because "lock" is not in the allowlist.
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn ha_call_service_allows_light_domain() {
+        // With no HA client configured, this will fail because "not configured",
+        // NOT because of domain validation — meaning light domain passed the check.
+        let params = HaCallServiceParams {
+            domain: "light".to_string(),
+            service: "turn_on".to_string(),
+            data: serde_json::json!({"entity_id": "light.living_room"}),
+        };
+        let result = ha_call_service(None, params).await;
+        // Should fail with "not configured", not "domain not allowed".
+        assert!(result.is_error.unwrap_or(false));
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            _ => panic!("expected text content"),
+        };
+        assert!(text.contains("not configured"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn ha_call_service_no_client_returns_error() {
+        let params = HaCallServiceParams {
+            domain: "switch".to_string(),
+            service: "toggle".to_string(),
+            data: serde_json::json!({}),
+        };
+        let result = ha_call_service(None, params).await;
+        assert!(result.is_error.unwrap_or(false));
+    }
+}

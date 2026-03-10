@@ -1,0 +1,20 @@
+[package]
+name = "ygg-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ygg-domain = { path = "../ygg-domain" }
+ygg-ha = { path = "../ygg-ha" }
+rmcp = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# schemars 1.x must match the version re-exported by rmcp 1.1 (rmcp::schemars).
+# The derive macro resolves schemars:: by crate name, so it must be a direct dep.
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

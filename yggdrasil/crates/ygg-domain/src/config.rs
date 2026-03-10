@@ -1,0 +1,328 @@
+use serde::{Deserialize, Serialize};
+
+/// Odin orchestrator configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OdinConfig {
+    pub node_name: String,
+    pub listen_addr: String,
+    pub backends: Vec<BackendConfig>,
+    pub routing: RoutingConfig,
+    pub mimir: MimirClientConfig,
+    pub muninn: MuninnClientConfig,
+    /// Optional Home Assistant integration. If absent, HA features are disabled.
+    #[serde(default)]
+    pub ha: Option<HaConfig>,
+    /// Session state configuration. Uses defaults when absent.
+    #[serde(default)]
+    pub session: SessionConfig,
+}
+
+/// Session state configuration for Odin's in-memory conversation store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Maximum number of concurrent sessions before eviction.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+    /// Session TTL in seconds. Sessions idle longer than this are evicted.
+    #[serde(default = "default_session_ttl_secs")]
+    pub session_ttl_secs: u64,
+    /// Token budget for context packing (must fit within Ollama context window).
+    #[serde(default = "default_context_budget_tokens")]
+    pub context_budget_tokens: usize,
+    /// Tokens reserved for model generation output.
+    #[serde(default = "default_generation_reserve")]
+    pub generation_reserve: usize,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            max_sessions: default_max_sessions(),
+            session_ttl_secs: default_session_ttl_secs(),
+            context_budget_tokens: default_context_budget_tokens(),
+            generation_reserve: default_generation_reserve(),
+        }
+    }
+}
+
+fn default_max_sessions() -> usize {
+    256
+}
+
+fn default_session_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_context_budget_tokens() -> usize {
+    14000
+}
+
+fn default_generation_reserve() -> usize {
+    2048
+}
+
+/// Backend protocol type.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendType {
+    #[default]
+    Ollama,
+    Openai,
+}
+
+/// A backend node (Ollama or OpenAI-compatible).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendConfig {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub backend_type: BackendType,
+    pub models: Vec<String>,
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+}
+
+fn default_max_concurrent() -> usize {
+    2
+}
+
+/// Routing rules for the semantic router.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingConfig {
+    pub default_model: String,
+    pub rules: Vec<RoutingRule>,
+}
+
+/// A single routing rule mapping intent to model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingRule {
+    pub intent: String,
+    pub model: String,
+    pub backend: String,
+}
+
+/// Client config for connecting to Mimir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MimirClientConfig {
+    pub url: String,
+    #[serde(default = "default_query_limit")]
+    pub query_limit: usize,
+    #[serde(default = "default_true")]
+    pub store_on_completion: bool,
+}
+
+fn default_query_limit() -> usize {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Client config for connecting to Muninn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuninnClientConfig {
+    pub url: String,
+    #[serde(default = "default_max_context_chunks")]
+    pub max_context_chunks: usize,
+}
+
+fn default_max_context_chunks() -> usize {
+    10
+}
+
+/// Mimir memory service configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MimirConfig {
+    pub listen_addr: String,
+    pub database_url: String,
+    pub qdrant_url: String,
+    pub sdr: SdrConfig,
+    pub tiers: TierConfig,
+}
+
+/// Embedding service configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedConfig {
+    /// Ollama API URL (used when backend is "ollama").
+    pub ollama_url: String,
+    /// Model name for embedding.
+    pub model: String,
+    /// Embedding backend: "ollama" (default) or "candle".
+    #[serde(default = "default_embed_backend")]
+    pub backend: String,
+    /// Path to GGUF model weights (required when backend is "candle").
+    #[serde(default)]
+    pub model_path: Option<String>,
+}
+
+fn default_embed_backend() -> String {
+    "ollama".to_string()
+}
+
+/// SDR (Sparse Distributed Representation) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdrConfig {
+    /// Number of bits in the SDR (default 256).
+    #[serde(default = "default_sdr_dim_bits")]
+    pub dim_bits: usize,
+    /// Path to the ONNX model directory (contains model.onnx + tokenizer.json).
+    pub model_dir: String,
+}
+
+fn default_sdr_dim_bits() -> usize {
+    256
+}
+
+/// Memory tier capacity configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierConfig {
+    /// Maximum number of Recall tier engrams before summarization triggers.
+    #[serde(default = "default_recall_capacity")]
+    pub recall_capacity: usize,
+    /// Number of engrams to batch for each summarization cycle.
+    #[serde(default = "default_summarization_batch")]
+    pub summarization_batch_size: usize,
+    /// How often to check Recall tier capacity (seconds).
+    #[serde(default = "default_check_interval")]
+    pub check_interval_secs: u64,
+    /// Minimum age (seconds) before a Recall engram is eligible for summarization.
+    /// Prevents summarizing very recent engrams that may still be actively accessed.
+    #[serde(default = "default_min_age_secs")]
+    pub min_age_secs: u64,
+    /// Odin URL for summarization LLM calls.
+    #[serde(default = "default_summarization_odin_url")]
+    pub odin_url: String,
+}
+
+fn default_recall_capacity() -> usize {
+    1000
+}
+
+fn default_summarization_batch() -> usize {
+    100
+}
+
+fn default_check_interval() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_min_age_secs() -> u64 {
+    86400 // 24 hours
+}
+
+fn default_summarization_odin_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
+/// Huginn indexer configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuginnConfig {
+    pub watch_paths: Vec<String>,
+    pub database_url: String,
+    pub qdrant_url: String,
+    pub embed: EmbedConfig,
+    #[serde(default = "default_debounce_ms")]
+    pub debounce_ms: u64,
+    /// Address for health/metrics HTTP listener (default "0.0.0.0:9092").
+    #[serde(default = "default_huginn_listen_addr")]
+    pub listen_addr: String,
+}
+
+fn default_debounce_ms() -> u64 {
+    500
+}
+
+fn default_huginn_listen_addr() -> String {
+    "0.0.0.0:9092".to_string()
+}
+
+/// Muninn retrieval engine configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuninnConfig {
+    pub listen_addr: String,
+    pub database_url: String,
+    pub qdrant_url: String,
+    pub embed: EmbedConfig,
+    pub search: SearchConfig,
+}
+
+/// Search tuning parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchConfig {
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: f64,
+    #[serde(default = "default_context_token_budget")]
+    pub context_token_budget: usize,
+    #[serde(default = "default_context_fill_ratio")]
+    pub context_fill_ratio: f64,
+}
+
+fn default_rrf_k() -> f64 {
+    60.0
+}
+
+fn default_context_token_budget() -> usize {
+    32000
+}
+
+fn default_context_fill_ratio() -> f64 {
+    0.8
+}
+
+/// Home Assistant integration configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaConfig {
+    pub url: String,
+    pub token: String,
+    /// HTTP timeout for HA REST API calls in seconds (default: 10).
+    #[serde(default = "default_ha_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_ha_timeout() -> u64 {
+    10
+}
+
+/// MCP server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Base URL for Odin (default: http://localhost:8080)
+    #[serde(default = "default_odin_url")]
+    pub odin_url: String,
+    /// Optional direct URL for Muninn (bypasses Odin proxy). If unset, uses odin_url.
+    #[serde(default)]
+    pub muninn_url: Option<String>,
+    /// HTTP request timeout in seconds (default: 30)
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout_secs: u64,
+    /// Optional Home Assistant integration. If present, HA MCP tools are registered.
+    #[serde(default)]
+    pub ha: Option<HaConfig>,
+}
+
+fn default_odin_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_type_deserializes_from_json() {
+        let json = r#"[
+            {"name":"munin","url":"http://localhost:11434","backend_type":"ollama","models":[]},
+            {"name":"hugin-vllm","url":"http://REDACTED_HUGIN_IP:8000","backend_type":"openai","models":["Qwen/QwQ-32B-AWQ"]},
+            {"name":"hugin","url":"http://REDACTED_HUGIN_IP:11434","models":["qwen3-embedding"]}
+        ]"#;
+        let backends: Vec<BackendConfig> = serde_json::from_str(json).unwrap();
+        assert_eq!(backends[0].backend_type, BackendType::Ollama);
+        assert_eq!(backends[1].backend_type, BackendType::Openai);
+        assert_eq!(backends[2].backend_type, BackendType::Ollama); // default
+    }
+}
