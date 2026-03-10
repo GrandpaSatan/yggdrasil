@@ -124,14 +124,11 @@ pub async fn store_engram(
 // POST /api/v1/query  (backward-compat with Fergus engram_client.rs)
 // ---------------------------------------------------------------------------
 
-/// Query engrams by semantic similarity using the SDR dual-system path.
+/// Query engrams by semantic similarity using SDR dual-system recall.
 ///
 /// Backward-compatible with the Fergus `engram_client.rs` API contract.
-/// Returns full `Engram` structs (with cause/effect text) ranked by similarity.
-///
-/// Sprint 023: Rewritten to use SDR-based recall (was broken — referenced dropped
-/// `cause_embedding` column). Uses the same System 1 + System 2 merge as `recall_engrams`,
-/// then fetches full Engram objects by ID.
+/// Embeds via ONNX, then uses Hamming + Qdrant SDR search (same as recall),
+/// but returns full `Engram` objects (with cause/effect text) instead of events.
 pub async fn query_engrams(
     State(state): State<Arc<AppState>>,
     Json(body): Json<EngramQuery>,
@@ -140,7 +137,7 @@ pub async fn query_engrams(
         return Err(MimirError::Validation("text must not be empty".into()));
     }
 
-    // Embed → binarize → SDR
+    // Step 1: Embed via ONNX → binarize → SDR
     let embedder = state.embedder.clone();
     let query_text = body.text.clone();
     let embedding: Vec<f32> =
@@ -152,7 +149,7 @@ pub async fn query_engrams(
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
     let sdr_f32 = sdr::to_f32_vec(&query_sdr);
 
-    // System 1 + System 2 in parallel
+    // Step 2: Dual-system search (Hamming + Qdrant) in parallel
     let limit = body.limit;
     let (sys1_results, sys2_results) = tokio::join!(
         async { Ok::<_, MimirError>(state.sdr_index.query(&query_sdr, limit)) },
@@ -162,56 +159,59 @@ pub async fn query_engrams(
     let sys1 = sys1_results?;
     let sys2 = sys2_results?;
 
-    // Merge with normalized Qdrant scores
-    let query_pop = sdr::popcount(&query_sdr) as f64;
-    let normalizer = if query_pop > 0.0 { query_pop } else { 1.0 };
-
+    // Step 3: Merge by UUID — take max similarity
     let mut merged: HashMap<Uuid, f64> = HashMap::new();
     for (id, sim) in sys1 {
         merged.insert(id, sim);
     }
     for (id, score) in sys2 {
-        let normalized = (score as f64 / normalizer).clamp(0.0, 1.0);
+        let score_f64 = score as f64;
         merged
             .entry(id)
             .and_modify(|s| {
-                if normalized > *s {
-                    *s = normalized;
+                if score_f64 > *s {
+                    *s = score_f64;
                 }
             })
-            .or_insert(normalized);
+            .or_insert(score_f64);
     }
 
-    // Rank and truncate
+    // Sort by similarity descending, truncate to limit
     let mut ranked: Vec<(Uuid, f64)> = merged.into_iter().collect();
     ranked.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     ranked.truncate(limit);
 
-    let result_ids: Vec<Uuid> = ranked.iter().map(|(id, _)| *id).collect();
-    let sim_map: HashMap<Uuid, f64> = ranked.into_iter().collect();
+    if ranked.is_empty() {
+        return Ok((StatusCode::OK, Json(serde_json::json!({ "results": [] }))));
+    }
 
-    // Fetch full Engram objects
-    let mut results =
-        engrams::fetch_engrams_by_ids(state.store.pool(), &result_ids, &sim_map).await?;
-
-    // Sort by similarity descending (PG returns arbitrary order)
-    results.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Step 4: Fetch full engram data from PostgreSQL
+    let sim_map: HashMap<Uuid, f64> = ranked.iter().cloned().collect();
+    let mut results = Vec::with_capacity(ranked.len());
+    for (id, _) in &ranked {
+        match engrams::get_engram(state.store.pool(), *id).await {
+            Ok(mut engram) => {
+                engram.similarity = sim_map.get(id).copied().unwrap_or(0.0);
+                results.push(engram);
+            }
+            Err(e) => {
+                tracing::warn!(engram_id = %id, error = %e, "skipping engram in query results");
+            }
+        }
+    }
 
     // Fire-and-forget access count bump
+    let result_ids: Vec<Uuid> = results.iter().map(|e| e.id).collect();
     if !result_ids.is_empty() {
         let pool = state.store.pool().clone();
-        let ids = result_ids;
         tokio::spawn(async move {
-            if let Err(e) = bump_access_counts(&pool, &ids).await {
+            if let Err(e) = bump_access_counts(&pool, &result_ids).await {
                 tracing::warn!(error = %e, "failed to bump access counts");
             }
         });
     }
 
+    Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
     Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
 }
 
