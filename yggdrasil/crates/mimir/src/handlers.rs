@@ -212,7 +212,6 @@ pub async fn query_engrams(
     }
 
     Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
-    Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
 }
 
 // ---------------------------------------------------------------------------

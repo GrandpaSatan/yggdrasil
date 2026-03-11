@@ -18,11 +18,15 @@ ssh "$REMOTE" "sudo mkdir -p ${INSTALL_DIR}/bin ${CONFIG_DIR}"
 ssh "$REMOTE" "sudo chown yggdrasil:yggdrasil ${INSTALL_DIR}"
 
 # 2. Build release binaries
-cargo build --release --bin "${SERVICES[@]}"
+BIN_ARGS=()
+for svc in "${SERVICES[@]}"; do
+    BIN_ARGS+=(--bin "$svc")
+done
+cargo build --release "${BIN_ARGS[@]}"
 
 # 3. Copy binaries
 for svc in "${SERVICES[@]}"; do
-    rsync -avz "target/release/${svc}" "${REMOTE}:${INSTALL_DIR}/bin/"
+    rsync -avz --rsync-path="sudo rsync" "target/release/${svc}" "${REMOTE}:${INSTALL_DIR}/bin/"
 done
 
 # 4. Copy config files
@@ -30,7 +34,7 @@ for svc in "${SERVICES[@]}"; do
     config_dir="configs/${svc}"
     if [ -d "$config_dir" ]; then
         ssh "$REMOTE" "sudo mkdir -p ${CONFIG_DIR}/${svc}"
-        rsync -avz "${config_dir}/" "${REMOTE}:${CONFIG_DIR}/${svc}/"
+        rsync -avz --rsync-path="sudo rsync" "${config_dir}/" "${REMOTE}:${CONFIG_DIR}/${svc}/"
     fi
 done
 
@@ -38,10 +42,10 @@ done
 for svc in "${SERVICES[@]}"; do
     unit="deploy/systemd/yggdrasil-${svc}.service"
     if [ -f "$unit" ]; then
-        rsync -avz "$unit" "${REMOTE}:/etc/systemd/system/"
+        rsync -avz --rsync-path="sudo rsync" "$unit" "${REMOTE}:/etc/systemd/system/"
     fi
 done
-rsync -avz "deploy/wait-for-health.sh" "${REMOTE}:${INSTALL_DIR}/bin/"
+rsync -avz --rsync-path="sudo rsync" "deploy/wait-for-health.sh" "${REMOTE}:${INSTALL_DIR}/bin/"
 ssh "$REMOTE" "sudo chmod +x ${INSTALL_DIR}/bin/wait-for-health.sh"
 
 # 6. Reload systemd and enable services
