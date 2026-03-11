@@ -57,6 +57,22 @@
 - Middleware layer ORDER: `.layer(middleware::from_fn(...)).layer(CorsLayer::permissive())` — CORS outermost
 - Port assignments: Odin 8080 (Munin), Mimir 9090 (Munin), Muninn 9091 (Hugin), Huginn 9092 (Hugin)
 
+## Sprint 028 Patterns (completed)
+- `chromiumoxide = "0.9"` in workspace deps; added to `ygg-mcp/Cargo.toml` + `futures = { workspace = true }`
+- `BrowserConfig::builder().no_sandbox().arg("--disable-gpu").arg("--disable-dev-shm-usage").build()?`
+- `Browser::launch(config)` returns `(Browser, mut Handler)` — MUST spawn handler loop: `while handler.next().await.is_some() {}`
+- Viewport set per-tab via CDP: `page.execute(SetDeviceMetricsOverrideParams::new(w as i64, h as i64, 1.0, false))`
+  - Import: `chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams`
+  - NOT `page.set_viewport()` — that method does NOT exist in 0.9
+- Screenshot: `page.screenshot(ScreenshotParams::builder().full_page(bool).build())` returns `Result<Vec<u8>>`
+  - Import: `chromiumoxide::page::ScreenshotParams`
+- Browser lifetime: `Arc<tokio::sync::OnceCell<chromiumoxide::Browser>>` in server struct
+  - `get_or_try_init(|| init_browser())` for lazy init on first screenshot call
+  - `Arc` clone shares OnceCell across all rmcp-cloned server instances
+- `ScreenshotParams` in tools.rs, `screenshot()` fn takes `&chromiumoxide::Browser` + own params
+- `init_browser()` async fn in local_server.rs returns `Result<Browser, String>`
+- `futures = { workspace = true }` needed in ygg-mcp for `StreamExt` (handler.next())
+
 ## Workflow
 - Always run `cargo check --workspace` after all changes to verify compilation
 - No auto-commits — user handles all git operations

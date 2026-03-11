@@ -107,6 +107,25 @@ pub struct SyncDocsParams {
     pub workspace_path: Option<String>,
 }
 
+/// Parameters for the `screenshot` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScreenshotParams {
+    /// URL to capture (e.g. "http://localhost:3000/dashboard").
+    pub url: String,
+    /// Optional CSS selector to wait for before capture (useful for SPAs).
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Capture the full scrollable page instead of just the viewport (default: false).
+    #[serde(default)]
+    pub full_page: Option<bool>,
+    /// Viewport width in pixels (default: 1280).
+    #[serde(default)]
+    pub viewport_width: Option<u32>,
+    /// Viewport height in pixels (default: 720).
+    #[serde(default)]
+    pub viewport_height: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal HTTP response types (Muninn / Odin shapes)
 // ---------------------------------------------------------------------------
@@ -1609,6 +1628,116 @@ pub async fn ha_generate_automation(
         )),
         Err(e) => tool_error(format!("Automation generation failed: {}", e)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tool: screenshot
+// ---------------------------------------------------------------------------
+
+/// Capture a screenshot of a web page via a headless Chromium browser instance.
+///
+/// The caller is responsible for launching the browser and keeping it alive. This
+/// function opens a new page/tab on the provided browser, sets the viewport via CDP
+/// `SetDeviceMetricsOverride`, navigates to the URL, optionally waits for a CSS
+/// selector, captures the PNG screenshot, and writes it to `/tmp/ygg-screenshots/`.
+///
+/// # OPTIMIZATION: Uses CDP SetDeviceMetricsOverride for per-capture viewport control
+/// rather than relying on the browser-wide viewport set at launch. This allows each
+/// screenshot call to use a different resolution without restarting the browser.
+/// Fallback: if the CDP command fails, navigation still proceeds at the browser's
+/// default viewport size.
+pub async fn screenshot(
+    browser: &chromiumoxide::Browser,
+    params: ScreenshotParams,
+) -> CallToolResult {
+    use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+    use chromiumoxide::page::ScreenshotParams as CdpScreenshotParams;
+
+    let width = params.viewport_width.unwrap_or(1280);
+    let height = params.viewport_height.unwrap_or(720);
+    let full_page = params.full_page.unwrap_or(false);
+
+    // Create output directory
+    let output_dir = std::path::Path::new("/tmp/ygg-screenshots");
+    if let Err(e) = tokio::fs::create_dir_all(output_dir).await {
+        return tool_error(format!("Failed to create output dir: {e}"));
+    }
+
+    // Open a new page/tab
+    let page = match browser.new_page("about:blank").await {
+        Ok(p) => p,
+        Err(e) => return tool_error(format!("Failed to open new tab: {e}")),
+    };
+
+    // Set viewport via CDP emulation command so each capture can use its own dimensions.
+    // OPTIMIZATION: SetDeviceMetricsOverride (CDP emulation) is per-target, so we set it
+    // after opening the tab rather than at browser launch. The browser default (800x600)
+    // is used as fallback if this command fails.
+    let viewport_cmd =
+        SetDeviceMetricsOverrideParams::new(width as i64, height as i64, 1.0_f64, false);
+    if let Err(e) = page.execute(viewport_cmd).await {
+        tracing::warn!("Failed to set viewport {width}x{height}: {e}");
+    }
+
+    // Navigate to the target URL
+    if let Err(e) = page.goto(params.url.as_str()).await {
+        return tool_error(format!("Failed to navigate to {}: {e}", params.url));
+    }
+
+    // Optionally wait for a CSS selector (useful for SPAs that render asynchronously)
+    if let Some(ref selector) = params.selector {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            page.find_element(selector.as_str()),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {} // Element found
+            Ok(Err(e)) => {
+                return tool_error(format!("Selector '{selector}' not found: {e}"));
+            }
+            Err(_) => {
+                return tool_error(format!(
+                    "Timeout waiting for selector '{selector}' (10s)"
+                ));
+            }
+        }
+    }
+
+    // Capture the screenshot as a PNG byte buffer
+    let screenshot_params = CdpScreenshotParams::builder().full_page(full_page).build();
+    let png_data = match page.screenshot(screenshot_params).await {
+        Ok(data) => data,
+        Err(e) => return tool_error(format!("Screenshot capture failed: {e}")),
+    };
+
+    // Generate a human-readable filename from the URL slug + Unix timestamp
+    let slug: String = params
+        .url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .take(50)
+        .collect();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("{slug}-{timestamp}.png");
+    let output_path = output_dir.join(&filename);
+
+    // Write PNG bytes to disk
+    if let Err(e) = tokio::fs::write(&output_path, &png_data).await {
+        return tool_error(format!("Failed to write screenshot to disk: {e}"));
+    }
+
+    let path_str = output_path.display().to_string();
+    tool_ok(format!(
+        "Screenshot saved to: {path_str}\n\n\
+         Use the Read tool to view this image.\n\
+         Viewport: {width}x{height}, full_page: {full_page}",
+    ))
 }
 
 #[cfg(test)]
