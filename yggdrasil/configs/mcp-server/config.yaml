@@ -2,6 +2,7 @@ odin_url: "http://REDACTED_MUNIN_IP:8080"
 muninn_url: "http://REDACTED_HUGIN_IP:9091"
 timeout_secs: 300
 generate_tok_per_sec: 15.0
+prefetch_query: "active sprint yggdrasil"
 ha:
   url: "http://REDACTED_CHIRP_IP:8123"
   token: "${HA_TOKEN}"

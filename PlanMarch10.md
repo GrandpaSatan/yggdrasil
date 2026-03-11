@@ -73,7 +73,7 @@ struct ContentPart {
     #[serde(default)]
     text: Option<String>,
 }
-Also need to add #[allow(dead_code)] or #[serde(deny_unknown_fields)] is NOT used, so the missing field is just ignored. Clean one-line delete.
+Also need to add #[allow(dead_code)] or #[serde(deny_unkdefault)] + missing fields = ignored by default, so removing it doesn't break deserialization onown_fields)] is NOT used, so the missing field is just ignored. Clean one-line delete.
 
 5. Wire engram tags through MCP and Odin layers
 Files:
@@ -193,3 +193,4 @@ curl http://REDACTED_NIGHTJAR_IP:3000 — Grafana login page accessible
 Prometheus targets page (http://REDACTED_NIGHTJAR_IP:9092/targets) — all 4 services UP
 NetworkHardware.md — review for accuracy
 Add Comment
+Import or create dashboards for request latency, engram counts, embedding times, SDR recall performance

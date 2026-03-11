@@ -58,9 +58,8 @@ pub struct StoreMemoryParams {
     pub cause: String,
     /// The outcome or answer (what resulted).
     pub effect: String,
-    /// Optional tags for categorization.
-    /// Note: tags are accepted for forward-compatibility but silently dropped
-    /// until Mimir adds tag support.
+    /// Optional tags for categorization (e.g. "fact", "decision", "coding").
+    /// Passed through to Mimir and used to set trigger_type on the engram.
     pub tags: Option<Vec<String>>,
 }
 
@@ -80,17 +79,28 @@ pub struct GenerateParams {
 // Internal HTTP response types (Muninn / Odin shapes)
 // ---------------------------------------------------------------------------
 
+/// Mirrors `ygg_domain::chunk::CodeChunk` (flat deserialization of the nested chunk object).
 #[derive(Debug, Deserialize)]
 struct SearchChunk {
     file_path: Option<String>,
-    language: Option<String>,
-    score: Option<f64>,
+    language: Option<serde_json::Value>, // Language enum serialized as string
     content: Option<String>,
+    name: Option<String>,
+    start_line: Option<u64>,
+    end_line: Option<u64>,
 }
 
+/// Mirrors `ygg_domain::chunk::SearchResult` — one element of the `results` array.
+#[derive(Debug, Deserialize)]
+struct SearchResultItem {
+    chunk: Option<SearchChunk>,
+    score: Option<f64>,
+}
+
+/// Mirrors `ygg_domain::chunk::SearchResponse`.
 #[derive(Debug, Deserialize)]
 struct SearchApiResponse {
-    chunks: Option<Vec<SearchChunk>>,
+    results: Option<Vec<SearchResultItem>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,8 +240,8 @@ pub async fn search_code(
         Err(e) => return tool_error(format!("Failed to parse Muninn response: {}", e)),
     };
 
-    let chunks = api.chunks.unwrap_or_default();
-    if chunks.is_empty() {
+    let results = api.results.unwrap_or_default();
+    if results.is_empty() {
         return tool_ok(format!(
             "## Code Search Results for: \"{}\"\n\nNo results found.",
             params.query
@@ -239,18 +249,27 @@ pub async fn search_code(
     }
 
     let mut out = format!("## Code Search Results for: \"{}\"\n\n", params.query);
-    for (i, chunk) in chunks.iter().enumerate() {
-        let path = chunk.file_path.as_deref().unwrap_or("unknown");
-        let lang = chunk.language.as_deref().unwrap_or("text");
-        let score = chunk.score.unwrap_or(0.0);
-        let content = chunk.content.as_deref().unwrap_or("");
+    for (i, item) in results.iter().enumerate() {
+        let score = item.score.unwrap_or(0.0);
+        let chunk = item.chunk.as_ref();
+        let path = chunk.and_then(|c| c.file_path.as_deref()).unwrap_or("unknown");
+        let lang = chunk
+            .and_then(|c| c.language.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("text");
+        let name = chunk.and_then(|c| c.name.as_deref()).unwrap_or("");
+        let start = chunk.and_then(|c| c.start_line).unwrap_or(0);
+        let end = chunk.and_then(|c| c.end_line).unwrap_or(0);
+        let content = chunk.and_then(|c| c.content.as_deref()).unwrap_or("");
 
         out.push_str(&format!(
-            "### {}. {} ({}) [score: {:.2}]\n```{}\n{}\n```\n\n",
+            "### {}. `{}` in {} [score: {:.3}, lines {}-{}]\n```{}\n{}\n```\n\n",
             i + 1,
+            name,
             path,
-            lang,
             score,
+            start,
+            end,
             lang,
             content.trim()
         ));
@@ -385,17 +404,18 @@ pub async fn store_memory(
         config.odin_url.trim_end_matches('/')
     );
 
-    // Tags field accepted for forward-compatibility but silently dropped:
-    // Mimir's Sprint 002 schema has no tags column.
     #[derive(Serialize)]
     struct Req<'a> {
         cause: &'a str,
         effect: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tags: Option<&'a Vec<String>>,
     }
 
     let body = Req {
         cause: &params.cause,
         effect: &params.effect,
+        tags: params.tags.as_ref(),
     };
 
     let resp = match client
@@ -457,6 +477,7 @@ pub async fn generate(
     client: &Client,
     config: &McpServerConfig,
     params: GenerateParams,
+    session_id: Option<&str>,
 ) -> CallToolResult {
     if params.prompt.len() > MAX_PROMPT_BYTES {
         return tool_error(format!(
@@ -489,6 +510,8 @@ pub async fn generate(
         messages: Vec<Message<'a>>,
         stream: bool,
         max_tokens: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<&'a str>,
     }
 
     let body = Req {
@@ -499,6 +522,7 @@ pub async fn generate(
         }],
         stream: false,
         max_tokens,
+        session_id,
     };
 
     let resp = match client

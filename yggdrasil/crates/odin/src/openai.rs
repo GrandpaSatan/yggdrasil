@@ -60,8 +60,6 @@ where
     #[derive(Deserialize)]
     struct ContentPart {
         #[serde(default)]
-        r#type: Option<String>,
-        #[serde(default)]
         text: Option<String>,
     }
 

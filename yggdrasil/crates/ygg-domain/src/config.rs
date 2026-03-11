@@ -302,6 +302,13 @@ pub struct McpServerConfig {
     /// Optional Home Assistant integration. If present, HA MCP tools are registered.
     #[serde(default)]
     pub ha: Option<HaConfig>,
+    /// Query used to prefetch session context at startup (default: "active sprint yggdrasil").
+    #[serde(default = "default_prefetch_query")]
+    pub prefetch_query: String,
+}
+
+fn default_prefetch_query() -> String {
+    "active sprint yggdrasil".to_string()
 }
 
 fn default_odin_url() -> String {

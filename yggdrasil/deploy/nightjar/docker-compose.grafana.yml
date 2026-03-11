@@ -1,0 +1,53 @@
+# Yggdrasil Observability Stack — Nightjar (REDACTED_NIGHTJAR_IP)
+# Prometheus scrapes all 4 Yggdrasil services; Grafana visualizes them.
+#
+# Deploy:
+#   scp -r deploy/nightjar jhernandez@REDACTED_NIGHTJAR_IP:~/yggdrasil-observability/
+#   ssh jhernandez@REDACTED_NIGHTJAR_IP 'cd ~/yggdrasil-observability && docker compose -f docker-compose.grafana.yml up -d'
+#
+# Grafana: http://REDACTED_NIGHTJAR_IP:3000  (admin / admin — change on first login)
+# Prometheus: http://REDACTED_NIGHTJAR_IP:9099
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: ygg-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9099:9090"
+    networks:
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: ygg-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://REDACTED_NIGHTJAR_IP:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - observability
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  observability:
+    driver: bridge

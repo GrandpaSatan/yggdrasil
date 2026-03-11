@@ -19,12 +19,14 @@ use rmcp::{
     },
     tool, tool_handler, tool_router,
 };
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use uuid::Uuid;
 use ygg_domain::config::McpServerConfig;
 use ygg_ha::{AutomationGenerator, HaClient};
 
 use crate::{
-    resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS},
+    resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS, RESOURCE_SESSION_CONTEXT},
     tools::{
         GenerateParams, HaCallServiceParams, HaGenerateAutomationParams, HaGetStatesParams,
         HaListEntitiesParams, QueryMemoryParams, SearchCodeParams, StoreMemoryParams,
@@ -47,6 +49,12 @@ pub struct YggdrasilServer {
     /// Optional automation generator.  Present when `config.ha` is `Some`.
     generator: Option<AutomationGenerator>,
     tool_router: ToolRouter<Self>,
+    /// Stable session ID for this MCP server instance.  Sent with generate
+    /// requests so Odin can maintain a rolling context window across calls.
+    session_id: String,
+    /// Prefetched session context populated asynchronously at startup.
+    /// Shared across all clones via Arc; OnceLock ensures one-time write.
+    context_cache: Arc<OnceLock<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +133,7 @@ impl YggdrasilServer {
         &self,
         Parameters(params): Parameters<GenerateParams>,
     ) -> String {
-        let result = generate(&self.client, &self.config, params).await;
+        let result = generate(&self.client, &self.config, params, Some(&self.session_id)).await;
         result
             .content
             .into_iter()
@@ -252,6 +260,9 @@ impl YggdrasilServer {
     ///
     /// If `config.ha` is `Some`, constructs `HaClient` and `AutomationGenerator`.
     /// The HA token is consumed from the config; it is never logged.
+    ///
+    /// A stable session UUID is generated for this instance and a background
+    /// task is spawned to prefetch the active sprint context from Mimir.
     pub fn from_config(config: &McpServerConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
@@ -270,12 +281,41 @@ impl YggdrasilServer {
             (None, None)
         };
 
+        let session_id = Uuid::new_v4().to_string();
+        let context_cache: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+
+        // Spawn a background task to prefetch the session context from memory.
+        {
+            let prefetch_client = client.clone();
+            let prefetch_config = config.clone();
+            let prefetch_cache = Arc::clone(&context_cache);
+            let prefetch_query = config.prefetch_query.clone();
+            tokio::spawn(async move {
+                let params = QueryMemoryParams {
+                    text: prefetch_query,
+                    limit: Some(10),
+                };
+                let result = query_memory(&prefetch_client, &prefetch_config, params).await;
+                let text = result
+                    .content
+                    .into_iter()
+                    .next()
+                    .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+                    .unwrap_or_default();
+                // OnceLock::set fails silently if already set — that's fine.
+                let _ = prefetch_cache.set(text);
+                tracing::info!("Session context prefetch complete");
+            });
+        }
+
         Self {
             client,
             config: config.clone(),
             ha_client,
             generator,
             tool_router: Self::tool_router(),
+            session_id,
+            context_cache,
         }
     }
 }
@@ -313,6 +353,10 @@ impl ServerHandler for YggdrasilServer {
                     .with_description("Engram count and tier statistics from Mimir.")
                     .with_mime_type("text/plain")
                     .no_annotation(),
+                RawResource::new(RESOURCE_SESSION_CONTEXT, "Session Context")
+                    .with_description("Prefetched active sprint context from Mimir memory.")
+                    .with_mime_type("text/plain")
+                    .no_annotation(),
             ]))
         }
     }
@@ -326,6 +370,7 @@ impl ServerHandler for YggdrasilServer {
     > + Send + '_ {
         let client = self.client.clone();
         let config = self.config.clone();
+        let context_cache = Arc::clone(&self.context_cache);
         async move {
             match request.uri.as_str() {
                 RESOURCE_MODELS => {
@@ -333,6 +378,9 @@ impl ServerHandler for YggdrasilServer {
                 }
                 RESOURCE_MEMORY_STATS => {
                     Ok(crate::resources::read_memory_stats_resource(&client, &config).await)
+                }
+                RESOURCE_SESSION_CONTEXT => {
+                    Ok(crate::resources::read_session_context_resource(&context_cache))
                 }
                 other => Err(rmcp::ErrorData::invalid_params(
                     format!("Unknown resource URI: {}", other),
