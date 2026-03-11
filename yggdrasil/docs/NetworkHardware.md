@@ -8,7 +8,7 @@
 - **GPU:** Intel ARC iGPU (used by Ollama)
 - **RAM:** 48GB DDR5
 - **Network:** 2x 5Gb Ethernet
-- **Runs:** Ollama (qwen3 14b, qwen3-embedding), Whisper, Mimir, Odin
+- **Runs:** Ollama IPEX-LLM (qwen3-coder:30b-a3b-q4_K_M), Mimir (port 9090), Odin (port 8080)
 - **SSH:** yggdrasil / CHANGEME
 
 ## Hades (Database Host)
@@ -24,8 +24,8 @@
   - OWL: 14.4 TiB (HDD) -- Personal/Games
   - RAVEN: 2.63 TiB (SSD, no redundancy) -- High speed scratch
 - **Services:**
-  - PostgreSQL: `postgres://yggdrasil:changeme@REDACTED_HADES_IP:5432/postgres`
-  - Qdrant: `http://REDACTED_HADES_IP:6334` (gRPC)
+  - PostgreSQL: **MOVED TO MUNIN** (pgvector/pgvector:pg16 container, localhost:5432/yggdrasil — TrueNAS lacked pgvector)
+  - Qdrant: `http://REDACTED_HADES_IP:6333` (HTTP) / `http://REDACTED_HADES_IP:6334` (gRPC), collections: engrams_sdr (256-dim dot), code_chunks (384-dim cosine)
 
 ## Thor (Compute Workhorse -- On-Demand)
 
@@ -44,11 +44,12 @@
 - **CPU:** AMD Ryzen 7 255
 - **GPU:** iGPU
 - **RAM:** 64GB DDR5
-- **Runs:** Experimental AI workloads
+- **Runs:** Ollama (qwen3-coder:30b-a3b-q4_K_M), Huginn (code indexer, health port 9092), Muninn (retrieval, port 9091)
+- **Note:** 16GB reserved by AMD iGPU VRAM; effective system RAM ~46GB
 
 ---
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 
 
@@ -63,7 +64,7 @@ HARDWARE:
     RAM: 48GB DDR5
      
 IP: REDACTED_MUNIN_IP
-RUNS: [Ollama (qwen3 14b), Whisper] 
+RUNS: [Ollama IPEX-LLM (qwen3-coder:30b-a3b-q4_K_M), Mimir (9090), Odin (8080)]
 NETWORK: 2x 5GB Ethernet 
 SSH:
     USER: yggdrasil
@@ -78,7 +79,7 @@ HARDWARE:
     GPU: iGPU 
     RAM: 64GB DDR5
 IP: REDACTED_HUGIN_IP 
-RUNS: [Experimental AI]
+RUNS: [Ollama (qwen3-coder:30b-a3b-q4_K_M), Huginn (9092), Muninn (9091)]
 SSH:
     USER: yggdrasil
     PASS: CHANGEME

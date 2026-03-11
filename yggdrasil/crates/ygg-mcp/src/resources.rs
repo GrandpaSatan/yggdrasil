@@ -1,11 +1,13 @@
 //! MCP resource implementations for the Yggdrasil system.
 //!
-//! Provides two resources:
-//! - `yggdrasil://models`         — lists available Odin models
-//! - `yggdrasil://memory/stats`   — engram tier statistics from Mimir
+//! Provides three resources:
+//! - `yggdrasil://models`          — lists available Odin models
+//! - `yggdrasil://memory/stats`    — engram tier statistics from Mimir
+//! - `yggdrasil://context/session` — prefetched session context (active sprint state)
 
 use reqwest::Client;
 use rmcp::model::{ReadResourceResult, ResourceContents};
+use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::instrument;
 use ygg_domain::config::McpServerConfig;
@@ -15,6 +17,9 @@ pub const RESOURCE_MODELS: &str = "yggdrasil://models";
 
 /// URI constant for the memory statistics resource.
 pub const RESOURCE_MEMORY_STATS: &str = "yggdrasil://memory/stats";
+
+/// URI constant for the prefetched session context resource.
+pub const RESOURCE_SESSION_CONTEXT: &str = "yggdrasil://context/session";
 
 // ---------------------------------------------------------------------------
 // Internal HTTP response type for Mimir stats
@@ -93,6 +98,29 @@ pub async fn read_memory_stats_resource(
 
     ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
         uri: RESOURCE_MEMORY_STATS.to_string(),
+        mime_type: Some("text/plain".to_string()),
+        text,
+        meta: None,
+    }])
+}
+
+// ---------------------------------------------------------------------------
+// Resource: yggdrasil://context/session
+// ---------------------------------------------------------------------------
+
+/// Return the prefetched session context from the in-memory cache.
+///
+/// The cache is populated asynchronously at startup by querying Mimir with the
+/// configured `prefetch_query`. If the prefetch has not yet completed (or
+/// failed), returns a placeholder message rather than blocking.
+pub fn read_session_context_resource(cache: &OnceLock<String>) -> ReadResourceResult {
+    let text = cache
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "Session context not yet available (prefetch in progress).".to_string());
+
+    ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+        uri: RESOURCE_SESSION_CONTEXT.to_string(),
         mime_type: Some("text/plain".to_string()),
         text,
         meta: None,

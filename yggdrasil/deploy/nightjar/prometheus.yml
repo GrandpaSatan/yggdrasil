@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "odin"
+    static_configs:
+      - targets: ["REDACTED_MUNIN_IP:8080"]
+    metrics_path: /metrics
+
+  - job_name: "mimir"
+    static_configs:
+      - targets: ["REDACTED_MUNIN_IP:9090"]
+    metrics_path: /metrics
+
+  - job_name: "muninn"
+    static_configs:
+      - targets: ["REDACTED_HUGIN_IP:9091"]
+    metrics_path: /metrics
+
+  - job_name: "huginn"
+    static_configs:
+      - targets: ["REDACTED_HUGIN_IP:9092"]
+    metrics_path: /metrics

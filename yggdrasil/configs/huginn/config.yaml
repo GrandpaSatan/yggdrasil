@@ -1,6 +1,8 @@
 watch_paths:
-  - "./yggdrasil"
-  - "/home/jesus/Documents/Rust/Fergus_Agent/fergus-rs"
+  - "/home/yggdrasil/repos/Yggdrasil"
+  - "/home/yggdrasil/repos/Fergus_Agent"
+  # Workstation code via SSHFS (mnt-workstation-docs.mount systemd unit on Hugin):
+  - "/mnt/workstation/docs/HardwareSetup"
 database_url: "postgres://yggdrasil:changeme@REDACTED_MUNIN_IP:5432/yggdrasil"
 qdrant_url: "http://REDACTED_HADES_IP:6334"
 embed:
