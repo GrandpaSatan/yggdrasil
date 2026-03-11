@@ -66,15 +66,19 @@ Huginn is a background daemon — no user-facing API. It watches configured path
 
 ---
 
-### MCP Server — Claude Code Integration (Workstation stdio)
+### MCP Servers — Claude Code Integration
 
-The MCP server runs as a stdio subprocess of Claude Code. It exposes 11 tools and 3 resources.
+The MCP layer is split into two servers (Sprint 027):
 
-**Config:** `configs/mcp-server/config.yaml`
-**Binary:** `ygg-mcp-server` at `/home/jesus/.local/bin/ygg-mcp-server`
-**Claude Code config:** `~/.claude/claude_desktop_config.json` or MCP settings
+1. **`yggdrasil`** (remote, StreamableHTTP) — 12 network tools + 3 resources. Always-on, shared across IDE windows.
+2. **`yggdrasil-local`** (local, stdio) — Filesystem tools only. One process per IDE window.
 
-#### MCP Tools
+#### Remote Server — `yggdrasil` (Munin :9093)
+
+**Binary:** `ygg-mcp-remote` at `/opt/yggdrasil/bin/ygg-mcp-remote`
+**Config:** `/etc/yggdrasil/mcp-remote/config.yaml` (on Munin)
+**Systemd:** `yggdrasil-mcp-remote.service`
+**Claude Code config:** `type: "http"`, `url: "http://REDACTED_MUNIN_IP:9093/mcp"`
 
 | Tool | Description |
 |------|-------------|
@@ -84,19 +88,26 @@ The MCP server runs as a stdio subprocess of Claude Code. It exposes 11 tools an
 | `generate_tool` | Generate via Odin (Qwen3-Coder) with session continuity |
 | `list_models_tool` | List Ollama models via Odin |
 | `get_sprint_history_tool` | Retrieve archived sprint summaries from Mimir |
-| `sync_docs_tool` | Sprint lifecycle: update USAGE.md on start, archive on end |
 | `ha_get_states_tool` | Get all Home Assistant entity states |
 | `ha_list_entities_tool` | List HA entities by domain |
 | `ha_call_service_tool` | Call HA service (device control) |
 | `ha_generate_automation_tool` | Generate HA automation YAML via LLM |
 
-#### MCP Resources
-
-| URI | Description |
-|-----|-------------|
+| Resource URI | Description |
+|--------------|-------------|
 | `yggdrasil://models` | Available models markdown table |
 | `yggdrasil://memory/stats` | Mimir engram statistics |
 | `yggdrasil://context/session` | Prefetched active sprint context |
+
+#### Local Server — `yggdrasil-local` (Workstation stdio)
+
+**Binary:** `ygg-mcp-server` at `target/release/ygg-mcp-server`
+**Config:** `~/.config/yggdrasil/local-mcp.yaml`
+**Claude Code config:** `type: "stdio"`, command points to binary + `--config` flag
+
+| Tool | Description |
+|------|-------------|
+| `sync_docs_tool` | Sprint lifecycle: setup workspace, update USAGE.md on start, archive on end |
 
 ---
 
@@ -313,6 +324,34 @@ sshpass -p CHANGEME ssh yggdrasil@REDACTED_HUGIN_IP "sudo systemctl restart mnt-
 
 # Workstation sshd must be running
 sudo systemctl status ssh  # on workstation (jesus@REDACTED_WORKSTATION_IP)
+```
+
+### Claude Code MCP Config (`~/.claude.json`)
+
+```json
+{
+  "mcpServers": {
+    "yggdrasil": {
+      "type": "http",
+      "url": "http://REDACTED_MUNIN_IP:9093/mcp"
+    },
+    "yggdrasil-local": {
+      "type": "stdio",
+      "command": "/path/to/ygg-mcp-server",
+      "args": ["--config", "~/.config/yggdrasil/local-mcp.yaml"],
+      "env": {}
+    }
+  }
+}
+```
+
+### Workstation Bootstrap
+
+```bash
+cd ~/Yggdrasil
+./deploy/workstation/ClaudeClient_Install
+# → Project dir: /home/user/Yggdrasil (auto-detected, no parent .git)
+# → project=yggdrasil  workspace=/home/user/Yggdrasil
 ```
 
 ---

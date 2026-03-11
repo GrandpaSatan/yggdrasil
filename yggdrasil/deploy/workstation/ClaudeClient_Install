@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════
+# ClaudeClient_Install — Configure Claude Code + Yggdrasil MCP
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Sets up any workstation with the Yggdrasil MCP ecosystem:
+#   1. Checks/installs prerequisites (claude CLI, jq, Rust toolchain)
+#   2. Builds ygg-mcp-server (local sync_docs server)
+#   3. Configures ~/.claude.json with:
+#      - yggdrasil       (HTTP)  → remote MCP on Munin:9093
+#      - yggdrasil-local  (stdio) → local sync_docs server
+#   4. Installs global CLAUDE.md (agent system prompt)
+#   5. Bootstraps project memory for the project directory
+#
+# Path-agnostic: works regardless of where the yggdrasil repo is cloned.
+# The repo can be at ~/Yggdrasil, ~/Documents/HardwareSetup/yggdrasil,
+# /opt/code/ygg, etc. — all paths are computed from the script location.
+#
+# Usage:
+#   ./ClaudeClient_Install                           # auto-detect project dir
+#   ./ClaudeClient_Install -p /path/to/project       # explicit project dir
+#   ./ClaudeClient_Install -p .                       # use current directory
+#
+# Idempotent — safe to re-run.
+# ═══════════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+# ── Constants ─────────────────────────────────────────────────────────
+REMOTE_MCP_URL="http://REDACTED_MUNIN_IP:9093/mcp"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CLAUDE_DIR="$HOME/.claude"
+CLAUDE_JSON="$HOME/.claude.json"
+LOCAL_BINARY="$REPO_ROOT/target/release/ygg-mcp-server"
+LOCAL_CONFIG_DIR="$HOME/.config/yggdrasil"
+LOCAL_CONFIG="$LOCAL_CONFIG_DIR/local-mcp.yaml"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# ── Argument parsing ──────────────────────────────────────────────────
+PROJECT_DIR=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --project|-p)
+            PROJECT_DIR="$(realpath "$2")"
+            shift 2
+            ;;
+        --help|-h)
+            cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Configure Claude Code with Yggdrasil MCP servers on this workstation.
+
+Options:
+  -p, --project DIR  Project directory (the dir you open in your IDE).
+                     Auto-detected if omitted: uses repo parent if it
+                     has .git, otherwise uses the repo root itself.
+  -h, --help         Show this help.
+
+Yggdrasil repo (auto-detected from script location):
+  $REPO_ROOT
+
+Examples:
+  # Repo nested inside project (e.g. HardwareSetup/yggdrasil/):
+  ./ClaudeClient_Install -p ~/Documents/HardwareSetup
+
+  # Repo IS the project (e.g. ~/Yggdrasil/):
+  ./ClaudeClient_Install -p ~/Yggdrasil
+
+  # Auto-detect:
+  ./ClaudeClient_Install
+EOF
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            exit 1
+            ;;
+    esac
+done
+
+# Default: auto-detect project dir from repo location
+if [[ -z "$PROJECT_DIR" ]]; then
+    PARENT="$(dirname "$REPO_ROOT")"
+    # If the repo's parent has .git or project markers, it's the project root
+    if [[ -d "$PARENT/.git" || -d "$PARENT/docs" || -f "$PARENT/CLAUDE.md" ]]; then
+        PROJECT_DIR="$PARENT"
+    else
+        # Repo itself is the project
+        PROJECT_DIR="$REPO_ROOT"
+    fi
+fi
+
+log() { echo -e "${CYAN}[ygg]${NC} $1"; }
+ok()  { echo -e "${GREEN}  ✓${NC} $1"; }
+warn(){ echo -e "${YELLOW}  !${NC} $1"; }
+err() { echo -e "${RED}  ✗${NC} $1"; }
+
+log "Yggdrasil repo:  $REPO_ROOT"
+log "Project dir:     $PROJECT_DIR"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 1: Prerequisites
+# ═══════════════════════════════════════════════════════════════════════
+log "Checking prerequisites..."
+
+if command -v jq &>/dev/null; then
+    ok "jq $(jq --version 2>/dev/null || echo 'installed')"
+else
+    log "Installing jq..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq jq
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y jq
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm jq
+    elif command -v brew &>/dev/null; then
+        brew install jq
+    else
+        err "Cannot install jq. Please install it manually."
+        exit 1
+    fi
+    ok "jq installed"
+fi
+
+if command -v cargo &>/dev/null; then
+    ok "Rust $(rustc --version 2>/dev/null | awk '{print $2}' || echo 'installed')"
+else
+    log "Installing Rust toolchain..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # shellcheck source=/dev/null
+    source "$HOME/.cargo/env"
+    ok "Rust installed"
+fi
+
+if command -v claude &>/dev/null; then
+    ok "Claude Code CLI found"
+else
+    warn "Claude Code CLI not found in PATH"
+    warn "Install: npm install -g @anthropic-ai/claude-code"
+    warn "Continuing — MCP config will still be set up"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 2: Build local MCP server
+# ═══════════════════════════════════════════════════════════════════════
+log "Building ygg-mcp-server..."
+
+if [[ ! -f "$REPO_ROOT/Cargo.toml" ]]; then
+    err "Cannot find Cargo.toml at $REPO_ROOT"
+    exit 1
+fi
+
+cd "$REPO_ROOT"
+cargo build --release --bin ygg-mcp-server 2>&1 | tail -3
+ok "Binary: $LOCAL_BINARY"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 3: Local MCP config (generated per-workstation)
+# ═══════════════════════════════════════════════════════════════════════
+log "Generating local MCP config..."
+
+mkdir -p "$LOCAL_CONFIG_DIR"
+
+PROJECT_NAME="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')"
+
+cat > "$LOCAL_CONFIG" <<YAML
+# Auto-generated by ClaudeClient_Install — $(date -Iseconds)
+# Local MCP server config (ygg-mcp-server / yggdrasil-local)
+# Repo: $REPO_ROOT
+# Project: $PROJECT_DIR
+odin_url: "http://REDACTED_MUNIN_IP:8080"
+muninn_url: "http://REDACTED_HUGIN_IP:9091"
+timeout_secs: 300
+generate_tok_per_sec: 15.0
+prefetch_query: "active sprint $PROJECT_NAME"
+project: "$PROJECT_NAME"
+workspace_path: "$PROJECT_DIR"
+YAML
+
+ok "Config: $LOCAL_CONFIG"
+ok "  project=$PROJECT_NAME  workspace=$PROJECT_DIR"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 4: Configure Claude Code MCP servers in ~/.claude.json
+# ═══════════════════════════════════════════════════════════════════════
+log "Configuring Claude Code MCP servers..."
+
+mkdir -p "$CLAUDE_DIR"
+
+if [[ ! -f "$CLAUDE_JSON" ]]; then
+    echo '{}' > "$CLAUDE_JSON"
+    warn "Created new $CLAUDE_JSON"
+fi
+
+REMOTE_CONFIG=$(jq -n --arg url "$REMOTE_MCP_URL" '{"type":"http","url":$url}')
+LOCAL_MCP_CONFIG=$(jq -n \
+    --arg cmd "$LOCAL_BINARY" \
+    --arg cfg "$LOCAL_CONFIG" \
+    '{"type":"stdio","command":$cmd,"args":["--config",$cfg],"env":{}}')
+
+CURRENT=$(cat "$CLAUDE_JSON")
+HAS_MCP=$(echo "$CURRENT" | jq 'has("mcpServers")')
+
+if [[ "$HAS_MCP" == "true" ]]; then
+    EXISTING_TYPE=$(echo "$CURRENT" | jq -r '.mcpServers.yggdrasil.type // "none"')
+
+    case "$EXISTING_TYPE" in
+        http)
+            EXISTING_URL=$(echo "$CURRENT" | jq -r '.mcpServers.yggdrasil.url // ""')
+            if [[ "$EXISTING_URL" == "$REMOTE_MCP_URL" ]]; then
+                ok "Remote MCP: already configured"
+            else
+                CURRENT=$(echo "$CURRENT" | jq --argjson c "$REMOTE_CONFIG" '.mcpServers.yggdrasil=$c')
+                warn "Remote MCP: updated URL"
+            fi
+            ;;
+        stdio)
+            CURRENT=$(echo "$CURRENT" | jq --argjson c "$REMOTE_CONFIG" '.mcpServers.yggdrasil=$c')
+            warn "Remote MCP: upgraded stdio → http"
+            ;;
+        *)
+            CURRENT=$(echo "$CURRENT" | jq --argjson c "$REMOTE_CONFIG" '.mcpServers.yggdrasil=$c')
+            ok "Remote MCP: added"
+            ;;
+    esac
+
+    CURRENT=$(echo "$CURRENT" | jq --argjson c "$LOCAL_MCP_CONFIG" '.mcpServers."yggdrasil-local"=$c')
+    ok "Local MCP: configured"
+else
+    CURRENT=$(echo "$CURRENT" | jq \
+        --argjson r "$REMOTE_CONFIG" \
+        --argjson l "$LOCAL_MCP_CONFIG" \
+        '.mcpServers={"yggdrasil":$r,"yggdrasil-local":$l}')
+    ok "MCP servers: created from scratch"
+fi
+
+# Clear per-project MCP overrides that might shadow global config
+PROJ_MCP=$(echo "$CURRENT" | jq --arg k "$PROJECT_DIR" '.projects[$k].mcpServers // null')
+if [[ "$PROJ_MCP" != "null" && "$PROJ_MCP" != "{}" ]]; then
+    CURRENT=$(echo "$CURRENT" | jq --arg k "$PROJECT_DIR" '.projects[$k].mcpServers={}')
+    warn "Cleared per-project MCP overrides for $(basename "$PROJECT_DIR")"
+fi
+
+echo "$CURRENT" | jq '.' > "$CLAUDE_JSON"
+ok "Saved $CLAUDE_JSON"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 5: Install global CLAUDE.md
+# ═══════════════════════════════════════════════════════════════════════
+log "Installing global CLAUDE.md..."
+
+CLAUDE_MD_SRC="$SCRIPT_DIR/CLAUDE.md"
+CLAUDE_MD_DST="$CLAUDE_DIR/CLAUDE.md"
+
+if [[ -f "$CLAUDE_MD_DST" ]]; then
+    SRC_HASH=$(sha256sum "$CLAUDE_MD_SRC" | awk '{print $1}')
+    DST_HASH=$(sha256sum "$CLAUDE_MD_DST" | awk '{print $1}')
+    if [[ "$SRC_HASH" == "$DST_HASH" ]]; then
+        ok "CLAUDE.md: up to date"
+    else
+        cp "$CLAUDE_MD_SRC" "$CLAUDE_MD_DST"
+        ok "CLAUDE.md: updated"
+    fi
+else
+    cp "$CLAUDE_MD_SRC" "$CLAUDE_MD_DST"
+    ok "CLAUDE.md: installed"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 6: Bootstrap project memory
+# ═══════════════════════════════════════════════════════════════════════
+log "Bootstrapping project memory..."
+
+PROJ_HASH=$(echo "$PROJECT_DIR" | sed 's|/|-|g')
+MEMORY_DIR="$CLAUDE_DIR/projects/$PROJ_HASH/memory"
+MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
+
+mkdir -p "$MEMORY_DIR"
+
+if [[ -f "$MEMORY_FILE" ]]; then
+    ok "Project memory: already exists (not overwriting)"
+else
+    cp "$SCRIPT_DIR/MEMORY-bootstrap.md" "$MEMORY_FILE"
+    ok "Project memory: bootstrapped"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 7: Verify remote server connectivity
+# ═══════════════════════════════════════════════════════════════════════
+log "Verifying remote MCP server..."
+
+INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"install-check","version":"1.0"}}}'
+
+if RESP=$(curl -sf -X POST "$REMOTE_MCP_URL" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d "$INIT_BODY" --max-time 10 2>/dev/null); then
+    if echo "$RESP" | grep -q '"serverInfo"'; then
+        ok "Remote server: reachable"
+    else
+        warn "Remote server: unexpected response format"
+    fi
+else
+    warn "Remote server: not reachable (network tools will be unavailable)"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Summary
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+log "Installation complete!"
+echo ""
+echo "  Repo:        $REPO_ROOT"
+echo "  Project:     $PROJECT_DIR"
+echo "  Remote MCP:  $REMOTE_MCP_URL"
+echo "  Local MCP:   $LOCAL_BINARY"
+echo "  Config:      $LOCAL_CONFIG"
+echo "  CLAUDE.md:   $CLAUDE_MD_DST"
+echo "  Memory:      $MEMORY_FILE"
+echo ""
+echo "  Restart Claude Code to pick up the new MCP configuration."

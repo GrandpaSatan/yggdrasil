@@ -11,6 +11,7 @@ members = [
     "crates/ygg-mcp",
     "crates/ygg-ha",
     "crates/ygg-mcp-server",
+    "crates/ygg-mcp-remote",
 ]
 
 [workspace.package]
@@ -81,6 +82,9 @@ ndarray = "0.17"
 
 # MCP
 rmcp = { version = "1.1", features = ["server", "transport-io"] }
+
+# Cancellation
+tokio-util = "0.7"
 # schemars 1.x is required by rmcp 1.1 (rmcp re-exports it as rmcp::schemars).
 schemars = "1"
 
