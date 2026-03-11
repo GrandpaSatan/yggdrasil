@@ -38,17 +38,20 @@ pub fn apply_memory_events(events: &RecallResponse, decision: &mut RoutingDecisi
         match &event.trigger {
             EngramTrigger::Pattern { intent_hint, label } => {
                 // A Pattern trigger with a strong similarity score and a
-                // populated intent_hint overrides the keyword-derived intent.
-                // This lets past behavioral patterns steer routing.
-                //
-                // OPTIMIZATION: None — pure in-memory branching, no I/O.
-                if !intent_hint.is_empty() && event.similarity > 0.85 {
+                // populated intent_hint can refine an unclassified intent.
+                // Only overrides "default"/"general" — never overrides intents
+                // that were positively classified by keyword matching (coding,
+                // home_automation, etc.) or explicit model selection.
+                if !intent_hint.is_empty()
+                    && event.similarity > 0.85
+                    && (decision.intent == "default" || decision.intent == "general")
+                {
                     tracing::debug!(
                         pattern_label = %label,
                         old_intent = %decision.intent,
                         new_intent = %intent_hint,
                         similarity = event.similarity,
-                        "memory pattern overriding routing intent"
+                        "memory pattern refining unclassified intent"
                     );
                     decision.intent = intent_hint.clone();
                 }
@@ -138,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn pattern_trigger_overrides_intent_when_similarity_high() {
+    fn pattern_trigger_refines_default_intent_when_similarity_high() {
         let event = make_event(
             EngramTrigger::Pattern {
                 label: "coder-session".to_string(),
@@ -157,6 +160,25 @@ mod tests {
     }
 
     #[test]
+    fn pattern_trigger_does_not_override_classified_intent() {
+        let event = make_event(
+            EngramTrigger::Pattern {
+                label: "coder-session".to_string(),
+                intent_hint: "general".to_string(),
+            },
+            0.92,
+            vec![],
+        );
+        let recall = RecallResponse {
+            events: vec![event],
+            core_events: vec![],
+        };
+        let mut decision = make_decision("coding");
+        apply_memory_events(&recall, &mut decision);
+        assert_eq!(decision.intent, "coding", "pattern must not override classified intent");
+    }
+
+    #[test]
     fn pattern_trigger_does_not_override_when_similarity_low() {
         let event = make_event(
             EngramTrigger::Pattern {
@@ -170,9 +192,9 @@ mod tests {
             events: vec![event],
             core_events: vec![],
         };
-        let mut decision = make_decision("reasoning");
+        let mut decision = make_decision("default");
         apply_memory_events(&recall, &mut decision);
-        assert_eq!(decision.intent, "reasoning", "should not override below 0.85");
+        assert_eq!(decision.intent, "default", "should not override below 0.85");
     }
 
     #[test]

@@ -107,6 +107,7 @@ fn maybe_summarize_session(
                     options: Some(OllamaOptions {
                         temperature: Some(0.3),
                         num_predict: Some(512),
+                        num_ctx: None,
                         top_p: None,
                         stop: None,
                     }),
@@ -294,12 +295,13 @@ pub async fn chat_handler(
     };
 
     // ── 9. Pack context with session history ──────────────────────
-    let system_prompt = rag::build_system_prompt(&rag_context);
+    let backend_context_window = backend_state.context_window;
+    let system_prompt = rag::build_system_prompt(&rag_context, &decision.intent);
     let session_snapshot = state.session_store.get_session(&session_id);
 
     let packed_messages = if let Some(ref session) = session_snapshot {
         let budget = ContextBudget {
-            total_budget: state.config.session.context_budget_tokens,
+            total_budget: backend_context_window.saturating_sub(state.config.session.generation_reserve),
             generation_reserve: state.config.session.generation_reserve,
         };
         budget.pack(session, rag_context.code_context.as_deref(), &system_prompt)
@@ -354,7 +356,7 @@ pub async fn chat_handler(
                     let sid = session_id.clone();
                     let cause = last_user_message.clone();
                     let completion_rx = handle.completion_rx;
-                    let ctx_budget = state.config.session.context_budget_tokens;
+                    let ctx_budget = backend_context_window;
                     let bk_url = decision.backend_url.clone();
                     let bk_type = decision.backend_type.clone();
                     let bk_model = decision.model.clone();
@@ -412,7 +414,7 @@ pub async fn chat_handler(
                     state.http_client.clone(),
                     state.session_store.clone(),
                     session_id.clone(),
-                    state.config.session.context_budget_tokens,
+                    backend_context_window,
                     decision.backend_url.clone(),
                     decision.backend_type.clone(),
                     decision.model.clone(),
@@ -435,20 +437,31 @@ pub async fn chat_handler(
                 })
                 .collect();
 
-            let options = if request.temperature.is_some()
-                || request.max_tokens.is_some()
-                || request.top_p.is_some()
-                || request.stop.is_some()
-            {
-                Some(OllamaOptions {
-                    temperature: request.temperature,
-                    num_predict: request.max_tokens,
-                    top_p: request.top_p,
-                    stop: request.stop.clone(),
-                })
-            } else {
-                None
-            };
+            // Default stop sequences prevent Qwen3 MoE from self-prompting
+            // (generating fake follow-up questions and answering them)
+            // and from appending filler phrases.
+            let stop = request.stop.clone().or_else(|| {
+                Some(vec![
+                    "\n\nWhat ".to_string(),
+                    "\n\nHow ".to_string(),
+                    "\n\nWhy ".to_string(),
+                    "\n\nCan ".to_string(),
+                    "\n\nIs ".to_string(),
+                    "\nConclusion".to_string(),
+                    "\nIn conclusion".to_string(),
+                    "\nIn summary".to_string(),
+                    "\n\nLet me ".to_string(),
+                    "\n\nFeel free".to_string(),
+                    "\n\nI hope".to_string(),
+                ])
+            });
+            let options = Some(OllamaOptions {
+                temperature: request.temperature.or(Some(0.7)),
+                num_predict: request.max_tokens,
+                num_ctx: Some(backend_context_window as u64),
+                top_p: request.top_p,
+                stop,
+            });
 
             let ollama_request = OllamaChatRequest {
                 model: decision.model.clone(),
@@ -476,7 +489,7 @@ pub async fn chat_handler(
                     let sid = session_id.clone();
                     let cause = last_user_message.clone();
                     let completion_rx = handle.completion_rx;
-                    let ctx_budget = state.config.session.context_budget_tokens;
+                    let ctx_budget = backend_context_window;
                     let bk_url = decision.backend_url.clone();
                     let bk_type = decision.backend_type.clone();
                     let bk_model = decision.model.clone();
@@ -534,7 +547,7 @@ pub async fn chat_handler(
                     state.http_client.clone(),
                     state.session_store.clone(),
                     session_id.clone(),
-                    state.config.session.context_budget_tokens,
+                    backend_context_window,
                     decision.backend_url.clone(),
                     decision.backend_type.clone(),
                     decision.model.clone(),

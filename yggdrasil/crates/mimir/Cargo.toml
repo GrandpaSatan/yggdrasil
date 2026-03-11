@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 ygg-domain = { path = "../ygg-domain" }
 ygg-store = { path = "../ygg-store" }
+ygg-embed = { path = "../ygg-embed" }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -32,6 +33,3 @@ reqwest = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 sd-notify = { workspace = true }
-ort = { workspace = true }
-tokenizers = { workspace = true }
-ndarray = { workspace = true }

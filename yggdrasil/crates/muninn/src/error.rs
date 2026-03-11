@@ -17,7 +17,7 @@ pub enum MuninnError {
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 
-    /// Wraps errors from ygg-embed (Ollama HTTP calls).
+    /// Wraps errors from ygg-embed (ONNX in-process embedding).
     #[error("embedding error: {0}")]
     Embed(#[from] EmbedError),
 
@@ -55,9 +55,8 @@ impl IntoResponse for MuninnError {
                 format!("storage failure: {e}"),
             ),
             MuninnError::Embed(e) => (
-                // 502 Bad Gateway — upstream Ollama failed.
-                StatusCode::BAD_GATEWAY,
-                format!("embedding service unavailable: {e}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("embedding failed: {e}"),
             ),
             MuninnError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             MuninnError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),

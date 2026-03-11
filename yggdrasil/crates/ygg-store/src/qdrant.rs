@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::error::StoreError;
 
-const EMBEDDING_DIM: u64 = 4096;
+const EMBEDDING_DIM: u64 = 384;
 
 /// Qdrant client wrapper for vector operations.
 #[derive(Clone)]
@@ -58,7 +58,7 @@ impl VectorStore {
     /// Ensure a collection exists with a specific vector dimension and distance metric.
     ///
     /// Used for SDR collections (256-dim, Dot) which differ from the default
-    /// 4096-dim Cosine collection used for dense embeddings.
+    /// 384-dim Cosine collection used for dense embeddings.
     pub async fn ensure_collection_dim(
         &self,
         name: &str,
@@ -176,6 +176,21 @@ impl VectorStore {
             .await
             .map_err(|e| StoreError::Qdrant(e.to_string()))?;
         Ok(())
+    }
+
+    /// Delete an entire collection. Returns Ok(()) if the collection does not exist.
+    pub async fn delete_collection(&self, name: &str) -> Result<(), StoreError> {
+        match self.client.delete_collection(name).await {
+            Ok(_) => {
+                tracing::info!("deleted qdrant collection: {name}");
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("not found") || e.to_string().contains("doesn't exist") => {
+                tracing::debug!("qdrant collection not found (already deleted): {name}");
+                Ok(())
+            }
+            Err(e) => Err(StoreError::Qdrant(e.to_string())),
+        }
     }
 
     /// Delete a point by UUID.

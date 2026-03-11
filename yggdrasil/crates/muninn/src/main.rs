@@ -10,7 +10,7 @@ use sd_notify::NotifyState;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 use ygg_store::{Store, qdrant::VectorStore};
-use ygg_embed::EmbedClient;
+use ygg_embed::OnnxEmbedder;
 
 use muninn::{
     handlers::{health_handler, search_handler, stats_handler},
@@ -87,13 +87,11 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("qdrant collection setup failed: {e}"))?;
     tracing::info!("qdrant collection 'code_chunks' ready");
 
-    // --- Initialise embedding client ---
-    let embedder = EmbedClient::new(&config.embed.ollama_url, &config.embed.model);
-    tracing::info!(
-        ollama_url = %config.embed.ollama_url,
-        model = %config.embed.model,
-        "embed client initialised"
-    );
+    // --- Load ONNX embedding model ---
+    tracing::info!(model_dir = %config.embed.model_dir, "loading ONNX embedder");
+    let embedder = OnnxEmbedder::load(std::path::Path::new(&config.embed.model_dir))
+        .map_err(|e| anyhow::anyhow!("failed to load ONNX embedder: {e}"))?;
+    tracing::info!("ONNX embedder ready");
 
     // --- Build shared application state ---
     let state = AppState {

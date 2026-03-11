@@ -1,11 +1,11 @@
 use sqlx::PgPool;
 use ygg_domain::config::SearchConfig;
-use ygg_embed::EmbedClient;
+use ygg_embed::OnnxEmbedder;
 use ygg_store::qdrant::VectorStore;
 
 /// Shared application state injected into every Axum handler via `State<AppState>`.
 ///
-/// `AppState` is `Clone` because `PgPool`, `VectorStore`, `EmbedClient`, and `SearchConfig`
+/// `AppState` is `Clone` because `PgPool`, `VectorStore`, `OnnxEmbedder`, and `SearchConfig`
 /// are all `Clone`. Axum extracts it via `State<AppState>` (no `Arc` wrapping needed —
 /// the state is cloned once per handler call, and all inner types are cheaply cloneable
 /// reference-counted handles).
@@ -15,8 +15,8 @@ pub struct AppState {
     pub pool: PgPool,
     /// Qdrant client for vector search.
     pub vectors: VectorStore,
-    /// Ollama embedding client for query embedding.
-    pub embedder: EmbedClient,
+    /// ONNX in-process embedder for query embedding.
+    pub embedder: OnnxEmbedder,
     /// Search tuning parameters loaded from YAML config.
     pub search_config: SearchConfig,
 }

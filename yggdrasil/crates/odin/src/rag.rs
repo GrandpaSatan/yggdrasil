@@ -94,7 +94,9 @@ fn is_ha_intent(intent: &str) -> bool {
 /// text.  The caller (`handlers::chat_handler`) passes `memory_events` to
 /// `memory_router::apply_memory_events` to refine routing, not to the prompt.
 pub async fn fetch_context(state: &AppState, query: &str, intent: &str) -> RagContext {
-    let fetch_muninn = !is_ha_intent(intent);
+    // Only fetch code context for coding-related intents.
+    // For "default" or HA intents, Muninn results are noise that confuses the model.
+    let fetch_muninn = intent == "coding";
 
     // Fire parallel fetches (Muninn is skipped for HA intents).
     let (code_result, memory_result) = tokio::join!(
@@ -108,7 +110,7 @@ pub async fn fetch_context(state: &AppState, query: &str, intent: &str) -> RagCo
                 )
                 .await
             } else {
-                tracing::debug!(intent = intent, "skipping muninn code context for HA intent");
+                tracing::debug!(intent = intent, "skipping muninn code context for non-coding intent");
                 None
             }
         },
@@ -351,10 +353,10 @@ pub async fn fetch_memory_events(
 // Prompt assembly
 // ─────────────────────────────────────────────────────────────────
 
-/// Build the system prompt content, optionally appending RAG context.
+/// Build the system prompt content, varying by intent and appending RAG context.
 ///
-/// The base prompt is static per invocation.  Only two sources of external
-/// text are permitted in the prompt:
+/// The base prompt changes per intent (coding, home_automation, default).
+/// Only two sources of external text are permitted:
 /// - Muninn code context (verbatim code chunks from the indexed codebase).
 /// - HA domain summary (entity domain counts from Home Assistant).
 ///
@@ -363,13 +365,29 @@ pub async fn fetch_memory_events(
 /// Memory events (`RagContext.memory_events`) are deliberately **excluded**
 /// from this function.  They influence routing structurally via
 /// `memory_router::apply_memory_events` but must never appear as prompt text.
-/// The old `## Relevant Memories` block is permanently removed.
+///
+/// ## Sprint 022: Intent-aware prompts
+///
+/// Each intent gets a role-appropriate base prompt. Common anti-rambling rules
+/// are shared across all intents.
 #[must_use]
-pub fn build_system_prompt(rag: &RagContext) -> String {
-    let mut prompt = String::from(
-        "You are a helpful AI assistant with access to a codebase.\n\
-         Answer questions accurately and concisely. When discussing code, reference specific files \
-         and line numbers when available.",
+pub fn build_system_prompt(rag: &RagContext, intent: &str) -> String {
+    let role = match intent {
+        "coding" => "You are a concise AI coding assistant. \
+                      When discussing code, reference specific files and line numbers. \
+                      Use code blocks with language tags for code.",
+        "home_assistant" | "home_automation" => "You are a Home Assistant expert. \
+                      Reference specific entity_ids (e.g., light.living_room) and service calls. \
+                      Use YAML format for automations with trigger, condition, action structure.",
+        _ => "You are a helpful AI assistant. Be concise and direct.",
+    };
+
+    let mut prompt = format!(
+        "{role}\n\
+         Rules:\n\
+         1. Answer the question asked, then STOP. Do not elaborate beyond what was asked.\n\
+         2. NEVER generate follow-up questions. NEVER write conclusions or summaries.\n\
+         3. Use code blocks for code. Use bullet points for lists.",
     );
 
     if let Some(code_ctx) = &rag.code_context {
@@ -383,13 +401,11 @@ pub fn build_system_prompt(rag: &RagContext) -> String {
     if let Some(ha_ctx) = &rag.ha_context {
         prompt.push_str(
             "\n\n## Home Assistant Context\n\
-             You have access to a Home Assistant instance with the following entity domains:\n",
+             Available entity domains:\n",
         );
         prompt.push_str(ha_ctx);
         prompt.push_str(
-            "\nYou can reference specific entities by their entity_id (e.g., light.living_room).\n\
-             When the user asks about home automation, provide specific entity IDs and service \
-             calls.",
+            "\nProvide specific entity IDs and service calls when answering.",
         );
     }
 

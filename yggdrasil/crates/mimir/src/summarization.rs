@@ -35,7 +35,7 @@ use ygg_domain::config::TierConfig;
 use ygg_store::{Store, qdrant::VectorStore};
 use ygg_store::postgres::engrams;
 
-use crate::embedder::OnnxEmbedder;
+use ygg_embed::OnnxEmbedder;
 
 use crate::error::MimirError;
 

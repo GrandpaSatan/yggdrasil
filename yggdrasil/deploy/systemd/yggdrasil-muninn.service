@@ -13,10 +13,11 @@ WorkingDirectory=/opt/yggdrasil
 ExecStart=/opt/yggdrasil/bin/muninn --config /etc/yggdrasil/muninn/config.yaml
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=30
+TimeoutStartSec=120
 TimeoutStopSec=15
 WatchdogSec=30
 Environment="RUST_LOG=info"
+Environment="ORT_DYLIB_PATH=/opt/yggdrasil/lib/libonnxruntime.so"
 LimitNOFILE=65536
 
 [Install]

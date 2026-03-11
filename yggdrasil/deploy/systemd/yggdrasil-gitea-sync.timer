@@ -1,0 +1,10 @@
+[Unit]
+Description=Yggdrasil Gitea Repo Sync Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

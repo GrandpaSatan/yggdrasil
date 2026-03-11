@@ -124,10 +124,14 @@ pub async fn store_engram(
 // POST /api/v1/query  (backward-compat with Fergus engram_client.rs)
 // ---------------------------------------------------------------------------
 
-/// Query engrams by semantic similarity using the ONNX embedder.
+/// Query engrams by semantic similarity using the SDR dual-system path.
 ///
 /// Backward-compatible with the Fergus `engram_client.rs` API contract.
-/// Embeds the query text via ONNX and delegates to PG vector similarity.
+/// Returns full `Engram` structs (with cause/effect text) ranked by similarity.
+///
+/// Sprint 023: Rewritten to use SDR-based recall (was broken — referenced dropped
+/// `cause_embedding` column). Uses the same System 1 + System 2 merge as `recall_engrams`,
+/// then fetches full Engram objects by ID.
 pub async fn query_engrams(
     State(state): State<Arc<AppState>>,
     Json(body): Json<EngramQuery>,
@@ -136,7 +140,7 @@ pub async fn query_engrams(
         return Err(MimirError::Validation("text must not be empty".into()));
     }
 
-    // Embed via ONNX
+    // Embed → binarize → SDR
     let embedder = state.embedder.clone();
     let query_text = body.text.clone();
     let embedding: Vec<f32> =
@@ -145,11 +149,70 @@ pub async fn query_engrams(
             .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
             .map_err(|e| MimirError::Embedder(e.to_string()))?;
 
-    // PG pgvector similarity search (legacy path — uses cause_embedding column)
-    let results =
-        engrams::query_by_similarity(state.store.pool(), &embedding, body.limit).await?;
+    let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
+    let sdr_f32 = sdr::to_f32_vec(&query_sdr);
 
-    Ok((StatusCode::OK, Json(serde_json::json!(results))))
+    // System 1 + System 2 in parallel
+    let limit = body.limit;
+    let (sys1_results, sys2_results) = tokio::join!(
+        async { Ok::<_, MimirError>(state.sdr_index.query(&query_sdr, limit)) },
+        state.vectors.search("engrams_sdr", sdr_f32, limit as u64)
+    );
+
+    let sys1 = sys1_results?;
+    let sys2 = sys2_results?;
+
+    // Merge with normalized Qdrant scores
+    let query_pop = sdr::popcount(&query_sdr) as f64;
+    let normalizer = if query_pop > 0.0 { query_pop } else { 1.0 };
+
+    let mut merged: HashMap<Uuid, f64> = HashMap::new();
+    for (id, sim) in sys1 {
+        merged.insert(id, sim);
+    }
+    for (id, score) in sys2 {
+        let normalized = (score as f64 / normalizer).clamp(0.0, 1.0);
+        merged
+            .entry(id)
+            .and_modify(|s| {
+                if normalized > *s {
+                    *s = normalized;
+                }
+            })
+            .or_insert(normalized);
+    }
+
+    // Rank and truncate
+    let mut ranked: Vec<(Uuid, f64)> = merged.into_iter().collect();
+    ranked.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.truncate(limit);
+
+    let result_ids: Vec<Uuid> = ranked.iter().map(|(id, _)| *id).collect();
+    let sim_map: HashMap<Uuid, f64> = ranked.into_iter().collect();
+
+    // Fetch full Engram objects
+    let mut results =
+        engrams::fetch_engrams_by_ids(state.store.pool(), &result_ids, &sim_map).await?;
+
+    // Sort by similarity descending (PG returns arbitrary order)
+    results.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Fire-and-forget access count bump
+    if !result_ids.is_empty() {
+        let pool = state.store.pool().clone();
+        let ids = result_ids;
+        tokio::spawn(async move {
+            if let Err(e) = bump_access_counts(&pool, &ids).await {
+                tracing::warn!(error = %e, "failed to bump access counts");
+            }
+        });
+    }
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "results": results }))))
 }
 
 // ---------------------------------------------------------------------------
@@ -196,21 +259,29 @@ pub async fn recall_engrams(
     let sys1 = sys1_results?;
     let sys2 = sys2_results?;
 
-    // Step 5: Merge by UUID — take max similarity when both systems return same ID
+    // Step 5: Merge by UUID — take max similarity when both systems return same ID.
+    //
+    // System 1 returns normalized Hamming similarity in [0.0, 1.0].
+    // System 2 returns raw Qdrant dot-product scores (0 to ~popcount for binary vectors).
+    // Normalize System 2 by dividing by query popcount so both are in [0.0, 1.0].
+    // For ~50% density SDRs: hamming_similarity ≈ dot / popcount.
+    let query_pop = sdr::popcount(&query_sdr) as f64;
+    let normalizer = if query_pop > 0.0 { query_pop } else { 1.0 };
+
     let mut merged: HashMap<Uuid, f64> = HashMap::new();
     for (id, sim) in sys1 {
         merged.insert(id, sim);
     }
     for (id, score) in sys2 {
-        let score_f64 = score as f64;
+        let normalized = (score as f64 / normalizer).clamp(0.0, 1.0);
         merged
             .entry(id)
             .and_modify(|s| {
-                if score_f64 > *s {
-                    *s = score_f64;
+                if normalized > *s {
+                    *s = normalized;
                 }
             })
-            .or_insert(score_f64);
+            .or_insert(normalized);
     }
 
     // Sort by similarity descending, truncate to limit

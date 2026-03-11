@@ -5,47 +5,6 @@ use uuid::Uuid;
 use crate::error::StoreError;
 use ygg_domain::engram::{Engram, MemoryTier, MemoryStats};
 
-/// Insert a new engram. Returns the generated UUID.
-/// Rejects duplicates based on content_hash.
-pub async fn insert_engram(
-    pool: &PgPool,
-    cause: &str,
-    effect: &str,
-    cause_embedding: &[f32],
-    content_hash: &[u8],
-    tier: MemoryTier,
-    tags: &[String],
-) -> Result<Uuid, StoreError> {
-    let id = Uuid::new_v4();
-    let tier_str = tier.as_str();
-    let embedding_str = format_embedding(cause_embedding);
-
-    sqlx::query(
-        r#"
-        INSERT INTO yggdrasil.engrams (id, cause, effect, cause_embedding, content_hash, tier, tags)
-        VALUES ($1, $2, $3, $4::vector, $5, $6, $7)
-        "#,
-    )
-    .bind(id)
-    .bind(cause)
-    .bind(effect)
-    .bind(&embedding_str)
-    .bind(content_hash)
-    .bind(tier_str)
-    .bind(tags)
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        if is_unique_violation(&e) {
-            StoreError::Duplicate("engram with identical content already exists".into())
-        } else {
-            StoreError::from(e)
-        }
-    })?;
-
-    Ok(id)
-}
-
 /// Retrieve an engram by ID.
 pub async fn get_engram(pool: &PgPool, id: Uuid) -> Result<Engram, StoreError> {
     let row = sqlx::query(
@@ -87,56 +46,46 @@ pub async fn delete_engram(pool: &PgPool, id: Uuid) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Query engrams by vector similarity. Returns top-N closest matches.
-pub async fn query_by_similarity(
+/// Fetch full Engram structs for a batch of IDs with pre-computed similarity scores.
+///
+/// Returns engrams in arbitrary order — the caller is responsible for sorting by
+/// similarity.  IDs not found in the database are silently skipped.
+pub async fn fetch_engrams_by_ids(
     pool: &PgPool,
-    query_embedding: &[f32],
-    limit: usize,
+    ids: &[Uuid],
+    sim_map: &std::collections::HashMap<Uuid, f64>,
 ) -> Result<Vec<Engram>, StoreError> {
-    let embedding_str = format_embedding(query_embedding);
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let rows = sqlx::query(
         r#"
         SELECT id, cause, effect, tier, tags,
-               created_at, access_count, last_accessed,
-               1 - (cause_embedding <=> $1::vector) AS similarity
+               created_at, access_count, last_accessed
         FROM yggdrasil.engrams
-        ORDER BY cause_embedding <=> $1::vector
-        LIMIT $2
+        WHERE id = ANY($1)
         "#,
     )
-    .bind(&embedding_str)
-    .bind(limit as i64)
+    .bind(ids)
     .fetch_all(pool)
     .await?;
 
-    // Bump access counts
-    let ids: Vec<Uuid> = rows.iter().map(|r| r.get::<Uuid, _>("id")).collect();
-    if !ids.is_empty() {
-        sqlx::query(
-            r#"
-            UPDATE yggdrasil.engrams
-            SET access_count = access_count + 1, last_accessed = NOW()
-            WHERE id = ANY($1)
-            "#,
-        )
-        .bind(&ids)
-        .execute(pool)
-        .await?;
-    }
-
     Ok(rows
         .into_iter()
-        .map(|r| Engram {
-            id: r.get("id"),
-            cause: r.get("cause"),
-            effect: r.get("effect"),
-            similarity: r.get::<f64, _>("similarity"),
-            tier: parse_tier(r.get::<String, _>("tier").as_str()),
-            tags: r.get::<Vec<String>, _>("tags"),
-            created_at: r.get::<DateTime<Utc>, _>("created_at"),
-            access_count: r.get::<i64, _>("access_count"),
-            last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
+        .map(|r| {
+            let id: Uuid = r.get("id");
+            Engram {
+                id,
+                cause: r.get("cause"),
+                effect: r.get("effect"),
+                similarity: sim_map.get(&id).copied().unwrap_or(0.0),
+                tier: parse_tier(r.get::<String, _>("tier").as_str()),
+                tags: r.get::<Vec<String>, _>("tags"),
+                created_at: r.get::<DateTime<Utc>, _>("created_at"),
+                access_count: r.get::<i64, _>("access_count"),
+                last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
+            }
         })
         .collect())
 }
@@ -245,49 +194,6 @@ pub async fn get_oldest_recall_engrams(
             last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
         })
         .collect())
-}
-
-/// Insert a new Archival engram produced by summarization.
-///
-/// The `summary_of` array links this engram back to the source engrams it summarizes.
-/// Returns the generated UUID.
-pub async fn insert_archival_engram(
-    pool: &PgPool,
-    cause: &str,
-    effect: &str,
-    embedding: &[f32],
-    content_hash: &[u8],
-    tags: &[String],
-    summary_of_ids: &[Uuid],
-) -> Result<Uuid, StoreError> {
-    let id = Uuid::new_v4();
-    let embedding_str = format_embedding(embedding);
-
-    sqlx::query(
-        r#"
-        INSERT INTO yggdrasil.engrams
-            (id, cause, effect, cause_embedding, content_hash, tier, tags, summary_of)
-        VALUES ($1, $2, $3, $4::vector, $5, 'archival', $6, $7)
-        "#,
-    )
-    .bind(id)
-    .bind(cause)
-    .bind(effect)
-    .bind(&embedding_str)
-    .bind(content_hash)
-    .bind(tags)
-    .bind(summary_of_ids)
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        if is_unique_violation(&e) {
-            StoreError::Duplicate("archival engram with identical content already exists".into())
-        } else {
-            StoreError::from(e)
-        }
-    })?;
-
-    Ok(id)
 }
 
 /// Mark a batch of Recall engrams as archived, linking them to the summary engram.
@@ -455,11 +361,6 @@ pub async fn get_core_engram_events(
             )
         })
         .collect())
-}
-
-fn format_embedding(embedding: &[f32]) -> String {
-    let vals: Vec<String> = embedding.iter().map(|v| v.to_string()).collect();
-    format!("[{}]", vals.join(","))
 }
 
 fn parse_tier(s: &str) -> MemoryTier {

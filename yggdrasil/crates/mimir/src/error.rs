@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use ygg_embed::EmbedError;
 use ygg_store::error::StoreError;
 
 /// Unified error type for the Mimir HTTP service.
@@ -31,6 +32,12 @@ pub enum MimirError {
     /// ONNX embedder failures (model load, tokenization, inference).
     #[error("embedder error: {0}")]
     Embedder(String),
+}
+
+impl From<EmbedError> for MimirError {
+    fn from(e: EmbedError) -> Self {
+        MimirError::Embedder(e.to_string())
+    }
 }
 
 impl IntoResponse for MimirError {

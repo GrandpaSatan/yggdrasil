@@ -1,4 +1,3 @@
-pub mod embedder;
 pub mod error;
 pub mod handlers;
 pub mod metrics;

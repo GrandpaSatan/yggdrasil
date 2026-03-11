@@ -4,7 +4,6 @@ watch_paths:
 database_url: "postgres://jhernandez:K6m4B129CF9u@REDACTED_MUNIN_IP:5432/yggdrasil"
 qdrant_url: "http://REDACTED_HADES_IP:6334"
 embed:
-  ollama_url: "http://localhost:11434"
-  model: "qwen3-embedding"
+  model_dir: "/opt/yggdrasil/models/all-MiniLM-L6-v2"
 debounce_ms: 500
 listen_addr: "0.0.0.0:9092"

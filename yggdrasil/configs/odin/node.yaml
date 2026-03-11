@@ -7,27 +7,25 @@ backends:
     backend_type: "ollama"
     models:
       - "qwen3-coder:30b-a3b-q4_K_M"
-      - "qwen3-embedding"
     max_concurrent: 2
+    context_window: 16384
   - name: "hugin"
     url: "http://REDACTED_HUGIN_IP:11434"
     backend_type: "ollama"
     models:
-      - "qwen3:30b-a3b"
-      - "qwen3-embedding"
+      - "qwen3-coder:30b-a3b-q4_K_M"
     max_concurrent: 2
+    context_window: 32768
 
 routing:
   default_model: "qwen3-coder:30b-a3b-q4_K_M"
+  default_backend: "hugin"
   rules:
     - intent: "coding"
       model: "qwen3-coder:30b-a3b-q4_K_M"
       backend: "munin"
-    - intent: "reasoning"
-      model: "qwen3:30b-a3b"
-      backend: "hugin"
     - intent: "home_automation"
-      model: "qwen3:30b-a3b"
+      model: "qwen3-coder:30b-a3b-q4_K_M"
       backend: "hugin"
 
 mimir:

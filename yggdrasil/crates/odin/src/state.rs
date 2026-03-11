@@ -26,6 +26,8 @@ pub struct BackendState {
     /// Permits are acquired via `try_acquire()` which returns 503 immediately
     /// if no permit is available, rather than blocking the Axum task.
     pub semaphore: Arc<tokio::sync::Semaphore>,
+    /// Total context window size in tokens for this backend.
+    pub context_window: usize,
 }
 
 /// Shared state injected into every Axum handler.

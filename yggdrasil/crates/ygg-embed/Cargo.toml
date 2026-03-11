@@ -5,25 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
-[features]
-default = []
-# Enable in-process embedding via candle (requires hardware validation before use).
-# When this feature is disabled (the default), zero candle code is compiled in.
-candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub"]
-
 [dependencies]
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-# Candle (optional, for in-process embedding — pending hardware-optimizer validation)
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
-candle-transformers = { version = "0.8", optional = true }
-tokenizers = { version = "0.20", optional = true }
-hf-hub = { version = "0.3", optional = true }
-
-[dev-dependencies]
 tokio = { workspace = true }
+
+# ONNX Runtime (in-process ML inference)
+ort = { workspace = true }
+tokenizers = { workspace = true }
+ndarray = { workspace = true }

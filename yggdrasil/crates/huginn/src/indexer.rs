@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use ygg_domain::chunk::Language;
 use ygg_domain::config::HuginnConfig;
-use ygg_embed::EmbedClient;
+use ygg_embed::OnnxEmbedder;
 use ygg_store::postgres::chunks::{
     delete_chunks_for_file, delete_indexed_file, get_chunk_ids_for_file, get_indexed_file,
     insert_chunk, upsert_indexed_file,
@@ -54,7 +54,7 @@ pub struct IndexStats {
 pub struct Indexer {
     pub store: Store,
     pub vectors: VectorStore,
-    pub embedder: EmbedClient,
+    pub embedder: OnnxEmbedder,
     pub config: HuginnConfig,
 }
 
@@ -71,7 +71,8 @@ impl Indexer {
         let vectors = VectorStore::connect(&config.qdrant_url).await?;
         vectors.ensure_collection("code_chunks").await?;
 
-        let embedder = EmbedClient::new(&config.embed.ollama_url, &config.embed.model);
+        info!(model_dir = %config.embed.model_dir, "loading ONNX embedder");
+        let embedder = OnnxEmbedder::load(std::path::Path::new(&config.embed.model_dir))?;
 
         Ok(Self {
             store,
@@ -242,16 +243,18 @@ impl Indexer {
         let chunk_count = chunks.len();
         debug!(path = %file_path_str, chunks = chunk_count, "parsed chunks");
 
+        // Upsert the indexed_files record BEFORE writing chunks, because
+        // code_chunks.file_path has a FK to indexed_files.file_path.
+        upsert_indexed_file(
+            self.store.pool(),
+            &file_path_str,
+            &file_hash,
+            language,
+            chunk_count as i32,
+        )
+        .await?;
+
         if chunk_count == 0 {
-            // File produced no chunks (e.g., empty source); still record it as indexed.
-            upsert_indexed_file(
-                self.store.pool(),
-                &file_path_str,
-                &file_hash,
-                language,
-                0,
-            )
-            .await?;
             return Ok(Some(0));
         }
 
@@ -327,16 +330,6 @@ impl Indexer {
                 Err(e) => warn!(error = %e, "chunk write task panicked"),
             }
         }
-
-        // Update the indexed_files record.
-        upsert_indexed_file(
-            self.store.pool(),
-            &file_path_str,
-            &file_hash,
-            language,
-            chunk_count as i32,
-        )
-        .await?;
 
         info!(path = %file_path_str, chunks = chunk_count, "indexed");
         Ok(Some(chunk_count))

@@ -127,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                 backend_type: b.backend_type.clone(),
                 models: b.models.clone(),
                 semaphore: Arc::new(tokio::sync::Semaphore::new(b.max_concurrent)),
+                context_window: b.context_window,
             }
         })
         .collect();

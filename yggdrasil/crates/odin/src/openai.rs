@@ -233,6 +233,10 @@ pub struct OllamaOptions {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_predict: Option<u64>,
+    /// Context window size in tokens. Overrides the model's default context
+    /// length for this request, allowing per-backend context control.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

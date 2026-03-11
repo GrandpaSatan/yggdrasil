@@ -126,6 +126,8 @@ fn keywords_for_intent(intent: &str) -> Vec<String> {
         // Both "home_assistant" (legacy) and "home_automation" (Sprint 007 spec)
         // share the same keyword set so either config name works.
         "home_assistant" | "home_automation" => ha_keywords(),
+        // Default/general are catch-all intents with no keywords.
+        "default" | "general" => vec![],
         other => {
             tracing::warn!(intent = other, "unknown intent in routing config — no keywords assigned");
             vec![]
@@ -242,13 +244,25 @@ impl SemanticRouter {
             .collect();
 
         // Resolve the default backend.
-        let (default_backend_name, default_backend_url, default_backend_type) = model_to_backend
-            .get(&config.default_model)
+        // Prefer explicit `default_backend` config, then fall back to model-based resolution.
+        let (default_backend_name, default_backend_url, default_backend_type) = config
+            .default_backend
+            .as_ref()
             .and_then(|name| {
                 backend_urls.get(name).map(|url| {
                     let bt = backend_types.get(name).cloned().unwrap_or_default();
                     (name.clone(), url.clone(), bt)
                 })
+            })
+            .or_else(|| {
+                model_to_backend
+                    .get(&config.default_model)
+                    .and_then(|name| {
+                        backend_urls.get(name).map(|url| {
+                            let bt = backend_types.get(name).cloned().unwrap_or_default();
+                            (name.clone(), url.clone(), bt)
+                        })
+                    })
             })
             .or_else(|| {
                 backends

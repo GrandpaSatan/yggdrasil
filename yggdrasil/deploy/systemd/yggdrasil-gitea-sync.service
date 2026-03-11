@@ -1,0 +1,19 @@
+[Unit]
+Description=Yggdrasil Gitea Repo Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jhernandez
+Group=jhernandez
+Environment=GITEA_TOKEN=aae712f47e4f246308a492504f32e6bf3d44e7ba
+Environment=GITEA_URL=http://REDACTED_GITEA_IP:3000
+Environment=REPO_DIR=/home/jhernandez/repos
+Environment=GITEA_SSH_PORT=22
+Environment=SKIP_REPOS=Crucible
+ExecStart=/opt/yggdrasil/bin/gitea-sync.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -447,6 +447,10 @@ pub async fn store_memory(
 /// Maximum prompt size (1MB) — generous but prevents abuse.
 const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 
+/// Overhead budget (seconds) for Odin routing, RAG fetch, model loading, and
+/// backend semaphore queueing. Added on top of the token-rate-based estimate.
+const GENERATE_OVERHEAD_SECS: u64 = 30;
+
 /// POST to Odin /v1/chat/completions (non-streaming) and return the response text.
 #[instrument(skip(client, config), fields(model = ?params.model))]
 pub async fn generate(
@@ -460,7 +464,14 @@ pub async fn generate(
         ));
     }
 
-    let timeout = Duration::from_secs(config.timeout_secs);
+    let max_tokens = params.max_tokens.unwrap_or(4096);
+    let token_based_secs = if config.generate_tok_per_sec > 0.0 {
+        (max_tokens as f64 / config.generate_tok_per_sec).ceil() as u64
+    } else {
+        0
+    };
+    let dynamic_timeout_secs = config.timeout_secs.max(token_based_secs + GENERATE_OVERHEAD_SECS);
+    let timeout = Duration::from_secs(dynamic_timeout_secs);
     let url = format!(
         "{}/v1/chat/completions",
         config.odin_url.trim_end_matches('/')
@@ -487,7 +498,7 @@ pub async fn generate(
             content: &params.prompt,
         }],
         stream: false,
-        max_tokens: params.max_tokens.unwrap_or(4096),
+        max_tokens,
     };
 
     let resp = match client
@@ -500,8 +511,8 @@ pub async fn generate(
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
             return tool_error(format!(
-                "Request timed out after {} seconds",
-                config.timeout_secs
+                "Generation timed out after {}s ({}tok / {:.1}tok/s + {}s overhead)",
+                dynamic_timeout_secs, max_tokens, config.generate_tok_per_sec, GENERATE_OVERHEAD_SECS
             ));
         }
         Err(e) => {

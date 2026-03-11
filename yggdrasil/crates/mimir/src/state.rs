@@ -4,7 +4,9 @@ use ygg_domain::config::MimirConfig;
 use ygg_store::{Store, qdrant::VectorStore};
 use ygg_store::qdrant::Distance;
 
-use crate::{embedder::OnnxEmbedder, error::MimirError, sdr_index::SdrIndex};
+use ygg_embed::OnnxEmbedder;
+
+use crate::{error::MimirError, sdr_index::SdrIndex};
 
 /// SDR collection dimension: 256 bits stored as 256 floats (0.0 / 1.0).
 const SDR_DIM: u64 = 256;

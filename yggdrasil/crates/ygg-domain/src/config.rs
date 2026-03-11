@@ -80,16 +80,28 @@ pub struct BackendConfig {
     pub models: Vec<String>,
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Total context window size in tokens for this backend's model.
+    /// Used to compute per-backend context budgets and set `num_ctx`.
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
 }
 
 fn default_max_concurrent() -> usize {
     2
 }
 
+fn default_context_window() -> usize {
+    16384
+}
+
 /// Routing rules for the semantic router.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
     pub default_model: String,
+    /// Explicit default backend name. When set, used for unmatched intents
+    /// instead of inferring from `default_model`'s backend.
+    #[serde(default)]
+    pub default_backend: Option<String>,
     pub rules: Vec<RoutingRule>,
 }
 
@@ -141,23 +153,11 @@ pub struct MimirConfig {
     pub tiers: TierConfig,
 }
 
-/// Embedding service configuration.
+/// Embedding configuration — ONNX in-process model directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedConfig {
-    /// Ollama API URL (used when backend is "ollama").
-    pub ollama_url: String,
-    /// Model name for embedding.
-    pub model: String,
-    /// Embedding backend: "ollama" (default) or "candle".
-    #[serde(default = "default_embed_backend")]
-    pub backend: String,
-    /// Path to GGUF model weights (required when backend is "candle").
-    #[serde(default)]
-    pub model_path: Option<String>,
-}
-
-fn default_embed_backend() -> String {
-    "ollama".to_string()
+    /// Path to the ONNX model directory (contains model.onnx + tokenizer.json).
+    pub model_dir: String,
 }
 
 /// SDR (Sparse Distributed Representation) configuration.
@@ -296,6 +296,9 @@ pub struct McpServerConfig {
     /// HTTP request timeout in seconds (default: 30)
     #[serde(default = "default_mcp_timeout")]
     pub timeout_secs: u64,
+    /// Token generation rate (tok/s) for dynamic generate timeout. Default: 15.0
+    #[serde(default = "default_generate_tok_per_sec")]
+    pub generate_tok_per_sec: f64,
     /// Optional Home Assistant integration. If present, HA MCP tools are registered.
     #[serde(default)]
     pub ha: Option<HaConfig>,
@@ -307,6 +310,10 @@ fn default_odin_url() -> String {
 
 fn default_mcp_timeout() -> u64 {
     30
+}
+
+fn default_generate_tok_per_sec() -> f64 {
+    15.0
 }
 
 #[cfg(test)]
