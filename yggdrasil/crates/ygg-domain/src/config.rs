@@ -305,6 +305,14 @@ pub struct McpServerConfig {
     /// Query used to prefetch session context at startup (default: "active sprint yggdrasil").
     #[serde(default = "default_prefetch_query")]
     pub prefetch_query: String,
+    /// Project name for project-scoped session history (e.g. "yggdrasil").
+    /// When set, generate_tool passes this to Odin to enable cross-window context continuity.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Absolute path to the project workspace root (e.g. "/home/jesus/Documents/HardwareSetup/yggdrasil").
+    /// Required by sync_docs_tool for reading/writing local files.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
 }
 
 fn default_prefetch_query() -> String {

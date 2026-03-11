@@ -129,6 +129,7 @@ fn maybe_summarize_session(
                     top_p: None,
                     stop: None,
                     session_id: None,
+                    project_id: None,
                 };
                 proxy::generate_chat_openai(&http_client, &backend_url, req)
                     .await
@@ -212,7 +213,7 @@ pub async fn chat_handler(
     // ── 2. Resolve session ───────────────────────────────────────
     let session_id = state
         .session_store
-        .resolve(request.session_id.as_deref());
+        .resolve(request.session_id.as_deref(), request.project_id.as_deref());
 
     // ── 3. Merge client messages into session history ─────────────
     // Convert incoming messages to CompactMessages and append to the session.
@@ -299,12 +300,18 @@ pub async fn chat_handler(
     let system_prompt = rag::build_system_prompt(&rag_context, &decision.intent);
     let session_snapshot = state.session_store.get_session(&session_id);
 
+    // Load previous project sessions for cross-window context (lowest priority slot).
+    let previous_sessions_text = request.project_id.as_deref().and_then(|pid| {
+        let hist = state.session_store.get_project_history(pid, 3);
+        if hist.is_empty() { None } else { Some(hist) }
+    });
+
     let packed_messages = if let Some(ref session) = session_snapshot {
         let budget = ContextBudget {
             total_budget: backend_context_window.saturating_sub(state.config.session.generation_reserve),
             generation_reserve: state.config.session.generation_reserve,
         };
-        budget.pack(session, rag_context.code_context.as_deref(), &system_prompt)
+        budget.pack(session, rag_context.code_context.as_deref(), &system_prompt, previous_sessions_text.as_deref())
     } else {
         // Fallback: no session snapshot (shouldn't happen), use raw request messages.
         let mut msgs = request.messages.clone();
@@ -336,6 +343,7 @@ pub async fn chat_handler(
                 top_p: request.top_p,
                 stop: request.stop.clone(),
                 session_id: None, // Don't forward session_id to backend
+                project_id: None, // Don't forward project_id to backend
             };
 
             if request.stream {
