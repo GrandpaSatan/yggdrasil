@@ -33,11 +33,20 @@ impl ContextBudget {
     ///
     /// Returns the assembled message array ready for the LLM. The caller should
     /// NOT add a separate system prompt — it's already included in the output.
+    ///
+    /// Priority order (highest to lowest):
+    ///   1. System prompt
+    ///   2. Session summary (rolling compressed history)
+    ///   3. Recent history (last 8 messages)
+    ///   4. RAG code context
+    ///   5. Previous project sessions (cross-window context, capped 500 tokens)
+    ///   6. Older history turns (fill remaining space)
     pub fn pack(
         &self,
         session: &ConversationSession,
         rag_context: Option<&str>,
         system_prompt: &str,
+        previous_sessions: Option<&str>,
     ) -> Vec<ChatMessage> {
         let budget = self.available();
         let mut used: usize = 0;
@@ -93,7 +102,30 @@ impl ContextBudget {
             // If RAG doesn't fit, skip it — recent history is more important.
         }
 
-        // ── 5. Older history turns (fill remaining space) ────────────
+        // ── 5. Previous project sessions (cross-window context) ──────
+        // Injected as a system message, capped at 500 tokens. Lowest priority
+        // above older history — dropped silently if budget is tight.
+        const PREV_SESSIONS_TOKEN_CAP: usize = 500;
+        if let Some(prev) = previous_sessions {
+            let prev_tokens = prev.len() / 4;
+            let capped_tokens = prev_tokens.min(PREV_SESSIONS_TOKEN_CAP);
+            if used + capped_tokens + recent_tokens < budget {
+                used += capped_tokens;
+                // Truncate to token cap if needed.
+                let content = if prev_tokens > PREV_SESSIONS_TOKEN_CAP {
+                    let char_limit = PREV_SESSIONS_TOKEN_CAP * 4;
+                    &prev[..prev.len().min(char_limit)]
+                } else {
+                    prev
+                };
+                output.push(ChatMessage {
+                    role: Role::System,
+                    content: content.to_string(),
+                });
+            }
+        }
+
+        // ── 6. Older history turns (fill remaining space) ────────────
         let older = &session.messages[..recent_start];
         for msg in older {
             if used + msg.tokens_estimate + recent_tokens >= budget {
@@ -138,6 +170,7 @@ mod tests {
                 .map(|(role, content)| CompactMessage::new(role, content))
                 .collect(),
             summary: None,
+            project_id: None,
             created_at: std::time::Instant::now(),
             last_accessed: std::time::Instant::now(),
         }
@@ -156,7 +189,7 @@ mod tests {
             generation_reserve: 200,
         };
 
-        let packed = budget.pack(&session, None, "You are helpful.");
+        let packed = budget.pack(&session, None, "You are helpful.", None);
         // System prompt + 3 messages (all recent, < 8)
         assert_eq!(packed.len(), 4);
         assert_eq!(packed[0].role, Role::System);
@@ -175,7 +208,7 @@ mod tests {
             generation_reserve: 200,
         };
 
-        let packed = budget.pack(&session, Some("## Code Context\nfn main() {}"), "You are helpful.");
+        let packed = budget.pack(&session, Some("## Code Context\nfn main() {}"), "You are helpful.", None);
         // System prompt + RAG system msg + user message
         assert_eq!(packed.len(), 3);
         assert_eq!(packed[0].role, Role::System); // system prompt
@@ -196,7 +229,7 @@ mod tests {
             generation_reserve: 200,
         };
 
-        let packed = budget.pack(&session, None, "You are helpful.");
+        let packed = budget.pack(&session, None, "You are helpful.", None);
         assert_eq!(packed.len(), 3);
         assert!(packed[1].content.contains("Summary of earlier conversation"));
     }
@@ -216,7 +249,7 @@ mod tests {
         // Budget = 1000 tokens. System (~4) + recent (~1000) = 1004.
         // RAG won't fit, so it should be skipped.
         let large_rag = &"z".repeat(400); // ~100 tokens
-        let packed = budget.pack(&session, Some(large_rag), "You are helpful.");
+        let packed = budget.pack(&session, Some(large_rag), "You are helpful.", None);
 
         // Should have system + 2 recent messages (no RAG).
         let has_rag = packed.iter().any(|m| m.content.contains("zzz"));

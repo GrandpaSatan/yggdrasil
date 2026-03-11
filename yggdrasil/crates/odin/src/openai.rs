@@ -108,6 +108,11 @@ pub struct ChatCompletionRequest {
     /// When absent, Odin operates in stateless mode (standard OpenAI behavior).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Optional project ID for project-scoped session history.
+    /// When provided alongside session_id, Odin injects previous session summaries
+    /// for this project as low-priority context, enabling cross-window continuity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 fn default_stream() -> bool {

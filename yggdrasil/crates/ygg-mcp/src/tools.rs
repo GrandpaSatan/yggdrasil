@@ -75,6 +75,31 @@ pub struct GenerateParams {
     pub max_tokens: Option<u64>,
 }
 
+/// Parameters for the `get_sprint_history` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSprintHistoryParams {
+    /// Project name to filter by (e.g. "yggdrasil"). Optional — returns all sprint engrams if omitted.
+    pub project: Option<String>,
+    /// Maximum number of sprint summaries to return (default 5).
+    #[serde(default = "default_sprint_history_limit")]
+    pub limit: Option<u32>,
+}
+
+fn default_sprint_history_limit() -> Option<u32> {
+    Some(5)
+}
+
+/// Parameters for the `sync_docs` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SyncDocsParams {
+    /// Lifecycle event: "sprint_start" or "sprint_end".
+    pub event: String,
+    /// Sprint identifier, e.g. "026".
+    pub sprint_id: String,
+    /// Full content of the sprint document (paste the sprint plan text).
+    pub sprint_content: String,
+}
+
 // ---------------------------------------------------------------------------
 // Internal HTTP response types (Muninn / Odin shapes)
 // ---------------------------------------------------------------------------
@@ -478,6 +503,7 @@ pub async fn generate(
     config: &McpServerConfig,
     params: GenerateParams,
     session_id: Option<&str>,
+    project_id: Option<&str>,
 ) -> CallToolResult {
     if params.prompt.len() > MAX_PROMPT_BYTES {
         return tool_error(format!(
@@ -512,6 +538,8 @@ pub async fn generate(
         max_tokens: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project_id: Option<&'a str>,
     }
 
     let body = Req {
@@ -523,6 +551,7 @@ pub async fn generate(
         stream: false,
         max_tokens,
         session_id,
+        project_id,
     };
 
     let resp = match client
@@ -630,6 +659,433 @@ pub async fn list_models(client: &Client, config: &McpServerConfig) -> CallToolR
     }
 
     tool_ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: get_sprint_history
+// ---------------------------------------------------------------------------
+
+/// Query Odin/Mimir for sprint engrams, filter by project, return as markdown.
+#[instrument(skip(client, config), fields(project = ?params.project))]
+pub async fn get_sprint_history(
+    client: &Client,
+    config: &McpServerConfig,
+    params: GetSprintHistoryParams,
+) -> CallToolResult {
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/api/v1/query",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    let project = params.project.as_deref().unwrap_or("");
+    let query_text = if project.is_empty() {
+        "sprint history".to_string()
+    } else {
+        format!("{project} sprint history")
+    };
+    let limit = params.limit.unwrap_or(5).min(20);
+
+    #[derive(Serialize)]
+    struct Req<'a> {
+        text: &'a str,
+        limit: u32,
+    }
+
+    let body = Req {
+        text: &query_text,
+        limit: limit * 2, // fetch extra, filter client-side by sprint tag
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin is not reachable at {}: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Sprint history query failed (HTTP {}): {}", status, body));
+    }
+
+    let api: QueryApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse response: {}", e)),
+    };
+
+    let results = api.results.unwrap_or_default();
+    // Filter: keep only engrams whose cause starts with "Sprint " (from archival pattern).
+    let sprint_results: Vec<_> = results
+        .iter()
+        .filter(|e| {
+            e.cause
+                .as_deref()
+                .map(|c| c.starts_with("Sprint "))
+                .unwrap_or(false)
+        })
+        .take(limit as usize)
+        .collect();
+
+    if sprint_results.is_empty() {
+        let project_note = if project.is_empty() {
+            String::new()
+        } else {
+            format!(" for project '{project}'")
+        };
+        return tool_ok(format!(
+            "## Sprint History{}\n\nNo sprint engrams found. \
+             Run sync_docs_tool(event: \"sprint_end\", ...) to archive sprints.",
+            project_note
+        ));
+    }
+
+    let project_note = if project.is_empty() {
+        String::new()
+    } else {
+        format!(" — {project}")
+    };
+    let mut out = format!(
+        "## Sprint History{} ({} results)\n\n",
+        project_note,
+        sprint_results.len()
+    );
+    for (i, engram) in sprint_results.iter().enumerate() {
+        let cause = engram.cause.as_deref().unwrap_or("(unknown)");
+        let effect = engram.effect.as_deref().unwrap_or("(unknown)");
+        let sim = engram.similarity.unwrap_or(0.0);
+        out.push_str(&format!(
+            "### {}. {} [score: {:.2}]\n{}\n\n",
+            i + 1,
+            cause,
+            sim,
+            effect
+        ));
+    }
+
+    tool_ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tool: sync_docs
+// ---------------------------------------------------------------------------
+
+/// Sprint lifecycle doc agent — updates USAGE.md on sprint_start, archives sprint on sprint_end.
+///
+/// Requires `workspace_path` to be set in the MCP server config. Makes local
+/// file system reads/writes and calls Odin (Qwen3-Coder) for content generation.
+#[instrument(skip(client, config), fields(event = %params.event, sprint_id = %params.sprint_id))]
+pub async fn sync_docs(
+    client: &Client,
+    config: &McpServerConfig,
+    params: SyncDocsParams,
+    session_id: Option<&str>,
+) -> CallToolResult {
+    let workspace = match config.workspace_path.as_deref() {
+        Some(p) => p.trim_end_matches('/').to_string(),
+        None => {
+            return tool_error(
+                "sync_docs requires workspace_path to be set in the MCP server config.",
+            );
+        }
+    };
+
+    if params.sprint_content.len() > MAX_PROMPT_BYTES {
+        return tool_error(format!(
+            "sprint_content exceeds maximum size of {MAX_PROMPT_BYTES} bytes"
+        ));
+    }
+
+    match params.event.as_str() {
+        "sprint_start" => sync_docs_sprint_start(client, config, &workspace, &params, session_id).await,
+        "sprint_end" => sync_docs_sprint_end(client, config, &workspace, &params, session_id).await,
+        other => tool_error(format!(
+            "Unknown event '{}'. Use 'sprint_start' or 'sprint_end'.",
+            other
+        )),
+    }
+}
+
+/// Handle sprint_start: update USAGE.md and check /docs/ + /sprints/ invariants.
+async fn sync_docs_sprint_start(
+    client: &Client,
+    config: &McpServerConfig,
+    workspace: &str,
+    params: &SyncDocsParams,
+    session_id: Option<&str>,
+) -> CallToolResult {
+    let docs_dir = format!("{workspace}/docs");
+    let usage_path = format!("{docs_dir}/USAGE.md");
+
+    // Read or initialise USAGE.md.
+    let current_usage = match tokio::fs::read_to_string(&usage_path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return tool_error(format!("Failed to read USAGE.md: {e}")),
+    };
+
+    // Ask Odin (Qwen3-Coder) to update USAGE.md based on the sprint plan.
+    let prompt = format!(
+        "You are a technical writer updating USAGE.md for a software project.\n\
+         Given the sprint plan below, update USAGE.md to add or modify any new \
+         API endpoints, startup commands, or deployment commands introduced in this sprint.\n\
+         Preserve ALL existing content. Output the FULL updated USAGE.md only — no commentary.\n\n\
+         ## Current USAGE.md\n{current_usage}\n\n\
+         ## Sprint Plan (Sprint {sprint_id})\n{sprint_content}",
+        sprint_id = params.sprint_id,
+        sprint_content = params.sprint_content,
+    );
+
+    let gen_result = generate(
+        client,
+        config,
+        GenerateParams {
+            prompt,
+            model: None, // Let Odin route to Qwen3-Coder
+            max_tokens: Some(8192),
+        },
+        session_id,
+        config.project.as_deref(),
+    )
+    .await;
+
+    if gen_result.is_error.unwrap_or(false) {
+        return gen_result;
+    }
+
+    let updated_usage = gen_result
+        .content
+        .into_iter()
+        .next()
+        .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .unwrap_or_default();
+
+    if updated_usage.is_empty() {
+        return tool_error("LLM returned empty USAGE.md content.");
+    }
+
+    // Write updated USAGE.md.
+    if let Err(e) = tokio::fs::create_dir_all(&docs_dir).await {
+        return tool_error(format!("Failed to create docs/ directory: {e}"));
+    }
+    if let Err(e) = tokio::fs::write(&usage_path, &updated_usage).await {
+        return tool_error(format!("Failed to write USAGE.md: {e}"));
+    }
+
+    // Check /docs/ for required files.
+    let required_docs = ["ARCHITECTURE.md", "NetworkHardware.md", "NAMING_CONVENTIONS.md", "USAGE.md"];
+    let mut warnings: Vec<String> = Vec::new();
+    for filename in &required_docs {
+        let path = format!("{docs_dir}/{filename}");
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            warnings.push(format!("WARNING: /docs/{filename} is missing"));
+        }
+    }
+
+    // Check /sprints/ for single-file invariant.
+    let sprints_dir = format!("{workspace}/sprints");
+    if let Ok(mut entries) = tokio::fs::read_dir(&sprints_dir).await {
+        let mut count = 0usize;
+        while let Ok(Some(_)) = entries.next_entry().await {
+            count += 1;
+        }
+        if count > 1 {
+            warnings.push(format!(
+                "WARNING: /sprints/ contains {count} files. Sprint discipline requires exactly 1 active sprint file."
+            ));
+        }
+    }
+
+    let mut result = format!(
+        "Sprint {} started.\n\nUSAGE.md updated ({} bytes).",
+        params.sprint_id,
+        updated_usage.len()
+    );
+    if !warnings.is_empty() {
+        result.push_str("\n\n");
+        result.push_str(&warnings.join("\n"));
+    }
+
+    tool_ok(result)
+}
+
+/// Handle sprint_end: archive sprint to Mimir, update ARCHITECTURE.md, delete sprint file.
+async fn sync_docs_sprint_end(
+    client: &Client,
+    config: &McpServerConfig,
+    workspace: &str,
+    params: &SyncDocsParams,
+    session_id: Option<&str>,
+) -> CallToolResult {
+    let project = config.project.as_deref().unwrap_or("unknown");
+
+    // Step 1: Generate a concise sprint summary via Odin.
+    let summary_prompt = format!(
+        "Summarize this sprint plan into 3-5 bullet points covering: \
+         key features added, breaking changes, deployment steps required, and gotchas found. \
+         Output only the bullet points, no headers.\n\n\
+         Sprint Plan (Sprint {sprint_id}):\n{sprint_content}",
+        sprint_id = params.sprint_id,
+        sprint_content = params.sprint_content,
+    );
+
+    let summary_result = generate(
+        client,
+        config,
+        GenerateParams {
+            prompt: summary_prompt,
+            model: None,
+            max_tokens: Some(1024),
+        },
+        session_id,
+        config.project.as_deref(),
+    )
+    .await;
+
+    let summary_text = if summary_result.is_error.unwrap_or(false) {
+        // Fall back to raw sprint content if summarization fails.
+        params.sprint_content.chars().take(2000).collect::<String>()
+    } else {
+        summary_result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_else(|| params.sprint_content.chars().take(2000).collect())
+    };
+
+    // Step 2: Archive sprint to Mimir via Odin proxy.
+    let store_url = format!(
+        "{}/api/v1/store",
+        config.odin_url.trim_end_matches('/')
+    );
+    let tags = vec![
+        "sprint".to_string(),
+        format!("project:{project}"),
+        format!("sprint:{}", params.sprint_id),
+    ];
+    let cause = format!("Sprint {}: archived", params.sprint_id);
+
+    #[derive(Serialize)]
+    struct StoreReq<'a> {
+        cause: &'a str,
+        effect: &'a str,
+        tags: &'a [String],
+    }
+
+    let store_body = StoreReq {
+        cause: &cause,
+        effect: &summary_text,
+        tags: &tags,
+    };
+
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let store_resp = match client
+        .post(&store_url)
+        .json(&store_body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return tool_error(format!("Failed to store sprint engram in Mimir: {e}")),
+    };
+
+    let engram_id = if store_resp.status().is_success() {
+        let api: StoreApiResponse = store_resp.json().await.unwrap_or(StoreApiResponse { id: None });
+        api.id.unwrap_or_else(|| "(unknown)".to_string())
+    } else {
+        let body = store_resp.text().await.unwrap_or_default();
+        return tool_error(format!("Mimir store failed: {body}"));
+    };
+
+    // Step 3: Generate ARCHITECTURE.md delta from sprint content.
+    let arch_path = format!("{workspace}/docs/ARCHITECTURE.md");
+    if let Ok(current_arch) = tokio::fs::read_to_string(&arch_path).await {
+        let arch_prompt = format!(
+            "Given this sprint plan, output ONLY the new or changed sections \
+             of ARCHITECTURE.md that this sprint introduces. \
+             If there are no architectural changes, output exactly: NO_CHANGES\n\n\
+             Sprint Plan (Sprint {sprint_id}):\n{sprint_content}",
+            sprint_id = params.sprint_id,
+            sprint_content = params.sprint_content,
+        );
+
+        let arch_result = generate(
+            client,
+            config,
+            GenerateParams {
+                prompt: arch_prompt,
+                model: None,
+                max_tokens: Some(2048),
+            },
+            session_id,
+            config.project.as_deref(),
+        )
+        .await;
+
+        if let Some(content) = arch_result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+        {
+            if !content.contains("NO_CHANGES") && !content.trim().is_empty() {
+                let updated_arch = format!(
+                    "{}\n\n## Sprint {} Changes\n\n{}",
+                    current_arch.trim_end(),
+                    params.sprint_id,
+                    content
+                );
+                let _ = tokio::fs::write(&arch_path, &updated_arch).await;
+            }
+        }
+    }
+
+    // Step 4: Delete the sprint file.
+    let sprint_file = format!("{workspace}/sprints/sprint-{}.md", params.sprint_id);
+    let deleted_file = if tokio::fs::try_exists(&sprint_file).await.unwrap_or(false) {
+        match tokio::fs::remove_file(&sprint_file).await {
+            Ok(()) => format!("Deleted {sprint_file}"),
+            Err(e) => format!("WARNING: Could not delete {sprint_file}: {e}"),
+        }
+    } else {
+        // Try underscore variant for legacy naming.
+        let alt_file = format!("{workspace}/sprints/sprint_{}.md", params.sprint_id);
+        if tokio::fs::try_exists(&alt_file).await.unwrap_or(false) {
+            match tokio::fs::remove_file(&alt_file).await {
+                Ok(()) => format!("Deleted {alt_file}"),
+                Err(e) => format!("WARNING: Could not delete {alt_file}: {e}"),
+            }
+        } else {
+            format!("No sprint file found at {sprint_file} or {alt_file}")
+        }
+    };
+
+    tool_ok(format!(
+        "Sprint {} archived.\n\nEngram ID: {}\nProject: {}\n\n{}\n\nSummary stored:\n{}",
+        params.sprint_id,
+        engram_id,
+        project,
+        deleted_file,
+        summary_text
+    ))
 }
 
 /// Format the models table as a plain string (shared with the resource handler).
