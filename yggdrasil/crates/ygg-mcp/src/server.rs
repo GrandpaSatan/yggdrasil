@@ -30,9 +30,9 @@ use crate::{
     tools::{
         GenerateParams, GetSprintHistoryParams, HaCallServiceParams, HaGenerateAutomationParams,
         HaGetStatesParams, HaListEntitiesParams, QueryMemoryParams, SearchCodeParams,
-        StoreMemoryParams, SyncDocsParams,
+        StoreMemoryParams,
         generate, get_sprint_history, ha_call_service, ha_generate_automation, ha_get_states,
-        ha_list_entities, list_models, query_memory, search_code, store_memory, sync_docs,
+        ha_list_entities, list_models, query_memory, search_code, store_memory,
     },
 };
 
@@ -161,28 +161,6 @@ impl YggdrasilServer {
         Parameters(params): Parameters<GetSprintHistoryParams>,
     ) -> String {
         let result = get_sprint_history(&self.client, &self.config, params).await;
-        result
-            .content
-            .into_iter()
-            .next()
-            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
-            .unwrap_or_default()
-    }
-
-    /// Sprint lifecycle documentation agent.
-    ///
-    /// On sprint_start: updates USAGE.md using Qwen3-Coder, checks /docs/ and /sprints/ invariants.
-    /// On sprint_end: archives sprint to Mimir, appends ARCHITECTURE.md delta, deletes sprint file.
-    /// Requires workspace_path to be set in the MCP server config.
-    #[tool(description = "Sprint lifecycle doc agent. \
-        event='sprint_start': updates USAGE.md via LLM, checks /docs/ + /sprints/ invariants. \
-        event='sprint_end': archives sprint to Mimir, updates ARCHITECTURE.md, deletes sprint file. \
-        Requires workspace_path in config. sprint_content should be the full sprint plan text.")]
-    async fn sync_docs_tool(
-        &self,
-        Parameters(params): Parameters<SyncDocsParams>,
-    ) -> String {
-        let result = sync_docs(&self.client, &self.config, params, Some(&self.session_id)).await;
         result
             .content
             .into_iter()

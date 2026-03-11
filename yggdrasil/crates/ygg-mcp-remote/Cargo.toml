@@ -1,0 +1,23 @@
+[package]
+name = "ygg-mcp-remote"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ygg-mcp-remote"
+path = "src/main.rs"
+
+[dependencies]
+ygg-mcp = { path = "../ygg-mcp" }
+ygg-domain = { path = "../ygg-domain" }
+rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }

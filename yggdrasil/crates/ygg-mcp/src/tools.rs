@@ -92,12 +92,19 @@ fn default_sprint_history_limit() -> Option<u32> {
 /// Parameters for the `sync_docs` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncDocsParams {
-    /// Lifecycle event: "sprint_start" or "sprint_end".
+    /// Lifecycle event: "sprint_start", "sprint_end", or "setup".
     pub event: String,
-    /// Sprint identifier, e.g. "026".
+    /// Sprint identifier, e.g. "027". Required for sprint_start and sprint_end; ignored for setup.
+    #[serde(default)]
     pub sprint_id: String,
-    /// Full content of the sprint document (paste the sprint plan text).
+    /// Full content of the sprint document. Required for sprint_start and sprint_end; used as
+    /// project context for setup (can describe the project for initial doc scaffolding).
+    #[serde(default)]
     pub sprint_content: String,
+    /// Workspace root path (e.g. "/home/user/project"). Overrides config.workspace_path.
+    /// The tool resolves workspace as: this param → config.workspace_path → error.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -797,11 +804,18 @@ pub async fn sync_docs(
     params: SyncDocsParams,
     session_id: Option<&str>,
 ) -> CallToolResult {
-    let workspace = match config.workspace_path.as_deref() {
-        Some(p) => p.trim_end_matches('/').to_string(),
+    // Resolve workspace: param override → config fallback → error.
+    let workspace = params
+        .workspace_path
+        .as_deref()
+        .or(config.workspace_path.as_deref())
+        .map(|p| p.trim_end_matches('/').to_string());
+
+    let workspace = match workspace {
+        Some(w) => w,
         None => {
             return tool_error(
-                "sync_docs requires workspace_path to be set in the MCP server config.",
+                "No workspace_path provided. Pass it as a parameter or set it in config.",
             );
         }
     };
@@ -813,16 +827,188 @@ pub async fn sync_docs(
     }
 
     match params.event.as_str() {
+        "setup" => sync_docs_setup(client, config, &workspace, &params, session_id).await,
         "sprint_start" => sync_docs_sprint_start(client, config, &workspace, &params, session_id).await,
         "sprint_end" => sync_docs_sprint_end(client, config, &workspace, &params, session_id).await,
         other => tool_error(format!(
-            "Unknown event '{}'. Use 'sprint_start' or 'sprint_end'.",
+            "Unknown event '{}'. Use 'setup', 'sprint_start', or 'sprint_end'.",
             other
         )),
     }
 }
 
+/// Required docs that every workspace should have in /docs/.
+const REQUIRED_DOCS: &[&str] = &[
+    "ARCHITECTURE.md",
+    "NAMING_CONVENTIONS.md",
+    "USAGE.md",
+];
+
+/// Handle setup: initialize a new workspace's /docs/ and /sprints/ structure.
+///
+/// 1. Creates /docs/ and /sprints/ directories if missing.
+/// 2. Scans existing /docs/ files — deletes stale ones that reference a different project.
+/// 3. Scaffolds missing required docs via Odin using sprint_content as project context.
+/// 4. Cleans /sprints/ of leftover files from previous projects.
+async fn sync_docs_setup(
+    client: &Client,
+    config: &McpServerConfig,
+    workspace: &str,
+    params: &SyncDocsParams,
+    session_id: Option<&str>,
+) -> CallToolResult {
+    let docs_dir = format!("{workspace}/docs");
+    let sprints_dir = format!("{workspace}/sprints");
+    let mut actions: Vec<String> = Vec::new();
+
+    // Step 1: Ensure directories exist.
+    for dir in [&docs_dir, &sprints_dir] {
+        if !tokio::fs::try_exists(dir).await.unwrap_or(false) {
+            if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                return tool_error(format!("Failed to create {dir}: {e}"));
+            }
+            actions.push(format!("Created {dir}"));
+        }
+    }
+
+    // Step 2: Scan /docs/ — identify stale files.
+    // A file is "stale" if it's a required doc but its content references a different project.
+    // We ask Odin to evaluate staleness if sprint_content provides project context.
+    let has_context = !params.sprint_content.is_empty();
+    if let Ok(mut entries) = tokio::fs::read_dir(&docs_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if !filename.ends_with(".md") {
+                continue;
+            }
+
+            // Read existing file content.
+            let path = entry.path();
+            let content = match tokio::fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // Skip empty files — they'll be regenerated below.
+            if content.trim().is_empty() {
+                let _ = tokio::fs::remove_file(&path).await;
+                actions.push(format!("Removed empty {filename}"));
+                continue;
+            }
+
+            // If we have project context, ask Odin if this doc is stale.
+            if has_context && REQUIRED_DOCS.contains(&filename.as_str()) {
+                let stale_check_prompt = format!(
+                    "You are evaluating whether a documentation file is stale or belongs to a different project.\n\n\
+                     The current project context:\n{context}\n\n\
+                     The file '{filename}' contains:\n{content}\n\n\
+                     Does this file appear to describe a DIFFERENT project than the current one? \
+                     Answer ONLY 'STALE' if it clearly describes a different project, or 'CURRENT' if it's \
+                     relevant or generic enough to keep. One word only.",
+                    context = params.sprint_content,
+                );
+
+                let check_result = generate(
+                    client,
+                    config,
+                    GenerateParams {
+                        prompt: stale_check_prompt,
+                        model: None,
+                        max_tokens: Some(16),
+                    },
+                    session_id,
+                    config.project.as_deref(),
+                )
+                .await;
+
+                let response = check_result
+                    .content
+                    .into_iter()
+                    .next()
+                    .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+                    .unwrap_or_default();
+
+                if response.trim().to_uppercase().contains("STALE") {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    actions.push(format!("Removed stale {filename} (belongs to different project)"));
+                }
+            }
+        }
+    }
+
+    // Step 3: Scaffold missing required docs.
+    for filename in REQUIRED_DOCS {
+        let path = format!("{docs_dir}/{filename}");
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            continue;
+        }
+
+        // Generate scaffold content if we have project context.
+        let content = if has_context {
+            let scaffold_prompt = format!(
+                "You are a technical writer initializing documentation for a new project.\n\
+                 Generate a minimal {filename} scaffold for this project.\n\
+                 Project context:\n{context}\n\n\
+                 Output ONLY the markdown content for {filename}. Keep it concise — \
+                 this is a starting point that will be expanded during sprints.",
+                context = params.sprint_content,
+            );
+
+            let gen_result = generate(
+                client,
+                config,
+                GenerateParams {
+                    prompt: scaffold_prompt,
+                    model: None,
+                    max_tokens: Some(2048),
+                },
+                session_id,
+                config.project.as_deref(),
+            )
+            .await;
+
+            gen_result
+                .content
+                .into_iter()
+                .next()
+                .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+                .unwrap_or_else(|| format!("# {}\n\nTODO: Document this project.\n", filename.trim_end_matches(".md")))
+        } else {
+            format!("# {}\n\nTODO: Document this project.\n", filename.trim_end_matches(".md"))
+        };
+
+        if let Err(e) = tokio::fs::write(&path, &content).await {
+            actions.push(format!("WARNING: Failed to write {filename}: {e}"));
+        } else {
+            actions.push(format!("Scaffolded {filename}"));
+        }
+    }
+
+    // Step 4: Clean /sprints/ — remove leftover sprint files.
+    if let Ok(mut entries) = tokio::fs::read_dir(&sprints_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if filename.ends_with(".md") {
+                let path = entry.path();
+                let _ = tokio::fs::remove_file(&path).await;
+                actions.push(format!("Cleaned stale sprint file: {filename}"));
+            }
+        }
+    }
+
+    if actions.is_empty() {
+        tool_ok(format!("Workspace {workspace} already set up. No changes needed."))
+    } else {
+        tool_ok(format!(
+            "Workspace setup complete for {workspace}:\n\n{}",
+            actions.join("\n")
+        ))
+    }
+}
+
 /// Handle sprint_start: update USAGE.md and check /docs/ + /sprints/ invariants.
+///
+/// Auto-triggers setup if /docs/ doesn't exist yet (new workspace).
 async fn sync_docs_sprint_start(
     client: &Client,
     config: &McpServerConfig,
@@ -831,6 +1017,25 @@ async fn sync_docs_sprint_start(
     session_id: Option<&str>,
 ) -> CallToolResult {
     let docs_dir = format!("{workspace}/docs");
+
+    // Auto-setup: if /docs/ doesn't exist, this is a new workspace.
+    if !tokio::fs::try_exists(&docs_dir).await.unwrap_or(false) {
+        tracing::info!(workspace, "New workspace detected — running auto-setup");
+        let setup_result = sync_docs_setup(client, config, workspace, params, session_id).await;
+        if setup_result.is_error.unwrap_or(false) {
+            return setup_result;
+        }
+        // Log setup actions but continue with sprint_start.
+        if let Some(text) = setup_result
+            .content
+            .iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+        {
+            tracing::info!("Auto-setup: {text}");
+        }
+    }
+
     let usage_path = format!("{docs_dir}/USAGE.md");
 
     // Read or initialise USAGE.md.

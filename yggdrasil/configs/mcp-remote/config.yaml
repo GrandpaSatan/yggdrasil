@@ -1,0 +1,10 @@
+odin_url: "http://127.0.0.1:8080"
+muninn_url: "http://REDACTED_HUGIN_IP:9091"
+timeout_secs: 300
+generate_tok_per_sec: 15.0
+prefetch_query: "active sprint yggdrasil"
+project: "yggdrasil"
+workspace_path: "/home/jesus/Documents/HardwareSetup/yggdrasil"
+ha:
+  url: "http://REDACTED_CHIRP_IP:8123"
+  token: "${HA_TOKEN}"
