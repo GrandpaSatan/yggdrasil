@@ -357,11 +357,10 @@ fn load_vocab(path: &Path) -> Result<Vec<String>, VoiceError> {
 
     let mut vocab = vec![String::new(); max_id + 1];
     for (key, value) in &map {
-        if let Ok(idx) = key.parse::<usize>() {
-            if idx < vocab.len() {
+        if let Ok(idx) = key.parse::<usize>()
+            && idx < vocab.len() {
                 vocab[idx] = value.clone();
             }
-        }
     }
 
     Ok(vocab)

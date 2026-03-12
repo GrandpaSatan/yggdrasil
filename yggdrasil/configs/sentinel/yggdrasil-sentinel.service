@@ -1,0 +1,16 @@
+[Unit]
+Description=Yggdrasil Sentinel Monitor
+After=network-online.target yggdrasil-odin.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+ExecStart=/opt/yggdrasil/bin/ygg-sentinel --config /etc/yggdrasil/sentinel/config.json
+Restart=on-failure
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

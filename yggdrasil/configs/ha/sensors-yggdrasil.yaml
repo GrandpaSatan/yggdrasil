@@ -78,6 +78,57 @@
       icon: mdi:vector-triangle
 
 # ─────────────────────────────────────────────────────────
+#  Mesh Node - Munin (REDACTED_MUNIN_IP:9100)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_MUNIN_IP:9100/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Node Munin"
+      unique_id: ygg_node_munin
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      icon: mdi:server-network
+
+# ─────────────────────────────────────────────────────────
+#  Mesh Node - Hugin (REDACTED_HUGIN_IP:9100)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HUGIN_IP:9100/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Node Hugin"
+      unique_id: ygg_node_hugin
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      icon: mdi:server-network
+
+# ─────────────────────────────────────────────────────────
+#  Sentinel - Monitor (Munin REDACTED_MUNIN_IP:9094)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_MUNIN_IP:9094/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Sentinel Status"
+      unique_id: ygg_sentinel_status
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      icon: mdi:shield-check
+
+# ─────────────────────────────────────────────────────────
 #  Ollama - Munin Node (REDACTED_MUNIN_IP:11434)
 # ─────────────────────────────────────────────────────────
 - resource: http://REDACTED_MUNIN_IP:11434/api/tags

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 /// Detected operating system.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
 pub enum Os {
     Linux,

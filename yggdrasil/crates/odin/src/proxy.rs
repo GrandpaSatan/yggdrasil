@@ -139,11 +139,10 @@ pub async fn stream_chat(
                 let content = stream_line.message.content.clone();
 
                 // Accumulate content tokens for post-stream engram storage.
-                if !content.is_empty() {
-                    if let Ok(mut acc) = acc_clone.lock() {
+                if !content.is_empty()
+                    && let Ok(mut acc) = acc_clone.lock() {
                         acc.push_str(&content);
                     }
-                }
 
                 let delta = if is_first_chunk {
                     is_first_chunk = false;
@@ -198,7 +197,7 @@ pub async fn stream_chat(
 
             events
         })
-        .flat_map(|events| futures::stream::iter(events));
+        .flat_map(futures::stream::iter);
 
     Ok(StreamHandle { stream: event_stream, completion_rx })
 }
@@ -351,17 +350,13 @@ pub async fn stream_chat_openai(
                 };
 
                 // Accumulate content from OpenAI-format chunk deltas.
-                if data != "[DONE]" {
-                    if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data) {
-                        if let Some(choice) = chunk.choices.first() {
-                            if let Some(ref content) = choice.delta.content {
-                                if let Ok(mut acc) = acc_clone.lock() {
+                if data != "[DONE]"
+                    && let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data)
+                        && let Some(choice) = chunk.choices.first()
+                            && let Some(ref content) = choice.delta.content
+                                && let Ok(mut acc) = acc_clone.lock() {
                                     acc.push_str(content);
                                 }
-                            }
-                        }
-                    }
-                }
 
                 // Pass through as-is — the upstream format is already OpenAI-compatible.
                 events.push(Ok(Event::default().data(data)));
@@ -378,7 +373,7 @@ pub async fn stream_chat_openai(
 
             events
         })
-        .flat_map(|events| futures::stream::iter(events));
+        .flat_map(futures::stream::iter);
 
     Ok(StreamHandle { stream: event_stream, completion_rx })
 }

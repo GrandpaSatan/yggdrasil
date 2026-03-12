@@ -187,12 +187,11 @@ impl SessionStore {
         if let Some(mut entry) = self.sessions.get_mut(session_id) {
             let drift = entry.update_sdr(query_sdr);
             // On high drift, reset to just the current query
-            if let Some(d) = drift {
-                if d < 0.5 {
+            if let Some(d) = drift
+                && d < 0.5 {
                     entry.session_sdr = *query_sdr;
                     entry.sdr_message_count = 1;
                 }
-            }
             drift
         } else {
             None
@@ -234,7 +233,7 @@ impl SessionStore {
     fn push_project_summary(&self, project_id: &str, summary: SessionSummary) {
         let mut deque = self.project_sessions
             .entry(project_id.to_string())
-            .or_insert_with(VecDeque::new);
+            .or_default();
         deque.push_front(summary);
         if deque.len() > 10 {
             deque.pop_back();
@@ -271,6 +270,10 @@ impl SessionStore {
     /// Current number of active sessions.
     pub fn len(&self) -> usize {
         self.sessions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
     }
 
     /// Evict expired sessions (called by the reaper task).

@@ -73,7 +73,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> ConfigWatcher<T> {
         })
         .map_err(|e| crate::ConfigError::ReadFile {
             path: path.display().to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            source: std::io::Error::other(e.to_string()),
         })?;
 
         // Watch the parent directory (some editors write temp files then rename)
@@ -82,7 +82,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> ConfigWatcher<T> {
             .watch(watch_dir, RecursiveMode::NonRecursive)
             .map_err(|e| crate::ConfigError::ReadFile {
                 path: path.display().to_string(),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                source: std::io::Error::other(e.to_string()),
             })?;
 
         info!(path = %path.display(), "config watcher started");

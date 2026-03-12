@@ -19,295 +19,161 @@ views:
             }
 
       # ══════════════════════════════════════════════
-      #  Node Status Overview
+      #  Service Health — all services in one card
       # ══════════════════════════════════════════════
-      - type: markdown
-        content: "## Node Health"
-        card_mod:
-          style: |
-            ha-card { background: none; box-shadow: none; }
-
-      - type: grid
-        columns: 3
-        square: false
-        cards:
-          # ── Munin Node ──
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Munin (REDACTED_MUNIN_IP)"
-                card_mod:
-                  style: |
-                    ha-card { background: none; box-shadow: none; padding: 0; }
-              - type: entities
-                entities:
-                  - entity: sensor.ygg_odin_status
-                    name: Odin (LLM Gateway)
-                    icon: mdi:brain
-                  - entity: sensor.ygg_mimir_status
-                    name: Mimir (Memory)
-                    icon: mdi:database-search
-                  - entity: sensor.ygg_ollama_munin
-                    name: Ollama Models
-                    icon: mdi:robot
-
-          # ── Hugin Node ──
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Hugin (REDACTED_HUGIN_IP)"
-                card_mod:
-                  style: |
-                    ha-card { background: none; box-shadow: none; padding: 0; }
-              - type: entities
-                entities:
-                  - entity: sensor.ygg_huginn_status
-                    name: Huginn (Orchestrator)
-                    icon: mdi:head-cog-outline
-                  - entity: sensor.ygg_muninn_status
-                    name: Muninn (Code Agent)
-                    icon: mdi:code-braces
-                  - entity: sensor.ygg_ollama_hugin
-                    name: Ollama Models
-                    icon: mdi:robot
-
-          # ── Hades Node ──
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Hades (REDACTED_HADES_IP)"
-                card_mod:
-                  style: |
-                    ha-card { background: none; box-shadow: none; padding: 0; }
-              - type: entities
-                entities:
-                  - entity: sensor.ygg_qdrant_status
-                    name: Qdrant (Vector DB)
-                    icon: mdi:vector-triangle
-                  - entity: sensor.ygg_qdrant_collections
-                    name: Collections
-                    icon: mdi:database
-
-      # ══════════════════════════════════════════════
-      #  Service Health Grid
-      # ══════════════════════════════════════════════
-      - type: markdown
-        content: "## Service Health"
-        card_mod:
-          style: |
-            ha-card { background: none; box-shadow: none; }
-
-      - type: grid
-        columns: 5
-        square: true
-        cards:
-          - type: entity
-            entity: sensor.ygg_odin_status
-            name: Odin
+      - type: entities
+        title: Service Health
+        show_header_toggle: false
+        entities:
+          - entity: sensor.ygg_odin_status
+            name: Odin (LLM Gateway)
             icon: mdi:brain
-            state_color: true
-            card_mod:
-              style: |
-                ha-card {
-                  {% if states('sensor.ygg_odin_status') in ['ok', 'healthy', 'running'] %}
-                    border-left: 3px solid #4caf50;
-                  {% elif states('sensor.ygg_odin_status') == 'unknown' %}
-                    border-left: 3px solid #ff9800;
-                  {% else %}
-                    border-left: 3px solid #f44336;
-                  {% endif %}
-                }
-
-          - type: entity
-            entity: sensor.ygg_mimir_status
-            name: Mimir
+          - entity: sensor.ygg_mimir_status
+            name: Mimir (Memory)
             icon: mdi:database-search
-            state_color: true
-            card_mod:
-              style: |
-                ha-card {
-                  {% if states('sensor.ygg_mimir_status') in ['ok', 'healthy', 'running'] %}
-                    border-left: 3px solid #4caf50;
-                  {% elif states('sensor.ygg_mimir_status') == 'unknown' %}
-                    border-left: 3px solid #ff9800;
-                  {% else %}
-                    border-left: 3px solid #f44336;
-                  {% endif %}
-                }
-
-          - type: entity
-            entity: sensor.ygg_huginn_status
-            name: Huginn
+          - entity: sensor.ygg_huginn_status
+            name: Huginn (Orchestrator)
             icon: mdi:head-cog-outline
-            state_color: true
-            card_mod:
-              style: |
-                ha-card {
-                  {% if states('sensor.ygg_huginn_status') in ['ok', 'healthy', 'running'] %}
-                    border-left: 3px solid #4caf50;
-                  {% elif states('sensor.ygg_huginn_status') == 'unknown' %}
-                    border-left: 3px solid #ff9800;
-                  {% else %}
-                    border-left: 3px solid #f44336;
-                  {% endif %}
-                }
-
-          - type: entity
-            entity: sensor.ygg_muninn_status
-            name: Muninn
+          - entity: sensor.ygg_muninn_status
+            name: Muninn (Code Agent)
             icon: mdi:code-braces
-            state_color: true
-            card_mod:
-              style: |
-                ha-card {
-                  {% if states('sensor.ygg_muninn_status') in ['ok', 'healthy', 'running'] %}
-                    border-left: 3px solid #4caf50;
-                  {% elif states('sensor.ygg_muninn_status') == 'unknown' %}
-                    border-left: 3px solid #ff9800;
-                  {% else %}
-                    border-left: 3px solid #f44336;
-                  {% endif %}
-                }
-
-          - type: entity
-            entity: sensor.ygg_qdrant_status
-            name: Qdrant
+          - entity: sensor.ygg_qdrant_status
+            name: Qdrant (Vector DB)
             icon: mdi:vector-triangle
-            state_color: true
-            card_mod:
-              style: |
-                ha-card {
-                  {% if states('sensor.ygg_qdrant_status') in ['ok', 'healthy', 'running'] %}
-                    border-left: 3px solid #4caf50;
-                  {% elif states('sensor.ygg_qdrant_status') == 'unknown' %}
-                    border-left: 3px solid #ff9800;
-                  {% else %}
-                    border-left: 3px solid #f44336;
-                  {% endif %}
-                }
+          - entity: sensor.ygg_node_munin
+            name: Mesh Node Munin
+            icon: mdi:server-network
+          - entity: sensor.ygg_node_hugin
+            name: Mesh Node Hugin
+            icon: mdi:server-network
+          - entity: sensor.ygg_sentinel_status
+            name: Sentinel (Monitor)
+            icon: mdi:shield-check
+
+      # ══════════════════════════════════════════════
+      #  Munin Node (REDACTED_MUNIN_IP)
+      # ══════════════════════════════════════════════
+      - type: entities
+        title: "Munin  —  REDACTED_MUNIN_IP"
+        show_header_toggle: false
+        entities:
+          - entity: sensor.ygg_odin_status
+            name: Odin (LLM Gateway)
+            icon: mdi:brain
+          - entity: sensor.ygg_mimir_status
+            name: Mimir (Memory)
+            icon: mdi:database-search
+          - entity: sensor.ygg_node_munin
+            name: Mesh Node
+            icon: mdi:server-network
+          - entity: sensor.ygg_sentinel_status
+            name: Sentinel
+            icon: mdi:shield-check
+          - entity: sensor.ygg_ollama_munin
+            name: Ollama Models
+            icon: mdi:robot
+        card_mod:
+          style: |
+            ha-card {
+              border-top: 2px solid rgba(100, 200, 100, 0.4);
+            }
+
+      # ══════════════════════════════════════════════
+      #  Hugin Node (REDACTED_HUGIN_IP)
+      # ══════════════════════════════════════════════
+      - type: entities
+        title: "Hugin  —  REDACTED_HUGIN_IP"
+        show_header_toggle: false
+        entities:
+          - entity: sensor.ygg_huginn_status
+            name: Huginn (Orchestrator)
+            icon: mdi:head-cog-outline
+          - entity: sensor.ygg_muninn_status
+            name: Muninn (Code Agent)
+            icon: mdi:code-braces
+          - entity: sensor.ygg_node_hugin
+            name: Mesh Node
+            icon: mdi:server-network
+          - entity: sensor.ygg_ollama_hugin
+            name: Ollama Models
+            icon: mdi:robot
+        card_mod:
+          style: |
+            ha-card {
+              border-top: 2px solid rgba(100, 150, 255, 0.4);
+            }
+
+      # ══════════════════════════════════════════════
+      #  Hades Node (REDACTED_HADES_IP)
+      # ══════════════════════════════════════════════
+      - type: entities
+        title: "Hades  —  REDACTED_HADES_IP"
+        show_header_toggle: false
+        entities:
+          - entity: sensor.ygg_qdrant_status
+            name: Qdrant (Vector DB)
+            icon: mdi:vector-triangle
+          - entity: sensor.ygg_qdrant_collections
+            name: Qdrant Collections
+            icon: mdi:database
+        card_mod:
+          style: |
+            ha-card {
+              border-top: 2px solid rgba(200, 100, 100, 0.4);
+            }
 
       # ══════════════════════════════════════════════
       #  LLM Fleet
       # ══════════════════════════════════════════════
       - type: markdown
-        content: "## LLM Fleet"
-        card_mod:
-          style: |
-            ha-card { background: none; box-shadow: none; }
+        content: >
+          ## LLM Fleet
 
-      - type: grid
-        columns: 2
-        square: false
-        cards:
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Munin Ollama"
-                card_mod:
-                  style: |
-                    ha-card { background: none; box-shadow: none; padding: 0; }
-              - type: entity
-                entity: sensor.ygg_ollama_munin
-                name: Loaded Models
-                icon: mdi:robot
-                attribute: models
-              - type: markdown
-                content: >
-                  **Models:** {{ state_attr('sensor.ygg_ollama_munin', 'models')
-                  | default([], true)
-                  | map(attribute='name')
-                  | list
-                  | join(', ')
-                  | default('None loaded', true) }}
+          **Munin Ollama:** {{ state_attr('sensor.ygg_ollama_munin', 'models')
+          | default([], true)
+          | map(attribute='name')
+          | list
+          | join(', ')
+          | default('None loaded', true) }}
 
-          - type: vertical-stack
-            cards:
-              - type: markdown
-                content: "### Hugin Ollama"
-                card_mod:
-                  style: |
-                    ha-card { background: none; box-shadow: none; padding: 0; }
-              - type: entity
-                entity: sensor.ygg_ollama_hugin
-                name: Loaded Models
-                icon: mdi:robot
-                attribute: models
-              - type: markdown
-                content: >
-                  **Models:** {{ state_attr('sensor.ygg_ollama_hugin', 'models')
-                  | default([], true)
-                  | map(attribute='name')
-                  | list
-                  | join(', ')
-                  | default('None loaded', true) }}
-
-      # ══════════════════════════════════════════════
-      #  Memory & Vector DB
-      # ══════════════════════════════════════════════
-      - type: markdown
-        content: "## Memory & Vector DB"
-        card_mod:
-          style: |
-            ha-card { background: none; box-shadow: none; }
-
-      - type: grid
-        columns: 2
-        square: false
-        cards:
-          - type: vertical-stack
-            cards:
-              - type: entity
-                entity: sensor.ygg_mimir_status
-                name: Mimir Memory Service
-                icon: mdi:database-search
-              - type: markdown
-                content: >
-                  **Engram Count:** {{ state_attr('sensor.ygg_mimir_status', 'engram_count')
-                  | default('N/A', true) }}
-
-                  **Uptime:** {{ state_attr('sensor.ygg_mimir_status', 'uptime')
-                  | default('N/A', true) }}
-
-          - type: vertical-stack
-            cards:
-              - type: entity
-                entity: sensor.ygg_qdrant_status
-                name: Qdrant Vector DB
-                icon: mdi:vector-triangle
-              - type: entity
-                entity: sensor.ygg_qdrant_collections
-                name: Collections
-                icon: mdi:database
-
-      # ══════════════════════════════════════════════
-      #  Sentinel (Placeholder - When Deployed)
-      # ══════════════════════════════════════════════
-      - type: markdown
-        content: |
-          ## Sentinel
-          *Anomaly detection service - not yet deployed.*
-          When active, this section will display:
-          - Anomaly count
-          - Last check timestamp
-          - Alert history
+          **Hugin Ollama:** {{ state_attr('sensor.ygg_ollama_hugin', 'models')
+          | default([], true)
+          | map(attribute='name')
+          | list
+          | join(', ')
+          | default('None loaded', true) }}
         card_mod:
           style: |
             ha-card {
-              background: rgba(40, 40, 40, 0.4);
-              border: 1px dashed rgba(150, 150, 150, 0.3);
-              opacity: 0.7;
+              border-left: 3px solid rgba(100, 200, 255, 0.3);
             }
 
       # ══════════════════════════════════════════════
-      #  Network Topology Reference
+      #  Sentinel Monitor
+      # ══════════════════════════════════════════════
+      - type: entities
+        title: "Sentinel  —  REDACTED_MUNIN_IP:9094"
+        show_header_toggle: false
+        entities:
+          - entity: sensor.ygg_sentinel_status
+            name: Sentinel Status
+            icon: mdi:shield-check
+        card_mod:
+          style: |
+            ha-card {
+              border-top: 2px solid rgba(200, 180, 50, 0.4);
+            }
+
+      # ══════════════════════════════════════════════
+      #  Network Topology
       # ══════════════════════════════════════════════
       - type: markdown
         content: |
           ## Network Topology
           | Node | IP | Services |
           |:-----|:---|:---------|
-          | **Munin** | `REDACTED_MUNIN_IP` | Odin (:8080), Mimir (:9090), Ollama (:11434) |
-          | **Hugin** | `REDACTED_HUGIN_IP` | Huginn (:9092), Muninn (:9091), Ollama (:11434) |
+          | **Munin** | `REDACTED_MUNIN_IP` | Odin (:8080), Mimir (:9090), Node (:9100), Sentinel (:9094), Ollama (:11434) |
+          | **Hugin** | `REDACTED_HUGIN_IP` | Huginn (:9092), Muninn (:9091), Node (:9100), Ollama (:11434) |
           | **Hades** | `REDACTED_HADES_IP` | Qdrant (:6333) |
         card_mod:
           style: |

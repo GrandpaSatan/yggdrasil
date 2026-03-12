@@ -6,6 +6,7 @@ use crate::gitea::GiteaClient;
 use crate::AgentConfig;
 
 /// Task runner — processes code tasks from the queue.
+#[allow(dead_code)]
 pub struct TaskRunner {
     config: AgentConfig,
     gitea: GiteaClient,
@@ -13,6 +14,7 @@ pub struct TaskRunner {
 }
 
 /// A code task to be processed.
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct CodeTask {
     pub id: String,
@@ -288,11 +290,10 @@ fn glob_match(pattern: &str, value: &str) -> bool {
     }
 
     // If pattern doesn't end with '*', value must end at the right place
-    if let Some(last) = parts.last() {
-        if !last.is_empty() {
+    if let Some(last) = parts.last()
+        && !last.is_empty() {
             return value.ends_with(last);
         }
-    }
 
     true
 }

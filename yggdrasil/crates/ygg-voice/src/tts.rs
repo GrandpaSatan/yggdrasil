@@ -92,6 +92,7 @@ impl KokoroTts {
     /// Synthesize speech from text (synchronous, blocking).
     ///
     /// Returns f32 audio samples at 24kHz.
+    #[allow(dead_code)]
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>, VoiceError> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -127,7 +128,7 @@ impl KokoroTts {
 
         let style_array = Array3::from_shape_vec(
             (1, STYLE_DIM, 1),
-            style.iter().copied().collect(),
+            style.to_vec(),
         )
         .map_err(|e| VoiceError::Tts(format!("style shape error: {e}")))?;
 
@@ -230,7 +231,7 @@ impl KokoroTtsHandle {
 
         let style_array = Array3::from_shape_vec(
             (1, STYLE_DIM, 1),
-            style.iter().copied().collect(),
+            style.to_vec(),
         )
         .map_err(|e| VoiceError::Tts(format!("style shape error: {e}")))?;
 

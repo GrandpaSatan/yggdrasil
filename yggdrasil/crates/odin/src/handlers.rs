@@ -258,9 +258,9 @@ pub async fn chat_handler(
         memory_router::apply_memory_events(&recall, &mut decision);
 
         // ── 6b. Topic drift tracking via session SDR ─────────────
-        if let Some(hex) = &recall.query_sdr_hex {
-            if let Some(query_sdr) = ygg_domain::sdr::from_hex(hex) {
-                if let Some(drift) = state.session_store.update_session_sdr(&session_id, &query_sdr) {
+        if let Some(hex) = &recall.query_sdr_hex
+            && let Some(query_sdr) = ygg_domain::sdr::from_hex(hex)
+                && let Some(drift) = state.session_store.update_session_sdr(&session_id, &query_sdr) {
                     tracing::debug!(
                         session_id = %session_id,
                         drift_score = %drift,
@@ -274,8 +274,6 @@ pub async fn chat_handler(
                         );
                     }
                 }
-            }
-        }
     }
 
     tracing::info!(

@@ -148,22 +148,20 @@ async fn fetch_ha_domain_summary(state: &AppState) -> Option<String> {
     // ── Fast path: check cache under read lock ────────────────────
     {
         let guard = state.ha_context_cache.read().await;
-        if let Some((cached_at, ref summary)) = *guard {
-            if cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
+        if let Some((cached_at, ref summary)) = *guard
+            && cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
                 tracing::debug!("using cached HA domain summary");
                 return Some(summary.clone());
             }
-        }
     }
 
     // ── Slow path: refresh cache under write lock ─────────────────
     // Re-check under write lock to avoid a thundering-herd refresh.
     let mut guard = state.ha_context_cache.write().await;
-    if let Some((cached_at, ref summary)) = *guard {
-        if cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
+    if let Some((cached_at, ref summary)) = *guard
+        && cached_at.elapsed().as_secs() < CACHE_TTL_SECS {
             return Some(summary.clone());
         }
-    }
 
     // Fetch fresh data from HA.
     let states = match tokio::time::timeout(

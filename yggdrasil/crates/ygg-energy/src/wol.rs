@@ -22,7 +22,7 @@ pub fn send_wol(mac: &str, broadcast: &str) -> Result<(), WolError> {
 }
 
 fn parse_mac(mac: &str) -> Result<[u8; 6], WolError> {
-    let parts: Vec<&str> = mac.split(|c| c == ':' || c == '-').collect();
+    let parts: Vec<&str> = mac.split([':', '-']).collect();
     if parts.len() != 6 {
         return Err(WolError::InvalidMac(mac.to_string()));
     }

@@ -26,14 +26,19 @@
       "services": ["huginn"]
     },
     {
-      "name": "munin-voice",
-      "health_url": "http://REDACTED_MUNIN_IP:9095/health",
-      "services": ["ygg-voice"]
-    },
-    {
       "name": "munin-node",
       "health_url": "http://REDACTED_MUNIN_IP:9100/health",
       "services": ["ygg-node"]
+    },
+    {
+      "name": "hugin-node",
+      "health_url": "http://REDACTED_HUGIN_IP:9100/health",
+      "services": ["ygg-node"]
+    },
+    {
+      "name": "hades-qdrant",
+      "health_url": "http://REDACTED_HADES_IP:6333/",
+      "services": ["qdrant"]
     }
   ],
   "ha": {

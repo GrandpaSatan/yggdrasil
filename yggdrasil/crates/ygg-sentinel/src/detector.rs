@@ -138,7 +138,7 @@ pub fn binarize_embedding(embedding: &[serde_json::Value]) -> Vec<u8> {
     let median = sorted[sorted.len() / 2];
 
     // Pack bits: each byte holds 8 dimensions
-    let num_bytes = (floats.len() + 7) / 8;
+    let num_bytes = floats.len().div_ceil(8);
     let mut sdr = vec![0u8; num_bytes];
 
     for (i, &val) in floats.iter().enumerate() {

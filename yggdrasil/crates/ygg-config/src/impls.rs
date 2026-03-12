@@ -45,26 +45,23 @@ impl Validate for OdinConfig {
         }
         // Check cloud provider API keys for unexpanded env vars
         if let Some(ref cloud) = self.cloud {
-            if let Some(ref openai) = cloud.openai {
-                if let Some(e) = validate_no_unexpanded_vars("cloud.openai.api_key", &openai.api_key)
+            if let Some(ref openai) = cloud.openai
+                && let Some(e) = validate_no_unexpanded_vars("cloud.openai.api_key", &openai.api_key)
                 {
                     errors.push(e);
                 }
-            }
-            if let Some(ref claude) = cloud.claude {
-                if let Some(e) =
+            if let Some(ref claude) = cloud.claude
+                && let Some(e) =
                     validate_no_unexpanded_vars("cloud.claude.api_key", &claude.api_key)
                 {
                     errors.push(e);
                 }
-            }
-            if let Some(ref gemini) = cloud.gemini {
-                if let Some(e) =
+            if let Some(ref gemini) = cloud.gemini
+                && let Some(e) =
                     validate_no_unexpanded_vars("cloud.gemini.api_key", &gemini.api_key)
                 {
                     errors.push(e);
                 }
-            }
         }
 
         errors

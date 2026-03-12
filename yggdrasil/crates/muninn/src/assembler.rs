@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use ygg_domain::chunk::SearchResult;
 
+type ScoredFileGroup<'a> = Vec<(&'a str, f64, Vec<(f64, usize, &'a SearchResult)>)>;
+
 /// Assemble a context string from ranked search results suitable for LLM consumption.
 ///
 /// Chunks are grouped by `file_path`. Within each file group, chunks are sorted by
@@ -50,7 +52,7 @@ pub fn assemble_context(results: &[SearchResult], token_budget: usize) -> String
     }
 
     // For each file group, compute the maximum score (used for ordering groups).
-    let mut ordered_files: Vec<(&str, f64, Vec<(f64, usize, &SearchResult)>)> = file_groups
+    let mut ordered_files: ScoredFileGroup<'_> = file_groups
         .into_iter()
         .map(|(path, mut entries)| {
             // Sort entries within this file by start_line ascending.

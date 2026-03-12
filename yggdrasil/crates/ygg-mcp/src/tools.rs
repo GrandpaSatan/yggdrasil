@@ -1458,9 +1458,7 @@ async fn sync_docs_sprint_start(
         }
         // Log setup actions but continue with sprint_start.
         if let Some(text) = setup_result
-            .content
-            .iter()
-            .next()
+            .content.first()
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
         {
             tracing::info!("Auto-setup: {text}");
@@ -1681,8 +1679,7 @@ async fn sync_docs_sprint_end(
             .into_iter()
             .next()
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
-        {
-            if !content.contains("NO_CHANGES") && !content.trim().is_empty() {
+            && !content.contains("NO_CHANGES") && !content.trim().is_empty() {
                 let updated_arch = format!(
                     "{}\n\n## Sprint {} Changes\n\n{}",
                     current_arch.trim_end(),
@@ -1691,7 +1688,6 @@ async fn sync_docs_sprint_end(
                 );
                 let _ = tokio::fs::write(&arch_path, &updated_arch).await;
             }
-        }
     }
 
     // Step 4: Delete the sprint file.
@@ -1966,9 +1962,9 @@ pub async fn build_check(
     let mut warnings = Vec::new();
 
     for line in stdout.lines() {
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) {
-            if msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message") {
-                if let Some(message) = msg.get("message") {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(line)
+            && msg.get("reason").and_then(|r| r.as_str()) == Some("compiler-message")
+                && let Some(message) = msg.get("message") {
                     let level = message
                         .get("level")
                         .and_then(|l| l.as_str())
@@ -1986,8 +1982,6 @@ pub async fn build_check(
                         }
                     }
                 }
-            }
-        }
     }
 
     let success = output.status.success();
@@ -2907,7 +2901,7 @@ pub async fn task_queue(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/tasks/push"))
+                .post(format!("{odin_url}/api/v1/tasks/push"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -2960,7 +2954,7 @@ pub async fn task_queue(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/tasks/pop"))
+                .post(format!("{odin_url}/api/v1/tasks/pop"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -3032,7 +3026,7 @@ pub async fn task_queue(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/tasks/complete"))
+                .post(format!("{odin_url}/api/v1/tasks/complete"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -3084,7 +3078,7 @@ pub async fn task_queue(
             }
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/tasks/cancel"))
+                .post(format!("{odin_url}/api/v1/tasks/cancel"))
                 .json(&Req { task_id })
                 .timeout(timeout)
                 .send()
@@ -3136,7 +3130,7 @@ pub async fn task_queue(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/tasks/list"))
+                .post(format!("{odin_url}/api/v1/tasks/list"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -3246,7 +3240,7 @@ pub async fn memory_graph(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/graph/link"))
+                .post(format!("{odin_url}/api/v1/graph/link"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -3304,7 +3298,7 @@ pub async fn memory_graph(
             }
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/graph/unlink"))
+                .post(format!("{odin_url}/api/v1/graph/unlink"))
                 .json(&Req {
                     source_id: source,
                     target_id: target,
@@ -3360,7 +3354,7 @@ pub async fn memory_graph(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/graph/neighbors"))
+                .post(format!("{odin_url}/api/v1/graph/neighbors"))
                 .json(&body)
                 .timeout(timeout)
                 .send()
@@ -3447,7 +3441,7 @@ pub async fn memory_graph(
             };
 
             let resp = match client
-                .post(&format!("{odin_url}/api/v1/graph/traverse"))
+                .post(format!("{odin_url}/api/v1/graph/traverse"))
                 .json(&body)
                 .timeout(timeout)
                 .send()

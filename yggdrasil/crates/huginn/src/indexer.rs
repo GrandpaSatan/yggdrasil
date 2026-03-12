@@ -212,12 +212,11 @@ impl Indexer {
 
         // Check stored hash — skip if unchanged.
         let existing = get_indexed_file(self.store.pool(), &file_path_str).await?;
-        if let Some(ref record) = existing {
-            if !force && record.content_hash == file_hash {
+        if let Some(ref record) = existing
+            && !force && record.content_hash == file_hash {
                 debug!(path = %file_path_str, "skipping — hash unchanged");
                 return Ok(None);
             }
-        }
 
         info!(path = %file_path_str, language = %language, "indexing file");
 
@@ -298,7 +297,6 @@ impl Indexer {
             // Persist each chunk + embedding concurrently, throttled by DB_WRITE_CONCURRENCY.
             for (chunk, embedding) in batch.iter().zip(embeddings.into_iter()) {
                 let chunk = chunk.clone();
-                let embedding = embedding;
                 let pool = self.store.pool().clone();
                 let vectors = self.vectors.clone();
                 let sem = Arc::clone(&db_sem);

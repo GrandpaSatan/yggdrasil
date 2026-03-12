@@ -189,12 +189,12 @@ fn build_mel_filterbank(n_mels: usize, fft_size: usize, sample_rate: u32) -> Vec
         let center = bin_points[m + 1];
         let right = bin_points[m + 2];
 
-        for k in 0..n_freqs {
+        for (k, bin) in filterbank[m].iter_mut().enumerate() {
             let freq = k as f32;
             if freq >= left && freq <= center && center > left {
-                filterbank[m][k] = (freq - left) / (center - left);
+                *bin = (freq - left) / (center - left);
             } else if freq > center && freq <= right && right > center {
-                filterbank[m][k] = (right - freq) / (right - center);
+                *bin = (right - freq) / (right - center);
             }
         }
     }

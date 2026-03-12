@@ -136,7 +136,7 @@ impl YggdrasilLocalServer {
     ) -> String {
         let browser = match self
             .browser
-            .get_or_try_init(|| init_browser())
+            .get_or_try_init(init_browser)
             .await
         {
             Ok(b) => b,

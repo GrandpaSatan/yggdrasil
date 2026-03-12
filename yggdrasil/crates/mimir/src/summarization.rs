@@ -285,14 +285,16 @@ impl SummarizationService {
         // source engrams in Recall tier — they will be candidates again next cycle.
         let summary_id = match engrams::insert_engram_sdr(
             pool,
-            &summary_cause,
-            &summary_effect,
-            &sdr_bytes,
-            &content_hash,
+            &engrams::EngramSdrParams {
+                cause: &summary_cause,
+                effect: &summary_effect,
+                sdr_bits: &sdr_bytes,
+                content_hash: &content_hash,
+                tags: &tags,
+                trigger_type: "pattern",
+                trigger_label: &trigger_label,
+            },
             ygg_domain::engram::MemoryTier::Archival,
-            &tags,
-            "pattern",
-            &trigger_label,
         )
         .await
         {

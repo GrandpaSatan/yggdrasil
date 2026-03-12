@@ -170,11 +170,10 @@ impl VoicePipeline {
             let sr = self.tts.sample_rate();
             tokio::task::spawn_blocking(move || {
                 let player = AudioPlayer::new(sr);
-                if let Ok(p) = player {
-                    if let Err(e) = p.play_wav(&path) {
+                if let Ok(p) = player
+                    && let Err(e) = p.play_wav(&path) {
                         warn!("failed to play busy sound: {e}");
                     }
-                }
             });
         }
 

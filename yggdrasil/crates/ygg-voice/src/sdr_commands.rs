@@ -126,6 +126,7 @@ impl SdrCommandRegistry {
     }
 
     /// Register a command manually from audio samples.
+    #[allow(dead_code)]
     pub fn register(
         &mut self,
         audio: &[f32],
@@ -185,6 +186,7 @@ impl SdrCommandRegistry {
     }
 
     /// Whether the registry is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }

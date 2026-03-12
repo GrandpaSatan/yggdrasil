@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 /// Energy policy for a node — determines power management behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum EnergyPolicy {
     /// Node must always be running. Never auto-sleep.
+    #[default]
     AlwaysOn,
     /// Node can be woken on demand and put to sleep after idle timeout.
     OnDemand,
@@ -14,11 +16,6 @@ pub enum EnergyPolicy {
     Prioritized,
 }
 
-impl Default for EnergyPolicy {
-    fn default() -> Self {
-        Self::AlwaysOn
-    }
-}
 
 /// Per-node energy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

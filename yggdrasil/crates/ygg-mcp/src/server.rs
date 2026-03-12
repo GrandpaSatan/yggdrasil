@@ -634,29 +634,25 @@ impl ServerHandler for YggdrasilServer {
         .with_server_info(Implementation::new("yggdrasil", "0.1.0"))
     }
 
-    fn list_resources(
+    async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<
-        Output = Result<ListResourcesResult, rmcp::ErrorData>,
-    > + Send + '_ {
-        async move {
-            Ok(ListResourcesResult::with_all_items(vec![
-                RawResource::new(RESOURCE_MODELS, "Available Models")
-                    .with_description("Lists all LLM models available through Odin.")
-                    .with_mime_type("text/plain")
-                    .no_annotation(),
-                RawResource::new(RESOURCE_MEMORY_STATS, "Memory Statistics")
-                    .with_description("Engram count and tier statistics from Mimir.")
-                    .with_mime_type("text/plain")
-                    .no_annotation(),
-                RawResource::new(RESOURCE_SESSION_CONTEXT, "Session Context")
-                    .with_description("Prefetched active sprint context from Mimir memory.")
-                    .with_mime_type("text/plain")
-                    .no_annotation(),
-            ]))
-        }
+    ) -> Result<ListResourcesResult, rmcp::ErrorData> {
+        Ok(ListResourcesResult::with_all_items(vec![
+            RawResource::new(RESOURCE_MODELS, "Available Models")
+                .with_description("Lists all LLM models available through Odin.")
+                .with_mime_type("text/plain")
+                .no_annotation(),
+            RawResource::new(RESOURCE_MEMORY_STATS, "Memory Statistics")
+                .with_description("Engram count and tier statistics from Mimir.")
+                .with_mime_type("text/plain")
+                .no_annotation(),
+            RawResource::new(RESOURCE_SESSION_CONTEXT, "Session Context")
+                .with_description("Prefetched active sprint context from Mimir memory.")
+                .with_mime_type("text/plain")
+                .no_annotation(),
+        ]))
     }
 
     fn read_resource(

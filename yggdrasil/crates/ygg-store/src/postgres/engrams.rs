@@ -5,6 +5,16 @@ use uuid::Uuid;
 use crate::error::StoreError;
 use ygg_domain::engram::{Engram, MemoryTier, MemoryStats};
 
+pub struct EngramSdrParams<'a> {
+    pub cause: &'a str,
+    pub effect: &'a str,
+    pub sdr_bits: &'a [u8],
+    pub content_hash: &'a [u8],
+    pub tags: &'a [String],
+    pub trigger_type: &'a str,
+    pub trigger_label: &'a str,
+}
+
 /// Retrieve an engram by ID.
 pub async fn get_engram(pool: &PgPool, id: Uuid) -> Result<Engram, StoreError> {
     let row = sqlx::query(
@@ -246,14 +256,8 @@ pub async fn set_tier(pool: &PgPool, id: Uuid, tier: MemoryTier) -> Result<(), S
 /// Returns the generated UUID. Rejects duplicates based on content_hash.
 pub async fn insert_engram_sdr(
     pool: &PgPool,
-    cause: &str,
-    effect: &str,
-    sdr_bits: &[u8],
-    content_hash: &[u8],
+    params: &EngramSdrParams<'_>,
     tier: MemoryTier,
-    tags: &[String],
-    trigger_type: &str,
-    trigger_label: &str,
 ) -> Result<Uuid, StoreError> {
     let id = Uuid::new_v4();
     let tier_str = tier.as_str();
@@ -266,14 +270,14 @@ pub async fn insert_engram_sdr(
         "#,
     )
     .bind(id)
-    .bind(cause)
-    .bind(effect)
-    .bind(sdr_bits)
-    .bind(content_hash)
+    .bind(params.cause)
+    .bind(params.effect)
+    .bind(params.sdr_bits)
+    .bind(params.content_hash)
     .bind(tier_str)
-    .bind(tags)
-    .bind(trigger_type)
-    .bind(trigger_label)
+    .bind(params.tags)
+    .bind(params.trigger_type)
+    .bind(params.trigger_label)
     .execute(pool)
     .await
     .map_err(|e| {
@@ -295,13 +299,7 @@ pub async fn insert_engram_sdr(
 pub async fn update_engram_sdr(
     pool: &PgPool,
     id: Uuid,
-    cause: &str,
-    effect: &str,
-    sdr_bits: &[u8],
-    content_hash: &[u8],
-    tags: &[String],
-    trigger_type: &str,
-    trigger_label: &str,
+    params: &EngramSdrParams<'_>,
 ) -> Result<bool, StoreError> {
     let rows = sqlx::query(
         r#"
@@ -313,13 +311,13 @@ pub async fn update_engram_sdr(
         "#,
     )
     .bind(id)
-    .bind(cause)
-    .bind(effect)
-    .bind(sdr_bits)
-    .bind(content_hash)
-    .bind(tags)
-    .bind(trigger_type)
-    .bind(trigger_label)
+    .bind(params.cause)
+    .bind(params.effect)
+    .bind(params.sdr_bits)
+    .bind(params.content_hash)
+    .bind(params.tags)
+    .bind(params.trigger_type)
+    .bind(params.trigger_label)
     .execute(pool)
     .await
     .map_err(|e| StoreError::Query(e.to_string()))?;
@@ -480,7 +478,7 @@ fn parse_tier(s: &str) -> MemoryTier {
 
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     if let sqlx::Error::Database(db_err) = e {
-        db_err.code().map_or(false, |c| c == "23505")
+        db_err.code().is_some_and(|c| c == "23505")
     } else {
         false
     }

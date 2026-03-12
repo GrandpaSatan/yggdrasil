@@ -96,13 +96,15 @@ pub async fn store_engram(
         let updated = engrams::update_engram_sdr(
             state.store.pool(),
             existing_id,
-            &body.cause,
-            &body.effect,
-            &sdr_bytes,
-            &content_hash,
-            &body.tags,
-            trigger_type,
-            &trigger_label,
+            &engrams::EngramSdrParams {
+                cause: &body.cause,
+                effect: &body.effect,
+                sdr_bits: &sdr_bytes,
+                content_hash: &content_hash,
+                tags: &body.tags,
+                trigger_type,
+                trigger_label: &trigger_label,
+            },
         )
         .await?;
 
@@ -133,8 +135,8 @@ pub async fn store_engram(
     let dedup_threshold = state.config.sdr.dedup_threshold;
     if dedup_threshold < 1.0 {
         let nearest = state.sdr_index.query(&sdr_val, 1);
-        if let Some((dup_id, sim)) = nearest.first() {
-            if *sim >= dedup_threshold {
+        if let Some((dup_id, sim)) = nearest.first()
+            && *sim >= dedup_threshold {
                 tracing::info!(
                     duplicate_id = %dup_id,
                     similarity = %sim,
@@ -150,20 +152,21 @@ pub async fn store_engram(
                     })),
                 ));
             }
-        }
     }
 
     // Step 8: Insert into PostgreSQL
     let id = engrams::insert_engram_sdr(
         state.store.pool(),
-        &body.cause,
-        &body.effect,
-        &sdr_bytes,
-        &content_hash,
+        &engrams::EngramSdrParams {
+            cause: &body.cause,
+            effect: &body.effect,
+            sdr_bits: &sdr_bytes,
+            content_hash: &content_hash,
+            tags: &body.tags,
+            trigger_type,
+            trigger_label: &trigger_label,
+        },
         MemoryTier::Recall,
-        &body.tags,
-        trigger_type,
-        &trigger_label,
     )
     .await?;
 

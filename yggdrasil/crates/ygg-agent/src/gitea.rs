@@ -1,15 +1,16 @@
 use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::debug;
 
 /// Gitea REST API client.
+#[allow(dead_code)]
 pub struct GiteaClient {
     client: reqwest::Client,
     base_url: String,
     token: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct GiteaRepo {
     pub full_name: String,
@@ -17,6 +18,7 @@ pub struct GiteaRepo {
     pub default_branch: String,
 }
 
+#[allow(dead_code)]
 impl GiteaClient {
     pub fn new(base_url: String, token: String) -> Self {
         let client = reqwest::Client::builder()
@@ -132,6 +134,7 @@ impl GiteaClient {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum GiteaError {
     #[error("Gitea API error (HTTP {status}): {message}")]

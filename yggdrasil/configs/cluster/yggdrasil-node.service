@@ -1,0 +1,16 @@
+[Unit]
+Description=Yggdrasil Mesh Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+ExecStart=/opt/yggdrasil/bin/ygg-node --config /etc/yggdrasil/cluster/config.json
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

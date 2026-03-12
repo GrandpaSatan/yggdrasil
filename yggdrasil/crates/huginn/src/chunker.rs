@@ -335,11 +335,11 @@ impl Chunker {
 // --- Helpers ----------------------------------------------------------------
 
 /// Build a single-chunk fallback (YAML, heading-less Markdown).
-fn build_single_chunk<'a>(
+fn build_single_chunk(
     source: &str,
     language: Language,
     chunk_type: ChunkType,
-    name: &'a str,
+    name: &str,
     parent_context: String,
     file_path: &str,
     repo_root: &str,

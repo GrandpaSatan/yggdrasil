@@ -29,6 +29,7 @@ pub struct PersistentSessionManager {
     project_id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum PersistentSessionManagerError {
     #[error("{0}")]
