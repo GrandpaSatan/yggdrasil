@@ -171,7 +171,7 @@ This project is licensed under the [Business Source License 1.1](LICENSE).
 Yggdrasil is built nights and weekends by a solo developer who would love nothing more than to work on this full-time. If you find it useful, consider supporting development:
 
 - [GitHub Sponsors](https://github.com/sponsors/jesushernandez)
-- [Buy Me a Coffee](https://buymeacoffee.com/jesushernandez)
+- [Buy Me a Coffee](https://buymeacoffee.com/jourgoundd)
 - [Ko-fi](https://ko-fi.com/jesushernandez)
 
 Every contribution -- no matter how small -- gets me one step closer to making this my day job. Thank you.
