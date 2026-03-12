@@ -7,6 +7,7 @@
 /// can be cheaply cloned when Axum distributes it to handler tasks.
 use std::sync::Arc;
 
+use ygg_cloud::adapter::{ChatMessage as CloudChatMessage, ChatRequest as CloudChatRequest, CloudAdapter};
 use ygg_domain::config::{BackendType, OdinConfig};
 use ygg_ha::HaClient;
 
@@ -28,6 +29,61 @@ pub struct BackendState {
     pub semaphore: Arc<tokio::sync::Semaphore>,
     /// Total context window size in tokens for this backend.
     pub context_window: usize,
+}
+
+/// Pool of cloud provider adapters for fallback routing.
+#[derive(Clone)]
+pub struct CloudPool {
+    pub adapters: Arc<Vec<Box<dyn CloudAdapter>>>,
+    pub fallback_enabled: bool,
+}
+
+impl CloudPool {
+    /// Try each cloud adapter in order until one succeeds.
+    pub async fn fallback_chat(
+        &self,
+        messages: Vec<CloudChatMessage>,
+        model_hint: Option<&str>,
+    ) -> Option<String> {
+        if !self.fallback_enabled {
+            return None;
+        }
+
+        for adapter in self.adapters.iter() {
+            let model = model_hint
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("{}-default", adapter.provider()));
+
+            let req = CloudChatRequest {
+                model,
+                messages: messages.clone(),
+                temperature: Some(0.7),
+                max_tokens: Some(4096),
+                stream: false,
+            };
+
+            match adapter.chat_completion(req).await {
+                Ok(resp) => {
+                    tracing::info!(
+                        provider = %adapter.provider(),
+                        model = %resp.model,
+                        tokens = resp.usage.total_tokens,
+                        "cloud fallback succeeded"
+                    );
+                    return Some(resp.content);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %adapter.provider(),
+                        error = %e,
+                        "cloud fallback failed — trying next provider"
+                    );
+                }
+            }
+        }
+
+        None
+    }
 }
 
 /// Shared state injected into every Axum handler.
@@ -56,4 +112,6 @@ pub struct AppState {
     pub ha_context_cache: Arc<tokio::sync::RwLock<Option<(tokio::time::Instant, String)>>>,
     /// In-memory conversation session store.
     pub session_store: SessionStore,
+    /// Cloud provider pool for fallback routing when local backends are at capacity.
+    pub cloud_pool: Option<CloudPool>,
 }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ygg-domain",
+    "crates/ygg-config",
     "crates/ygg-store",
     "crates/ygg-embed",
     "crates/odin",
@@ -12,6 +13,14 @@ members = [
     "crates/ygg-ha",
     "crates/ygg-mcp-server",
     "crates/ygg-mcp-remote",
+    "crates/ygg-mesh",
+    "crates/ygg-node",
+    "crates/ygg-cloud",
+    "crates/ygg-energy",
+    "crates/ygg-sentinel",
+    "crates/ygg-installer",
+    "crates/ygg-voice",
+    "crates/ygg-agent",
 ]
 
 [workspace.package]
@@ -97,6 +106,11 @@ metrics-exporter-prometheus = "0.16"
 
 # Systemd notification
 sd-notify = "0.4"
+
+# Audio capture/playback
+cpal = "0.15"
+hound = "3.5"
+rustfft = "6"
 
 [profile.release]
 lto = "thin"

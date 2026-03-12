@@ -6,7 +6,11 @@
 pub mod automation;
 pub mod client;
 pub mod error;
+pub mod notify;
+pub mod webhook;
 
 pub use automation::AutomationGenerator;
 pub use client::{DomainServices, EntityState, HaClient, ServiceDef};
 pub use error::HaError;
+pub use notify::{Notification, NotificationAction};
+pub use webhook::{WebhookPayload, WebhookResponse};

@@ -356,7 +356,7 @@ pub async fn chat_handler(
         BackendType::Openai => {
             let mut openai_request = ChatCompletionRequest {
                 model: Some(decision.model.clone()),
-                messages: packed_messages,
+                messages: packed_messages.clone(),
                 stream: request.stream,
                 temperature: request.temperature,
                 max_tokens: request.max_tokens,
@@ -410,12 +410,54 @@ pub async fn chat_handler(
                 Ok(resp)
             } else {
                 openai_request.stream = false;
-                let response = proxy::generate_chat_openai(
+                let local_result = proxy::generate_chat_openai(
                     &state.http_client,
                     &decision.backend_url,
                     openai_request,
                 )
-                .await?;
+                .await;
+
+                let response = match local_result {
+                    Ok(resp) => resp,
+                    Err(local_err) => {
+                        // If local backend failed and cloud fallback is enabled, try cloud providers
+                        if let Some(pool) = &state.cloud_pool {
+                            if pool.fallback_enabled {
+                                let cloud_messages: Vec<_> = packed_messages.iter().map(|m| {
+                                    ygg_cloud::adapter::ChatMessage {
+                                        role: m.role.to_string(),
+                                        content: m.content.clone(),
+                                    }
+                                }).collect();
+
+                                if let Some(cloud_content) = pool.fallback_chat(cloud_messages, Some(&decision.model)).await {
+                                    tracing::info!("cloud fallback produced response for openai backend failure");
+                                    crate::openai::ChatCompletionResponse {
+                                        id: completion_id.clone(),
+                                        object: "chat.completion".to_string(),
+                                        created: unix_now(),
+                                        model: format!("cloud-fallback:{}", decision.model),
+                                        choices: vec![crate::openai::Choice {
+                                            index: 0,
+                                            message: ChatMessage {
+                                                role: Role::Assistant,
+                                                content: cloud_content,
+                                            },
+                                            finish_reason: Some("stop".to_string()),
+                                        }],
+                                        usage: None,
+                                    }
+                                } else {
+                                    return Err(local_err);
+                                }
+                            } else {
+                                return Err(local_err);
+                            }
+                        } else {
+                            return Err(local_err);
+                        }
+                    }
+                };
 
                 // ── 11. Update session + engram store ─────────────────
                 let effect = response
@@ -542,13 +584,55 @@ pub async fn chat_handler(
                 );
                 Ok(resp)
             } else {
-                let response = proxy::generate_chat(
+                let local_result = proxy::generate_chat(
                     &state.http_client,
                     &decision.backend_url,
                     ollama_request,
                     &completion_id,
                 )
-                .await?;
+                .await;
+
+                let response = match local_result {
+                    Ok(resp) => resp,
+                    Err(local_err) => {
+                        // If local backend failed and cloud fallback is enabled, try cloud providers
+                        if let Some(pool) = &state.cloud_pool {
+                            if pool.fallback_enabled {
+                                let cloud_messages: Vec<_> = packed_messages.iter().map(|m| {
+                                    ygg_cloud::adapter::ChatMessage {
+                                        role: m.role.to_string(),
+                                        content: m.content.clone(),
+                                    }
+                                }).collect();
+
+                                if let Some(cloud_content) = pool.fallback_chat(cloud_messages, Some(&decision.model)).await {
+                                    tracing::info!("cloud fallback produced response for ollama backend failure");
+                                    crate::openai::ChatCompletionResponse {
+                                        id: completion_id.clone(),
+                                        object: "chat.completion".to_string(),
+                                        created: unix_now(),
+                                        model: format!("cloud-fallback:{}", decision.model),
+                                        choices: vec![crate::openai::Choice {
+                                            index: 0,
+                                            message: ChatMessage {
+                                                role: Role::Assistant,
+                                                content: cloud_content,
+                                            },
+                                            finish_reason: Some("stop".to_string()),
+                                        }],
+                                        usage: None,
+                                    }
+                                } else {
+                                    return Err(local_err);
+                                }
+                            } else {
+                                return Err(local_err);
+                            }
+                        } else {
+                            return Err(local_err);
+                        }
+                    }
+                };
 
                 // ── 11. Update session + engram store ─────────────────
                 let effect = response
@@ -1063,6 +1147,40 @@ async fn forward_to_muninn(
         .map_err(|e| OdinError::Proxy(format!("muninn body read error ({op}): {e}")))?;
 
     Ok((status, headers, response_body).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/notify
+// ─────────────────────────────────────────────────────────────────
+
+/// Unified notification API — sends push notifications via HA.
+///
+/// Expects JSON body with `title`, `message`, and optional `target` fields.
+/// If `target` is omitted, defaults to `"mobile_app_pixel"`.
+pub async fn notify_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let title = payload["title"].as_str().unwrap_or("Yggdrasil Alert");
+    let message = payload["message"].as_str().unwrap_or("");
+    let target = payload["target"].as_str();
+
+    if let Some(ha) = &state.ha_client {
+        let notify_target = target.unwrap_or("mobile_app_pixel");
+        match ha.notify_simple(notify_target, title, message).await {
+            Ok(()) => {
+                Json(serde_json::json!({"status": "sent", "target": notify_target}))
+                    .into_response()
+            }
+            Err(e) => {
+                (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e.to_string()})))
+                    .into_response()
+            }
+        }
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "HA not configured"})))
+            .into_response()
+    }
 }
 
 /// Shared GET proxy logic for Mimir endpoints.

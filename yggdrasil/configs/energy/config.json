@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    {
+      "node_name": "munin",
+      "policy": "always_on",
+      "idle_timeout_mins": 30
+    },
+    {
+      "node_name": "hugin",
+      "policy": "always_on",
+      "idle_timeout_mins": 30
+    },
+    {
+      "node_name": "thor",
+      "policy": "on_demand",
+      "wol_mac": "${THOR_WOL_MAC}",
+      "wol_broadcast": "REDACTED_THOR_IP55",
+      "idle_timeout_mins": 30,
+      "proxmox_url": "https://REDACTED_THOR_IP:8006",
+      "proxmox_node": "thor",
+      "proxmox_vmid": 100
+    },
+    {
+      "node_name": "hades",
+      "policy": "always_on",
+      "idle_timeout_mins": 30
+    }
+  ]
+}

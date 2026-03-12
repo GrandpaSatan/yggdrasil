@@ -11,9 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 ygg-domain = { path = "../ygg-domain" }
+ygg-config = { path = "../ygg-config" }
 ygg-embed = { path = "../ygg-embed" }
 ygg-mcp = { path = "../ygg-mcp" }
 ygg-ha = { path = "../ygg-ha" }
+ygg-cloud = { path = "../ygg-cloud" }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -21,7 +23,6 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }

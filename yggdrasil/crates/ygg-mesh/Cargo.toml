@@ -1,0 +1,21 @@
+[package]
+name = "ygg-mesh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ygg-domain = { path = "../ygg-domain" }
+ygg-config = { path = "../ygg-config" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+mdns-sd = "0.11"
+glob-match = "0.2"

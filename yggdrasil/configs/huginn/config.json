@@ -1,0 +1,14 @@
+{
+  "watch_paths": [
+    "/home/jhernandez/repos/Yggdrasil",
+    "/home/jhernandez/repos/Fergus_Agent",
+    "/mnt/workstation/docs/HardwareSetup"
+  ],
+  "database_url": "${HUGINN_DATABASE_URL}",
+  "qdrant_url": "http://REDACTED_HADES_IP:6334",
+  "embed": {
+    "model_dir": "/opt/yggdrasil/models/all-MiniLM-L6-v2"
+  },
+  "debounce_ms": 500,
+  "listen_addr": "0.0.0.0:9092"
+}

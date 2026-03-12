@@ -15,6 +15,43 @@ pub struct OdinConfig {
     /// Session state configuration. Uses defaults when absent.
     #[serde(default)]
     pub session: SessionConfig,
+    /// Optional cloud provider backends for fallback routing.
+    /// When local backends are at capacity, Odin falls back to these cloud APIs.
+    #[serde(default)]
+    pub cloud: Option<CloudProvidersConfig>,
+}
+
+/// Cloud provider configuration for fallback routing through ygg-cloud.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudProvidersConfig {
+    /// Enable cloud fallback when local backends return 503.
+    #[serde(default)]
+    pub fallback_enabled: bool,
+    /// OpenAI API configuration.
+    #[serde(default)]
+    pub openai: Option<CloudProviderEntry>,
+    /// Anthropic Claude API configuration.
+    #[serde(default)]
+    pub claude: Option<CloudProviderEntry>,
+    /// Google Gemini API configuration.
+    #[serde(default)]
+    pub gemini: Option<CloudProviderEntry>,
+}
+
+/// A single cloud provider's credentials and limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudProviderEntry {
+    /// API key (use ${ENV_VAR} expansion for secrets).
+    pub api_key: String,
+    /// Default model to use for this provider.
+    pub default_model: String,
+    /// Max requests per minute (rate limiting).
+    #[serde(default = "default_cloud_rpm")]
+    pub requests_per_minute: u32,
+}
+
+fn default_cloud_rpm() -> u32 {
+    60
 }
 
 /// Session state configuration for Odin's in-memory conversation store.
