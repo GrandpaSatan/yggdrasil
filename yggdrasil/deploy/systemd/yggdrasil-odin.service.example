@@ -1,0 +1,30 @@
+[Unit]
+Description=Yggdrasil Odin - LLM Orchestrator
+After=network-online.target yggdrasil-mimir.service
+Wants=network-online.target
+Requires=yggdrasil-mimir.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/odin --config /etc/yggdrasil/odin/node.yaml
+ExecStartPre=/opt/yggdrasil/bin/wait-for-health.sh http://localhost:9090/health 30
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=15
+WatchdogSec=30
+Environment="RUST_LOG=info"
+# Set HA_TOKEN via a systemd drop-in or EnvironmentFile:
+#   /etc/yggdrasil/odin/odin.env  →  HA_TOKEN=your-long-lived-token
+# EnvironmentFile=/etc/yggdrasil/odin/odin.env
+Environment="HA_TOKEN="
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

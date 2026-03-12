@@ -5,7 +5,7 @@ set -euo pipefail
 
 NODE=$1
 SERVICE=$2
-REMOTE="jhernandez@${NODE}"
+REMOTE="${DEPLOY_USER:-yggdrasil}@${NODE}"
 BIN="/opt/yggdrasil/bin/${SERVICE}"
 
 ssh "$REMOTE" "sudo cp ${BIN} ${BIN}.failed && sudo cp ${BIN}.prev ${BIN}"

@@ -32,7 +32,7 @@ This document is the canonical reference for all hardware optimization work on t
 
 | Property | Munin | Hugin |
 |----------|-------|-------|
-| IP | REDACTED_MUNIN_IP | REDACTED_HUGIN_IP |
+| IP | <munin-ip> | <hugin-ip> |
 | CPU | Intel Core Ultra 185H (6P+8E+2LP, 16T) | AMD Ryzen 7 255 (Zen 5, 8C/16T) |
 | iGPU | Intel ARC (Xe-LPG, 8 Xe-cores) | AMD RDNA (integrated, not targeted) |
 | RAM | 48 GB DDR5 | 64 GB DDR5 |

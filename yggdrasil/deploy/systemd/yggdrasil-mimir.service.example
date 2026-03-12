@@ -19,7 +19,10 @@ TimeoutStartSec=120
 TimeoutStopSec=15
 WatchdogSec=30
 Environment="RUST_LOG=info"
-Environment="MIMIR_DATABASE_URL=postgres://your-user:$DB_PASSWORD@localhost:5432/yggdrasil"
+# Do NOT hardcode credentials here. Use an EnvironmentFile instead:
+#   /etc/yggdrasil/mimir/mimir.env  →  MIMIR_DATABASE_URL=postgres://user:password@localhost:5432/yggdrasil
+# EnvironmentFile=/etc/yggdrasil/mimir/mimir.env
+Environment="MIMIR_DATABASE_URL="
 Environment="ORT_DYLIB_PATH=/opt/yggdrasil/lib/libonnxruntime.so"
 LimitNOFILE=65536
 

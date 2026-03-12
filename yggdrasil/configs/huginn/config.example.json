@@ -1,11 +1,11 @@
 {
   "watch_paths": [
-    "/home/$USER/repos/Yggdrasil",
-    "/home/$USER/repos/Fergus_Agent",
+    "/home/your-user/repos/Yggdrasil",
+    "/home/your-user/repos/Fergus_Agent",
     "/mnt/workstation/docs/HardwareSetup"
   ],
   "database_url": "${HUGINN_DATABASE_URL}",
-  "qdrant_url": "http://<hades-ip>:6334",
+  "qdrant_url": "http://<qdrant-ip>:6334",
   "embed": {
     "model_dir": "/opt/yggdrasil/models/all-MiniLM-L6-v2"
   },

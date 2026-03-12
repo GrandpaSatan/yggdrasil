@@ -1,12 +1,12 @@
-# Yggdrasil Observability Stack — Nightjar (REDACTED_NIGHTJAR_IP)
+# Yggdrasil Observability Stack — Nightjar
 # Prometheus scrapes all 4 Yggdrasil services; Grafana visualizes them.
 #
 # Deploy:
-#   scp -r deploy/nightjar jhernandez@REDACTED_NIGHTJAR_IP:~/yggdrasil-observability/
-#   ssh jhernandez@REDACTED_NIGHTJAR_IP 'cd ~/yggdrasil-observability && docker compose -f docker-compose.grafana.yml up -d'
+#   scp -r deploy/nightjar ${DEPLOY_USER:-yggdrasil}@${NIGHTJAR_HOST}:~/yggdrasil-observability/
+#   ssh ${DEPLOY_USER:-yggdrasil}@${NIGHTJAR_HOST} 'cd ~/yggdrasil-observability && docker compose -f docker-compose.grafana.yml up -d'
 #
-# Grafana: http://REDACTED_NIGHTJAR_IP:3000  (admin / admin — change on first login)
-# Prometheus: http://REDACTED_NIGHTJAR_IP:9099
+# Grafana: http://${NIGHTJAR_HOST}:3000  (admin / <GRAFANA_ADMIN_PASSWORD> — change on first login)
+# Prometheus: http://${NIGHTJAR_HOST}:9099
 
 services:
   prometheus:
@@ -31,9 +31,9 @@ services:
     container_name: ygg-grafana
     restart: unless-stopped
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://REDACTED_NIGHTJAR_IP:3000
+      - GF_SERVER_ROOT_URL=http://${GRAFANA_HOST:-localhost}:3000
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

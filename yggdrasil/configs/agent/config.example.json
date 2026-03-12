@@ -1,0 +1,11 @@
+{
+  "odin_url": "http://<munin-ip>:8080",
+  "gitea_url": "${GITEA_URL}",
+  "gitea_token": "${GITEA_TOKEN}",
+  "work_dir": "/tmp/ygg-agent",
+  "poll_interval_secs": 10,
+  "queue_name": "code-agent",
+  "project": "yggdrasil",
+  "allowed_repos": [],
+  "allowed_branches": []
+}

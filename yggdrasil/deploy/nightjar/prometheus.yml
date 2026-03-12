@@ -2,23 +2,33 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Edit the targets below to match your deployment.
+# Replace the placeholder IPs with the actual addresses of each service.
+# Example layout:
+#   odin  + mimir  run on the same node (MUNIN_HOST, e.g. REDACTED_MUNIN_IP)
+#   muninn + huginn run on the same node (HUGIN_HOST,  e.g. REDACTED_HUGIN_IP)
+#
+# Ports are the default Yggdrasil service metric ports:
+#   odin:   8080   mimir:  9090
+#   muninn: 9091   huginn: 9092
+
 scrape_configs:
   - job_name: "odin"
     static_configs:
-      - targets: ["REDACTED_MUNIN_IP:8080"]
+      - targets: ["${MUNIN_HOST:-REPLACE_WITH_MUNIN_IP}:8080"]
     metrics_path: /metrics
 
   - job_name: "mimir"
     static_configs:
-      - targets: ["REDACTED_MUNIN_IP:9090"]
+      - targets: ["${MUNIN_HOST:-REPLACE_WITH_MUNIN_IP}:9090"]
     metrics_path: /metrics
 
   - job_name: "muninn"
     static_configs:
-      - targets: ["REDACTED_HUGIN_IP:9091"]
+      - targets: ["${HUGIN_HOST:-REPLACE_WITH_HUGIN_IP}:9091"]
     metrics_path: /metrics
 
   - job_name: "huginn"
     static_configs:
-      - targets: ["REDACTED_HUGIN_IP:9092"]
+      - targets: ["${HUGIN_HOST:-REPLACE_WITH_HUGIN_IP}:9092"]
     metrics_path: /metrics

@@ -19,7 +19,7 @@ echo "[${DATE}] Starting Yggdrasil backup"
 # PostgreSQL dump (yggdrasil schema only).
 # PostgreSQL runs as a Docker container on Munin (localhost:5432).
 # Produces a custom-format dump suitable for pg_restore.
-pg_dump -h 127.0.0.1 -U jhernandez -d yggdrasil \
+pg_dump -h 127.0.0.1 -U ${PG_USER:-yggdrasil} -d yggdrasil \
   --schema=yggdrasil --format=custom \
   -f "${BACKUP_DIR}/pg_yggdrasil_${DATE}.dump"
 
@@ -30,7 +30,7 @@ echo "[${DATE}] PostgreSQL dump complete: pg_yggdrasil_${DATE}.dump"
 # metadata. The snapshot is stored on the Qdrant server; this records the
 # trigger event. For full off-node backup, rsync from the Qdrant data dir.
 for collection in engrams code_chunks; do
-    response=$(curl -s -X POST "http://REDACTED_HADES_IP:6333/collections/${collection}/snapshots")
+    response=$(curl -s -X POST "http://${QDRANT_HOST:-localhost}:6333/collections/${collection}/snapshots")
     echo "[${DATE}] Qdrant snapshot triggered for ${collection}: ${response}"
     # Save the response (contains snapshot name/path) for reference.
     echo "${response}" > "${BACKUP_DIR}/qdrant_${collection}_${DATE}.snapshot"

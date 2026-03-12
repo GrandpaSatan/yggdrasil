@@ -354,7 +354,7 @@ pub struct McpServerConfig {
     /// When set, generate_tool passes this to Odin to enable cross-window context continuity.
     #[serde(default)]
     pub project: Option<String>,
-    /// Absolute path to the project workspace root (e.g. "/home/jesus/Documents/HardwareSetup/yggdrasil").
+    /// Absolute path to the project workspace root (e.g. "/home/your-user/yggdrasil").
     /// Required by sync_docs_tool for reading/writing local files.
     #[serde(default)]
     pub workspace_path: Option<String>,

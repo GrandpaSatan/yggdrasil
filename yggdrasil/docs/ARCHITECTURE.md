@@ -8,28 +8,28 @@ Yggdrasil is a distributed AI memory and retrieval system composed of specialize
 
 ```mermaid
 graph TB
-    subgraph Munin["Munin (REDACTED_MUNIN_IP)"]
+    subgraph Munin["Munin (<munin-ip>)"]
         Odin["odin :8080<br/>LLM Orchestrator"]
         Mimir["mimir :9090<br/>Engram Memory"]
         McpServer["ygg-mcp-server<br/>MCP stdio server"]
         OllamaM["Ollama :11434<br/>IPEX-LLM container<br/>qwen3-coder:30b-a3b-q4_K_M<br/>qwen3-embedding (4096-dim)"]
     end
 
-    subgraph Hugin["Hugin (REDACTED_HUGIN_IP)"]
+    subgraph Hugin["Hugin (<hugin-ip>)"]
         Huginn["huginn<br/>Code Indexer (daemon)"]
         Muninn["muninn :9091<br/>Code Retrieval"]
         OllamaH["Ollama :11434<br/>qwen3:30b-a3b (reasoning)<br/>qwen3-embedding (4096-dim)"]
     end
 
-    subgraph MuninDB["Munin (REDACTED_MUNIN_IP) - Database"]
+    subgraph MuninDB["Munin (<munin-ip>) - Database"]
         PG["PostgreSQL :5432<br/>pgvector Docker container<br/>yggdrasil schema"]
     end
 
-    subgraph Hades["Hades (REDACTED_HADES_IP)"]
+    subgraph Hades["Hades (<hades-ip>)"]
         QD["Qdrant :6334<br/>Vector Search<br/>4096-dim cosine"]
     end
 
-    subgraph Plume["Plume (REDACTED_PLUME_IP)"]
+    subgraph Plume["Plume (<plume-ip>)"]
         HA["chirp :8123<br/>Home Assistant"]
     end
 
@@ -221,11 +221,11 @@ sequenceDiagram
 
 | Service | Host | Port | Protocol | Used By |
 |---------|------|------|----------|---------|
-| Home Assistant | chirp (REDACTED_CHIRP_IP) | 8123 | HTTP REST + Bearer token | ygg-ha (via ygg-mcp-server and odin) |
+| Home Assistant | chirp (`<ha-ip>`) | 8123 | HTTP REST + Bearer token | ygg-ha (via ygg-mcp-server and odin) |
 | Ollama (Munin) | localhost (IPEX-LLM container) | 11434 | HTTP | odin, mimir |
-| Ollama (Hugin) | REDACTED_HUGIN_IP | 11434 | HTTP | odin, huginn, muninn |
+| Ollama (Hugin) | `<hugin-ip>` | 11434 | HTTP | odin, huginn, muninn |
 | PostgreSQL | Munin (localhost, pgvector Docker) | 5432 | SQL | mimir, huginn, muninn (via ygg-store) |
-| Qdrant | hades (REDACTED_HADES_IP) | 6334 | gRPC | mimir, huginn, muninn (via ygg-store) |
+| Qdrant | hades (`<hades-ip>`) | 6334 | gRPC | mimir, huginn, muninn (via ygg-store) |
 
 ## Database Schema
 
@@ -239,7 +239,7 @@ All tables live in the `yggdrasil` schema on PostgreSQL (pgvector Docker contain
 - `yggdrasil.indexed_files` -- tracked source files with content hashes
 - `yggdrasil.code_chunks` -- AST-extracted semantic units with tsvector for BM25
 
-### Qdrant Collections (on Hades REDACTED_HADES_IP:6334)
+### Qdrant Collections (on Hades `<hades-ip>`:6334)
 - `engrams` -- 4096-dim cosine, point IDs match `engrams.id`
 - `code_chunks` -- 4096-dim cosine, point IDs match `code_chunks.id`
 
@@ -254,9 +254,9 @@ Each service loads its config from `configs/<service>/config.yaml`. Config struc
 | Date | Change | Author |
 |------|--------|--------|
 | 2026-03-09 | Initial architecture document. Service registry, data flows, schema overview. | system-architect |
-| 2026-03-09 | Updated topology: Huginn and Muninn on Hugin (REDACTED_HUGIN_IP), Odin and Mimir on Munin (REDACTED_MUNIN_IP). Added Odin chat completion and Mimir proxy data flows. Updated service registry with Sprint 005 Odin details. | system-architect |
+| 2026-03-09 | Updated topology: Huginn and Muninn on Hugin (<hugin-ip>), Odin and Mimir on Munin (<munin-ip>). Added Odin chat completion and Mimir proxy data flows. Updated service registry with Sprint 005 Odin details. | system-architect |
 | 2026-03-09 | Added ygg-mcp-server to topology and service registry (Sprint 006). Added MCP tool call data flow. Added chirp (Home Assistant) to topology. Added HA automation generation data flow (Sprint 007). Added External Services table. Updated ygg-mcp and ygg-ha library descriptions. | system-architect |
 | 2026-03-09 | Sprint 008 planned: Mimir Advanced Memory Management -- hierarchical summarization, Core tier injection, sliding-window eviction. Sprint 009 planned: Hardware Optimization -- iGPU SYCL, AVX-512, Exo eval, candle embedder. Sprint 010 planned: Production Hardening -- systemd units, Prometheus metrics, backup, deployment scripts, graceful degradation. Huginn gains health listener on port 9092. | system-architect |
 | 2026-03-09 | Sprint 005 finalized as DONE. Corrected stale references: Hugin model updated from QwQ-32B to qwen3:30b-a3b (Sprint 013). Embedding dimension corrected from 1024 to 4096 (qwen3-embedding actual output). PostgreSQL location corrected from Hades to Munin pgvector Docker container. Munin Ollama annotated as IPEX-LLM container (Sprint 014). Huginn port 9092 added to service registry. All service statuses updated to DONE. | system-architect |
 | 2026-03-09 | Sprint 006 finalized as DONE. ygg-mcp-server status updated to DONE in service registry. HA tools merged into Sprint 006 (originally planned for Sprint 007). HA automation data flow re-attributed from Sprint 007 to Sprint 006. 9 tools + 2 resources fully implemented. Known discrepancy: AutomationGenerator requests model qwq-32b but actual Hugin model is qwen3:30b-a3b. | system-architect |
-| 2026-03-09 | Sprint 010 (Production Hardening) finalized as DONE. Bug fixes applied: (1) all qwq-32b/QwQ-32B model references in ygg-ha and ygg-mcp-server replaced with qwen3:30b-a3b -- resolves the discrepancy noted in the Sprint 006 changelog entry; (2) HA_TOKEN env var expansion added to ygg-mcp-server startup; (3) backup-hades.sh PG host corrected from Hades (REDACTED_HADES_IP/postgres) to Munin (127.0.0.1/yggdrasil); (4) WatchdogSec=30 re-enabled in all 4 daemon systemd units (odin, mimir, huginn, muninn). Two deploy-only items remain for infra-devops: backup cron job installation on Munin, and NetworkHardware.md model reference update. 57 tests pass, zero qwq references remaining. | system-architect |
+| 2026-03-09 | Sprint 010 (Production Hardening) finalized as DONE. Bug fixes applied: (1) all qwq-32b/QwQ-32B model references in ygg-ha and ygg-mcp-server replaced with qwen3:30b-a3b -- resolves the discrepancy noted in the Sprint 006 changelog entry; (2) HA_TOKEN env var expansion added to ygg-mcp-server startup; (3) backup-hades.sh PG host corrected from Hades (<hades-ip>/postgres) to Munin (127.0.0.1/yggdrasil); (4) WatchdogSec=30 re-enabled in all 4 daemon systemd units (odin, mimir, huginn, muninn). Two deploy-only items remain for infra-devops: backup cron job installation on Munin, and NetworkHardware.md model reference update. 57 tests pass, zero qwq references remaining. | system-architect |

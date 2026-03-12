@@ -1,0 +1,45 @@
+{
+  "listen_addr": "0.0.0.0:9094",
+  "odin_url": "http://<munin-ip>:8080",
+  "anomaly_threshold": 0.70,
+  "window_secs": 60,
+  "check_interval_secs": 30,
+  "nodes": [
+    {
+      "name": "munin-odin",
+      "health_url": "http://<munin-ip>:8080/health",
+      "services": ["odin"]
+    },
+    {
+      "name": "munin-mimir",
+      "health_url": "http://<munin-ip>:9090/health",
+      "services": ["mimir"]
+    },
+    {
+      "name": "hugin-muninn",
+      "health_url": "http://<hugin-ip>:9091/health",
+      "services": ["muninn"]
+    },
+    {
+      "name": "hugin-huginn",
+      "health_url": "http://<hugin-ip>:9092/health",
+      "services": ["huginn"]
+    },
+    {
+      "name": "munin-voice",
+      "health_url": "http://<munin-ip>:9095/health",
+      "services": ["ygg-voice"]
+    },
+    {
+      "name": "munin-node",
+      "health_url": "http://<munin-ip>:9100/health",
+      "services": ["ygg-node"]
+    }
+  ],
+  "ha": {
+    "url": "http://<ha-ip>:8123",
+    "token": "${HA_TOKEN}",
+    "timeout_secs": 10
+  },
+  "notify_target": "mobile_app_pixel"
+}

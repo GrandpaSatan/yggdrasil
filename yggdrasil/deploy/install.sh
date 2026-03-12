@@ -8,7 +8,7 @@ set -euo pipefail
 NODE=$1
 shift
 SERVICES=("$@")
-REMOTE="jhernandez@${NODE}"
+REMOTE="${DEPLOY_USER:-yggdrasil}@${NODE}"
 INSTALL_DIR="/opt/yggdrasil"
 CONFIG_DIR="/etc/yggdrasil"
 

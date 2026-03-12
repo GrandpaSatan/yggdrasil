@@ -4,13 +4,13 @@
 
 | Service | Binary | Node | Port | Role |
 |---------|--------|------|------|------|
-| Mimir | `mimir` | Munin (REDACTED_MUNIN_IP) | 9090 | Engram memory service (PostgreSQL + Qdrant + LSH) |
-| Odin | `odin` | Munin (REDACTED_MUNIN_IP) | 8080 | LLM orchestrator, semantic router, RAG pipeline |
-| ygg-mcp-server | `ygg-mcp-server` | Munin (REDACTED_MUNIN_IP) | stdio | MCP server for IDE clients (stdio transport) |
-| Muninn | `muninn` | Hugin (REDACTED_HUGIN_IP) | 9091 | Code retrieval engine (hybrid search) |
-| Huginn | `huginn` | Hugin (REDACTED_HUGIN_IP) | 9092 | Code indexer + file watcher |
-| PostgreSQL | — | Hades (REDACTED_HADES_IP) | 5432 | Primary database (yggdrasil schema) |
-| Qdrant | — | Hades (REDACTED_HADES_IP) | 6333/6334 | Vector database (engrams + code_chunks collections) |
+| Mimir | `mimir` | Munin (<munin-ip>) | 9090 | Engram memory service (PostgreSQL + Qdrant + LSH) |
+| Odin | `odin` | Munin (<munin-ip>) | 8080 | LLM orchestrator, semantic router, RAG pipeline |
+| ygg-mcp-server | `ygg-mcp-server` | Munin (<munin-ip>) | stdio | MCP server for IDE clients (stdio transport) |
+| Muninn | `muninn` | Hugin (<hugin-ip>) | 9091 | Code retrieval engine (hybrid search) |
+| Huginn | `huginn` | Hugin (<hugin-ip>) | 9092 | Code indexer + file watcher |
+| PostgreSQL | — | Hades (<hades-ip>) | 5432 | Primary database (yggdrasil schema) |
+| Qdrant | — | Hades (<hades-ip>) | 6333/6334 | Vector database (engrams + code_chunks collections) |
 
 Startup ordering: Hades (PostgreSQL + Qdrant) must be reachable before any
 Yggdrasil service starts. On Munin, `yggdrasil-mimir.service` starts first
@@ -24,7 +24,7 @@ its own process starts (`ExecStartPre`).
 ### Start all services on Munin
 
 ```bash
-ssh jhernandez@munin
+ssh your-user@munin
 sudo systemctl start yggdrasil-mimir
 sudo systemctl start yggdrasil-odin
 ```
@@ -32,7 +32,7 @@ sudo systemctl start yggdrasil-odin
 ### Start all services on Hugin
 
 ```bash
-ssh jhernandez@hugin
+ssh your-user@hugin
 sudo systemctl start yggdrasil-muninn
 sudo systemctl start yggdrasil-huginn
 ```98,181
@@ -241,7 +241,7 @@ apt install postgresql-client curl
 
 ```bash
 # Restore from a custom-format dump
-pg_restore -h REDACTED_HADES_IP -U jhernandez -d postgres \
+pg_restore -h <hades-ip> -U your-user -d postgres \
   --schema=yggdrasil \
   /mnt/raven/yggdrasil-backups/pg_yggdrasil_YYYYMMDD_HHMMSS.dump
 ```
@@ -255,10 +255,10 @@ Qdrant snapshots are stored locally on the Qdrant server. To restore:
 
 ```bash
 # List available snapshots
-curl -s http://REDACTED_HADES_IP:6333/collections/engrams/snapshots | jq .
+curl -s http://<hades-ip>:6333/collections/engrams/snapshots | jq .
 
 # Restore from a snapshot (replace <snapshot_name> with the actual name)
-curl -X PUT "http://REDACTED_HADES_IP:6333/collections/engrams/snapshots/recover" \
+curl -X PUT "http://<hades-ip>:6333/collections/engrams/snapshots/recover" \
   -H "Content-Type: application/json" \
   -d '{"location": "/path/to/snapshot/<snapshot_name>"}'
 ```
@@ -303,7 +303,7 @@ inspect what was deployed.
 
 ### SSH note
 
-Scripts use `jhernandez@<node>` for SSH. SSH key-based authentication is
+Scripts use `your-user@<node>` for SSH. SSH key-based authentication is
 required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 `~/.ssh/authorized_keys` on Munin and Hugin.
 
@@ -342,9 +342,9 @@ required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 
 | Node | Hostname | IP | Services | Hardware |
 |------|----------|-----|---------|----------|
-| Munin | munin | REDACTED_MUNIN_IP | Odin, Mimir, ygg-mcp-server | Intel Core Ultra 185H, 48GB DDR5 |
-| Hugin | hugin | REDACTED_HUGIN_IP | Huginn, Muninn | AMD Ryzen 7 255, 64GB DDR5 |
-| Hades | hades | REDACTED_HADES_IP | PostgreSQL, Qdrant | Intel N150, 32GB DDR5, Merlin SSD pool (444 GiB), RAVEN SSD pool (2.63 TiB) |
+| Munin | munin | <munin-ip> | Odin, Mimir, ygg-mcp-server | Intel Core Ultra 185H, 48GB DDR5 |
+| Hugin | hugin | <hugin-ip> | Huginn, Muninn | AMD Ryzen 7 255, 64GB DDR5 |
+| Hades | hades | <hades-ip> | PostgreSQL, Qdrant | Intel N150, 32GB DDR5, Merlin SSD pool (444 GiB), RAVEN SSD pool (2.63 TiB) |
 
 ---
 
@@ -365,7 +365,7 @@ required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 Odin's `ExecStartPre` polls Mimir's `/health` for up to 30 seconds. If Mimir
 is not healthy:
 1. Check Mimir status: `sudo systemctl status yggdrasil-mimir`
-2. Check Hades connectivity: `curl -s http://REDACTED_HADES_IP:5432` (should connect)
+2. Check Hades connectivity: `curl -s http://<hades-ip>:5432` (should connect)
 3. Check Mimir logs for database errors: `journalctl -u yggdrasil-mimir -n 100`
 
 ### Metrics endpoint not responding

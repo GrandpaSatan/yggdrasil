@@ -1,0 +1,76 @@
+{
+  "node_name": "odin",
+  "listen_addr": "0.0.0.0:8080",
+  "backends": [
+    {
+      "name": "munin",
+      "url": "http://localhost:11434",
+      "backend_type": "ollama",
+      "models": ["qwen3-coder:30b-a3b-q4_K_M"],
+      "max_concurrent": 2,
+      "context_window": 16384
+    },
+    {
+      "name": "hugin",
+      "url": "http://<hugin-ip>:11434",
+      "backend_type": "ollama",
+      "models": ["qwen3-coder:30b-a3b-q4_K_M"],
+      "max_concurrent": 2,
+      "context_window": 32768
+    }
+  ],
+  "routing": {
+    "default_model": "qwen3-coder:30b-a3b-q4_K_M",
+    "default_backend": "hugin",
+    "rules": [
+      {
+        "intent": "coding",
+        "model": "qwen3-coder:30b-a3b-q4_K_M",
+        "backend": "munin"
+      },
+      {
+        "intent": "home_automation",
+        "model": "qwen3-coder:30b-a3b-q4_K_M",
+        "backend": "hugin"
+      }
+    ]
+  },
+  "mimir": {
+    "url": "http://localhost:9090",
+    "query_limit": 3,
+    "store_on_completion": true
+  },
+  "muninn": {
+    "url": "http://<hugin-ip>:9091",
+    "max_context_chunks": 10
+  },
+  "session": {
+    "max_sessions": 256,
+    "session_ttl_secs": 3600,
+    "context_budget_tokens": 14000,
+    "generation_reserve": 2048
+  },
+  "ha": {
+    "url": "http://<ha-ip>:8123",
+    "token": "${HA_TOKEN}",
+    "timeout_secs": 10
+  },
+  "cloud": {
+    "fallback_enabled": true,
+    "openai": {
+      "api_key": "${OPENAI_API_KEY}",
+      "default_model": "gpt-4o-mini",
+      "requests_per_minute": 60
+    },
+    "claude": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "default_model": "claude-sonnet-4-6",
+      "requests_per_minute": 40
+    },
+    "gemini": {
+      "api_key": "${GEMINI_API_KEY}",
+      "default_model": "gemini-2.5-flash",
+      "requests_per_minute": 60
+    }
+  }
+}

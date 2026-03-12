@@ -1,0 +1,23 @@
+[Unit]
+Description=Yggdrasil Gitea Repo Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=yggdrasil
+Group=yggdrasil
+# SECURITY: Never set GITEA_TOKEN inline here. Use an EnvironmentFile with 0600 permissions:
+#   /etc/yggdrasil/gitea-sync.env
+#   ---
+#   GITEA_TOKEN=your-gitea-personal-access-token
+#   GITEA_URL=http://<gitea-ip>:3000
+#   REPO_DIR=/home/your-user/repos
+#   GITEA_SSH_PORT=22
+#   SKIP_REPOS=Crucible
+EnvironmentFile=/etc/yggdrasil/gitea-sync.env
+ExecStart=/opt/yggdrasil/bin/gitea-sync.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

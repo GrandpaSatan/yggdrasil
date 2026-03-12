@@ -5,11 +5,14 @@ Wants=yggdrasil-odin.service yggdrasil-mimir.service
 
 [Service]
 Type=simple
-User=your-user
+User=yggdrasil
 ExecStart=/opt/yggdrasil/bin/ygg-mcp-remote --config /etc/yggdrasil/mcp-remote/config.yaml --bind 0.0.0.0:9093
 Restart=on-failure
 RestartSec=5
 Environment="RUST_LOG=info"
+# Set HA_TOKEN via a systemd drop-in or EnvironmentFile:
+#   /etc/yggdrasil/mcp-remote/mcp-remote.env  →  HA_TOKEN=your-long-lived-token
+# EnvironmentFile=/etc/yggdrasil/mcp-remote/mcp-remote.env
 Environment="HA_TOKEN="
 
 [Install]

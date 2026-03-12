@@ -1,28 +1,33 @@
 #!/usr/bin/env bash
 # setup-sshfs.sh — Mount Hugin's repo directory over SSHFS on the workstation.
 #
-# After mounting, /mnt/hugin-repos mirrors /home/jhernandez/repos on Hugin
-# (REDACTED_HUGIN_IP).  Huginn can then index both local and remote repos without
+# After mounting, /mnt/hugin-repos mirrors ${REMOTE_PATH} on Hugin
+# (${HUGIN_HOST}).  Huginn can then index both local and remote repos without
 # needing a separate Huginn instance on Hugin.
 #
 # Usage:
 #   sudo ./setup-sshfs.sh [mount|umount|status]
 #
+# Required environment variables:
+#   HUGIN_HOST    — IP or hostname of the Hugin node
+#   DEPLOY_USER   — SSH user on Hugin (default: yggdrasil)
+#   LOCAL_USER    — Local user for uid/gid ownership (default: current user)
+#
 # Prerequisites:
 #   sudo apt install sshfs
-#   SSH key auth configured: ssh jhernandez@REDACTED_HUGIN_IP works without password.
+#   SSH key auth configured: ssh ${DEPLOY_USER}@${HUGIN_HOST} works without password.
 #
 # Persistent mount (survives reboots):
 #   Add to /etc/fstab:
-#   jhernandez@REDACTED_HUGIN_IP:/home/jhernandez/repos /mnt/hugin-repos fuse.sshfs
+#   ${DEPLOY_USER}@${HUGIN_HOST}:${REMOTE_PATH} /mnt/hugin-repos fuse.sshfs
 #     defaults,_netdev,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,
-#     IdentityFile=/home/jesus/.ssh/id_ed25519,allow_other,uid=1000,gid=1000 0 0
+#     IdentityFile=/home/${LOCAL_USER}/.ssh/id_ed25519,allow_other,uid=1000,gid=1000 0 0
 
 set -euo pipefail
 
-REMOTE_HOST="REDACTED_HUGIN_IP"
-REMOTE_USER="jhernandez"
-REMOTE_PATH="/home/jhernandez/repos"
+REMOTE_HOST="${HUGIN_HOST:?Set HUGIN_HOST to the IP or hostname of the remote node}"
+REMOTE_USER="${DEPLOY_USER:-yggdrasil}"
+REMOTE_PATH="${REMOTE_PATH:-/home/${DEPLOY_USER:-yggdrasil}/repos}"
 MOUNT_POINT="/mnt/hugin-repos"
 SSH_KEY="${HOME}/.ssh/id_ed25519"
 
@@ -56,8 +61,8 @@ case "$cmd" in
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 \
             -o allow_other \
-            -o uid="$(id -u jesus 2>/dev/null || id -u)" \
-            -o gid="$(id -g jesus 2>/dev/null || id -g)" \
+            -o uid="$(id -u "${LOCAL_USER:-$(whoami)}" 2>/dev/null || id -u)" \
+            -o gid="$(id -g "${LOCAL_USER:-$(whoami)}" 2>/dev/null || id -g)" \
             "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}" \
             "$MOUNT_POINT"
 

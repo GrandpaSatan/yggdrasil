@@ -11,7 +11,37 @@
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment & Secrets
 .env
+.env.*
+!.env.example
 *.pem
 *.key
+*.secret
+
+# Real config files (use *.example as templates)
+yggdrasil/configs/*/config.json
+yggdrasil/configs/*/config.yaml
+yggdrasil/configs/*/node.yaml
+yggdrasil/configs/ha/*.yaml
+!yggdrasil/configs/*/config.example.json
+
+# Systemd units with credentials (use templates)
+yggdrasil/deploy/systemd/*.service
+!yggdrasil/deploy/systemd/*.service.example
+
+# Workstation local config
+yggdrasil/deploy/workstation/local-config.yaml
+!yggdrasil/deploy/workstation/local-config.example.yaml
+
+# Sprint files (ephemeral, archived to memory)
+yggdrasil/sprints/
+
+# Claude local instructions
+yggdrasil/.claude/
+yggdrasil/deploy/workstation/CLAUDE.md
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak

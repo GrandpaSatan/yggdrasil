@@ -62,9 +62,9 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 Huginn is a background daemon — no user-facing API. It watches configured paths, chunks code with tree-sitter, embeds chunks via ONNX, and writes to PostgreSQL + Qdrant.
 
 **Watch paths (Hugin):**
-- `/home/jhernandez/repos/Yggdrasil`
-- `/home/jhernandez/repos/Fergus_Agent`
-- `/mnt/workstation/docs/HardwareSetup` (SSHFS from workstation `REDACTED_WORKSTATION_IP`)
+- `/home/$USER/repos/Yggdrasil`
+- `/home/$USER/repos/Fergus_Agent`
+- `/mnt/workstation/docs/HardwareSetup` (SSHFS from workstation `<workstation-ip>`)
 
 ---
 
@@ -80,7 +80,7 @@ The MCP layer is split into two servers (Sprint 027):
 **Binary:** `ygg-mcp-remote` at `/opt/yggdrasil/bin/ygg-mcp-remote`
 **Config:** `/etc/yggdrasil/mcp-remote/config.yaml` (on Munin)
 **Systemd:** `yggdrasil-mcp-remote.service`
-**Claude Code config:** `type: "http"`, `url: "http://REDACTED_MUNIN_IP:9093/mcp"`
+**Claude Code config:** `type: "http"`, `url: "http://<munin-ip>:9093/mcp"`
 
 | Tool | Description |
 |------|-------------|
@@ -119,7 +119,7 @@ The MCP layer is split into two servers (Sprint 027):
 
 ## Startup Commands
 
-### Start services on Munin (REDACTED_MUNIN_IP)
+### Start services on Munin
 
 ```bash
 # Start all Yggdrasil services
@@ -132,7 +132,7 @@ sudo systemctl start yggdrasil-ollama-ipex
 sudo systemctl status yggdrasil-odin yggdrasil-mimir
 ```
 
-### Start services on Hugin (REDACTED_HUGIN_IP)
+### Start services on Hugin
 
 ```bash
 # Start Huginn + Muninn
@@ -149,7 +149,7 @@ sudo systemctl status yggdrasil-huginn yggdrasil-muninn
 
 ```bash
 # Run Odin locally (uses configs/odin/node.yaml by default)
-cd /home/jesus/Documents/HardwareSetup/yggdrasil
+cd ~/yggdrasil
 cargo run --release --bin odin -- --config configs/odin/node.yaml
 
 # Run MCP server locally
@@ -162,12 +162,12 @@ cargo run --release --bin ygg-mcp-server -- --config configs/mcp-server/config.y
 
 ```bash
 # Munin
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP "sudo journalctl -u yggdrasil-odin -f"
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP "sudo journalctl -u yggdrasil-mimir -f"
+ssh your-user@munin "sudo journalctl -u yggdrasil-odin -f"
+ssh your-user@munin "sudo journalctl -u yggdrasil-mimir -f"
 
 # Hugin
-sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP "sudo journalctl -u yggdrasil-huginn -f"
-sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP "sudo journalctl -u yggdrasil-muninn -f"
+ssh your-user@hugin "sudo journalctl -u yggdrasil-huginn -f"
+ssh your-user@hugin "sudo journalctl -u yggdrasil-muninn -f"
 ```
 
 ---
@@ -177,7 +177,7 @@ sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP "sudo journalctl -u yggdrasil
 ### Full install (first time on a node)
 
 ```bash
-cd /home/jesus/Documents/HardwareSetup/yggdrasil
+cd ~/yggdrasil
 deploy/install.sh munin   # installs odin + mimir + systemd units + configs
 deploy/install.sh hugin   # installs huginn + muninn + SSHFS mount
 ```
@@ -205,9 +205,9 @@ The update script:
 
 ```bash
 cargo build --release --bin odin
-rsync target/release/odin jhernandez@REDACTED_MUNIN_IP:/home/jhernandez/odin.new
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP \
-  "sudo mv /home/jhernandez/odin.new /opt/yggdrasil/bin/odin && \
+rsync target/release/odin your-user@<munin-ip>:/home/your-user/odin.new
+ssh your-user@<munin-ip> \
+  "sudo mv /home/your-user/odin.new /opt/yggdrasil/bin/odin && \
    sudo systemctl restart yggdrasil-odin"
 ```
 
@@ -220,9 +220,9 @@ deploy/rollback.sh munin odin  # restores odin.prev binary and restarts
 ### Update MCP server binary (workstation)
 
 ```bash
-cd /home/jesus/Documents/HardwareSetup/yggdrasil
+cd ~/yggdrasil
 cargo build --release --bin ygg-mcp-server
-rsync target/release/ygg-mcp-server /home/jesus/.local/bin/ygg-mcp-server
+rsync target/release/ygg-mcp-server ~/.local/bin/ygg-mcp-server
 # Restart Claude Code to reload the MCP server
 ```
 
@@ -234,27 +234,27 @@ rsync target/release/ygg-mcp-server /home/jesus/.local/bin/ygg-mcp-server
 
 ```bash
 # Connect to yggdrasil DB
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP \
-  "docker exec -it ygg-postgres psql -U jhernandez -d yggdrasil"
+ssh your-user@munin \
+  "docker exec -it ygg-postgres psql -U your-user -d yggdrasil"
 
 # Run migration manually
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP \
+ssh your-user@munin \
   "cd /opt/yggdrasil && ./bin/odin --migrate-only"  # if supported
 
 # Check engram count
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP \
-  "docker exec ygg-postgres psql -U jhernandez -d yggdrasil -c 'SELECT count(*) FROM engrams;'"
+ssh your-user@munin \
+  "docker exec ygg-postgres psql -U your-user -d yggdrasil -c 'SELECT count(*) FROM engrams;'"
 ```
 
 ### Qdrant (Hades :6333)
 
 ```bash
 # List collections
-curl http://REDACTED_HADES_IP:6333/collections
+curl http://<hades-ip>:6333/collections
 
 # Collection details
-curl http://REDACTED_HADES_IP:6333/collections/engrams_sdr
-curl http://REDACTED_HADES_IP:6333/collections/code_chunks
+curl http://<hades-ip>:6333/collections/engrams_sdr
+curl http://<hades-ip>:6333/collections/code_chunks
 ```
 
 ---
@@ -263,7 +263,7 @@ curl http://REDACTED_HADES_IP:6333/collections/code_chunks
 
 ```bash
 # Manual backup (runs on Munin cron at 03:00 daily)
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP "sudo /opt/yggdrasil/deploy/backup-hades.sh"
+ssh your-user@munin "sudo /opt/yggdrasil/deploy/backup-hades.sh"
 
 # Backup script location (on Munin)
 # /opt/yggdrasil/deploy/backup-hades.sh
@@ -271,65 +271,79 @@ sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP "sudo /opt/yggdrasil/deploy/b
 # - Qdrant snapshot → Hades
 
 # Check last backup
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP "ls -la /mnt/hades/backups/ 2>/dev/null || echo 'check Hades mount'"
+ssh your-user@munin "ls -la /mnt/hades/backups/ 2>/dev/null || echo 'check Hades mount'"
 ```
 
 ---
 
 ## Monitoring
 
-- **Grafana:** http://REDACTED_NIGHTJAR_IP:3000 (dashboard uid: `ygg-observability`)
-- **Prometheus:** http://REDACTED_NIGHTJAR_IP:9099 (scrapes `/metrics` from all 4 services)
+- **Grafana:** http://`<nightjar-ip>`:3000 (dashboard uid: `ygg-observability`)
+- **Prometheus:** http://`<nightjar-ip>`:9099 (scrapes `/metrics` from all 4 services)
 
 ### Quick health check (all services)
 
 ```bash
 # Odin
-curl -sf http://REDACTED_MUNIN_IP:8080/health | python3 -m json.tool
+curl -sf http://<munin-ip>:8080/health | python3 -m json.tool
 
 # Mimir
-curl -sf http://REDACTED_MUNIN_IP:9090/health
+curl -sf http://<munin-ip>:9090/health
 
 # Muninn
-curl -sf http://REDACTED_HUGIN_IP:9091/health
+curl -sf http://<hugin-ip>:9091/health
 
 # Huginn
-curl -sf http://REDACTED_HUGIN_IP:9092/health
+curl -sf http://<hugin-ip>:9092/health
 ```
 
 ---
 
 ## SSH Shortcuts
 
+Configure `~/.ssh/config` for convenient access (key-based auth required):
+
+```
+Host munin
+    HostName <munin-ip>
+    User your-user
+
+Host hugin
+    HostName <hugin-ip>
+    User your-user
+
+Host hades
+    HostName <hades-ip>
+    User your-user
+
+Host nightjar
+    HostName <nightjar-ip>
+    User your-user
+```
+
+Then use:
 ```bash
-# Munin (Odin + Mimir)
-sshpass -p 723559 ssh jhernandez@REDACTED_MUNIN_IP
-
-# Hugin (Huginn + Muninn + Ollama)
-sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP
-
-# Hades (Qdrant + TrueNAS)
-sshpass -p K6m4B129CF9u ssh jhernandez@REDACTED_HADES_IP
-
-# Nightjar (Grafana + Prometheus)
-sshpass -p 723559 ssh jhernandez@REDACTED_NIGHTJAR_IP
+ssh munin    # Odin + Mimir
+ssh hugin    # Huginn + Muninn + Ollama
+ssh hades    # Qdrant + TrueNAS
+ssh nightjar # Grafana + Prometheus
 ```
 
 ---
 
 ## SSHFS (Hugin → Workstation)
 
-Hugin mounts the workstation's `/home/jesus/Documents` at `/mnt/workstation/docs` so Huginn can index local code.
+Hugin mounts the workstation's home documents directory at `/mnt/workstation/docs` so Huginn can index local code.
 
 ```bash
 # Check mount status on Hugin
-sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP "systemctl status mnt-workstation-docs.mount"
+ssh your-user@hugin "systemctl status mnt-workstation-docs.mount"
 
 # Remount if dropped
-sshpass -p 723559 ssh jhernandez@REDACTED_HUGIN_IP "sudo systemctl restart mnt-workstation-docs.mount"
+ssh your-user@hugin "sudo systemctl restart mnt-workstation-docs.mount"
 
 # Workstation sshd must be running
-sudo systemctl status ssh  # on workstation (jesus@REDACTED_WORKSTATION_IP)
+sudo systemctl status ssh  # on workstation
 ```
 
 ### Claude Code MCP Config (`~/.claude.json`)
@@ -339,7 +353,7 @@ sudo systemctl status ssh  # on workstation (jesus@REDACTED_WORKSTATION_IP)
   "mcpServers": {
     "yggdrasil": {
       "type": "http",
-      "url": "http://REDACTED_MUNIN_IP:9093/mcp"
+      "url": "http://<munin-ip>:9093/mcp"
     },
     "yggdrasil-local": {
       "type": "stdio",
@@ -354,10 +368,10 @@ sudo systemctl status ssh  # on workstation (jesus@REDACTED_WORKSTATION_IP)
 ### Workstation Bootstrap
 
 ```bash
-cd ~/Yggdrasil
+cd ~/yggdrasil
 ./deploy/workstation/ClaudeClient_Install
-# → Project dir: /home/user/Yggdrasil (auto-detected, no parent .git)
-# → project=yggdrasil  workspace=/home/user/Yggdrasil
+# → Project dir: ~/yggdrasil (auto-detected, no parent .git)
+# → project=yggdrasil  workspace=~/yggdrasil
 ```
 
 ---

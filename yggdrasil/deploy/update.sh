@@ -6,7 +6,7 @@ set -euo pipefail
 
 NODE=$1
 SERVICE=$2
-REMOTE="jhernandez@${NODE}"
+REMOTE="${DEPLOY_USER:-yggdrasil}@${NODE}"
 INSTALL_DIR="/opt/yggdrasil"
 BIN="${INSTALL_DIR}/bin/${SERVICE}"
 

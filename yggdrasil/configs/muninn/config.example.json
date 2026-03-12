@@ -1,0 +1,13 @@
+{
+  "listen_addr": "0.0.0.0:9091",
+  "database_url": "${MUNINN_DATABASE_URL}",
+  "qdrant_url": "http://<qdrant-ip>:6334",
+  "embed": {
+    "model_dir": "/opt/yggdrasil/models/all-MiniLM-L6-v2"
+  },
+  "search": {
+    "rrf_k": 60.0,
+    "context_token_budget": 32000,
+    "context_fill_ratio": 0.8
+  }
+}

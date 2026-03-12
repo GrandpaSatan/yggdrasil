@@ -5,7 +5,7 @@ set -euo pipefail
 
 GITEA_URL="${GITEA_URL:-http://REDACTED_GITEA_IP:3000}"
 GITEA_TOKEN="${GITEA_TOKEN}"
-REPO_DIR="${REPO_DIR:-/home/jhernandez/repos}"
+REPO_DIR="${REPO_DIR:-/home/${USER}/repos}"
 SSH_PORT="${GITEA_SSH_PORT:-22}"
 SKIP_REPOS="${SKIP_REPOS:-Crucible}"
 LOG_TAG="gitea-sync"
