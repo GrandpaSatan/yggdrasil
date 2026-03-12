@@ -103,7 +103,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system topology wi
 
 ```bash
 # Clone
-git clone https://github.com/jesushernandez/yggdrasil.git
+git clone https://github.com/GrandpaSatan/yggdrasil.git
 cd yggdrasil
 
 # Copy example configs and fill in your values

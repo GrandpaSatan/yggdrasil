@@ -29,8 +29,8 @@ edition = "2024"
 authors = ["Jesus Hernandez"]
 license = "BSL-1.1"
 description = "Distributed AI memory, code indexing, and retrieval system for local-first AI development"
-repository = "https://github.com/jesushernandez/yggdrasil"
-homepage = "https://github.com/jesushernandez/yggdrasil"
+repository = "https://github.com/GrandpaSatan/yggdrasil"
+homepage = "https://github.com/GrandpaSatan/yggdrasil"
 keywords = ["ai", "memory", "code-indexing", "mcp", "rag"]
 categories = ["development-tools", "command-line-utilities"]
 
