@@ -269,6 +269,132 @@ pub async fn count_chunks_by_language(pool: &PgPool) -> Result<Vec<(String, i64)
         .collect())
 }
 
+/// Symbol lookup: find chunks by exact name, chunk_type, and/or language.
+///
+/// All filters are optional — pass None to skip that filter.
+/// Returns `(id, file_path, name, chunk_type, parent_context, language, start_line, end_line)`.
+pub async fn lookup_symbols(
+    pool: &PgPool,
+    name: Option<&str>,
+    chunk_type: Option<&str>,
+    language: Option<&str>,
+    file_path: Option<&str>,
+    limit: u32,
+) -> Result<Vec<(Uuid, String, String, String, String, String, i32, i32)>, StoreError> {
+    let mut query = String::from(
+        "SELECT id, file_path, name, chunk_type, parent_context, language, start_line, end_line \
+         FROM yggdrasil.code_chunks WHERE 1=1",
+    );
+    let mut param_idx = 0u32;
+
+    if name.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND name = ${}", param_idx));
+    }
+    if chunk_type.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND chunk_type = ${}", param_idx));
+    }
+    if language.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND language = ${}", param_idx));
+    }
+    if file_path.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND file_path = ${}", param_idx));
+    }
+
+    query.push_str(&format!(" ORDER BY file_path, start_line LIMIT {}", limit.min(100)));
+
+    let mut q = sqlx::query(&query);
+    if let Some(n) = name {
+        q = q.bind(n);
+    }
+    if let Some(ct) = chunk_type {
+        q = q.bind(ct);
+    }
+    if let Some(l) = language {
+        q = q.bind(l);
+    }
+    if let Some(fp) = file_path {
+        q = q.bind(fp);
+    }
+
+    let rows = q.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<Uuid, _>("id"),
+                r.get::<String, _>("file_path"),
+                r.get::<String, _>("name"),
+                r.get::<String, _>("chunk_type"),
+                r.get::<String, _>("parent_context"),
+                r.get::<String, _>("language"),
+                r.get::<i32, _>("start_line"),
+                r.get::<i32, _>("end_line"),
+            )
+        })
+        .collect())
+}
+
+/// Find references: search chunk content for a symbol name using BM25 text search.
+///
+/// Returns chunks whose content contains the symbol name, excluding the definition itself.
+pub async fn find_references(
+    pool: &PgPool,
+    symbol_name: &str,
+    language: Option<&str>,
+    exclude_id: Option<Uuid>,
+    limit: u32,
+) -> Result<Vec<(Uuid, String, String, String, String, i32, i32, f64)>, StoreError> {
+    let mut query = String::from(
+        "SELECT id, file_path, name, chunk_type, parent_context, start_line, end_line, \
+                ts_rank(search_vec, websearch_to_tsquery('english', $1)) AS rank \
+         FROM yggdrasil.code_chunks \
+         WHERE search_vec @@ websearch_to_tsquery('english', $1)",
+    );
+    let mut param_idx = 1u32;
+
+    if language.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND language = ${}", param_idx));
+    }
+    if exclude_id.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND id != ${}", param_idx));
+    }
+
+    query.push_str(&format!(" ORDER BY rank DESC LIMIT {}", limit.min(50)));
+
+    let mut q = sqlx::query(&query).bind(symbol_name);
+    if let Some(l) = language {
+        q = q.bind(l);
+    }
+    if let Some(eid) = exclude_id {
+        q = q.bind(eid);
+    }
+
+    let rows = q.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<Uuid, _>("id"),
+                r.get::<String, _>("file_path"),
+                r.get::<String, _>("name"),
+                r.get::<String, _>("chunk_type"),
+                r.get::<String, _>("parent_context"),
+                r.get::<i32, _>("start_line"),
+                r.get::<i32, _>("end_line"),
+                r.get::<f32, _>("rank") as f64,
+            )
+        })
+        .collect())
+}
+
 fn lang_from_stored(s: &str) -> Language {
     match s {
         "rust" => Language::Rust,

@@ -69,3 +69,18 @@ pub fn increment_summarization_total() {
 pub fn increment_summarization_archived(count: u64) {
     counter!("ygg_summarization_engrams_archived").increment(count);
 }
+
+/// Record SDR index health metrics from a periodic stats snapshot.
+pub fn record_sdr_health(
+    index_size: f64,
+    avg_popcount: f64,
+    concept_coverage: f64,
+    similarity_p50: f64,
+    similarity_p90: f64,
+) {
+    metrics::gauge!("ygg_sdr_index_size").set(index_size);
+    metrics::gauge!("ygg_sdr_avg_popcount").set(avg_popcount);
+    metrics::gauge!("ygg_sdr_concept_coverage").set(concept_coverage);
+    metrics::gauge!("ygg_sdr_pairwise_similarity_p50").set(similarity_p50);
+    metrics::gauge!("ygg_sdr_pairwise_similarity_p90").set(similarity_p90);
+}

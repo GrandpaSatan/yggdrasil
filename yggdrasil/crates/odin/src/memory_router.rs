@@ -153,6 +153,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("default");
         apply_memory_events(&recall, &mut decision);
@@ -172,6 +173,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("coding");
         apply_memory_events(&recall, &mut decision);
@@ -191,6 +193,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("default");
         apply_memory_events(&recall, &mut decision);
@@ -207,6 +210,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("coding");
         apply_memory_events(&recall, &mut decision);
@@ -223,6 +227,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("default");
         apply_memory_events(&recall, &mut decision);
@@ -242,6 +247,7 @@ mod tests {
         let recall = RecallResponse {
             events: vec![event],
             core_events: vec![],
+            query_sdr_hex: None,
         };
         let mut decision = make_decision("default");
         apply_memory_events(&recall, &mut decision);
@@ -250,7 +256,7 @@ mod tests {
 
     #[test]
     fn empty_recall_response_is_a_no_op() {
-        let recall = RecallResponse { events: vec![], core_events: vec![] };
+        let recall = RecallResponse { events: vec![], core_events: vec![], query_sdr_hex: None };
         let mut decision = make_decision("coding");
         apply_memory_events(&recall, &mut decision);
         assert_eq!(decision.intent, "coding");

@@ -28,11 +28,16 @@ use ygg_ha::{AutomationGenerator, HaClient};
 use crate::{
     resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS, RESOURCE_SESSION_CONTEXT},
     tools::{
-        GenerateParams, GetSprintHistoryParams, HaCallServiceParams, HaGenerateAutomationParams,
-        HaGetStatesParams, HaListEntitiesParams, QueryMemoryParams, SearchCodeParams,
-        StoreMemoryParams,
-        generate, get_sprint_history, ha_call_service, ha_generate_automation, ha_get_states,
-        ha_list_entities, list_models, query_memory, search_code, store_memory,
+        AstAnalyzeParams, BuildCheckParams, ContextBridgeParams, ContextOffloadParams,
+        DiffReviewParams, GenerateParams, GetSprintHistoryParams, HaCallServiceParams,
+        HaGenerateAutomationParams, HaGetStatesParams, HaListEntitiesParams,
+        ImpactAnalysisParams, MemoryGraphParams, MemoryIntersectParams, MemoryTimelineParams,
+        QueryMemoryParams, SearchCodeParams, ServiceHealthParams, StoreMemoryParams,
+        TaskDelegateParams, TaskQueueParams, ast_analyze, build_check, context_bridge,
+        context_offload, diff_review, generate, get_sprint_history, ha_call_service,
+        ha_generate_automation, ha_get_states, ha_list_entities, impact_analysis, list_models,
+        memory_graph, memory_intersect, memory_timeline, query_memory, search_code,
+        service_health, store_memory, task_delegate, task_queue,
     },
 };
 
@@ -109,13 +114,32 @@ impl YggdrasilServer {
     /// Store a new cause/effect memory engram.
     ///
     /// Calls Odin /api/v1/store, which proxies to Mimir.
-    #[tool(description = "Store a new memory engram as a cause/effect pair. \
-        Returns the UUID of the created engram.")]
+    #[tool(description = "Store a new memory engram as a cause/effect pair. Returns the UUID of the created engram. \
+        To update an existing engram (bypassing the novelty gate), pass the engram UUID in the 'id' field.")]
     async fn store_memory_tool(
         &self,
         Parameters(params): Parameters<StoreMemoryParams>,
     ) -> String {
         let result = store_memory(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Find engrams at the intersection, union, or difference of two concepts.
+    ///
+    /// Calls Odin /api/v1/sdr/operations, which proxies to Mimir.
+    #[tool(description = "Find engrams at the intersection (AND), union (OR), or \
+        symmetric difference (XOR) of two or more concepts using SDR set operations. \
+        Returns matching engrams and Jaccard similarity between the concepts.")]
+    async fn memory_intersect_tool(
+        &self,
+        Parameters(params): Parameters<MemoryIntersectParams>,
+    ) -> String {
+        let result = memory_intersect(&self.client, &self.config, params).await;
         result
             .content
             .into_iter()
@@ -176,6 +200,253 @@ impl YggdrasilServer {
         their backend assignments. Returns a markdown table.")]
     async fn list_models_tool(&self) -> String {
         let result = list_models(&self.client, &self.config).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    // ── Foundation tools (Sprint 029 Phase E) ─────────────────────────────────
+
+    /// Check health of all Yggdrasil services in a single call.
+    ///
+    /// Probes Odin, Mimir, Muninn, Ollama backends, and Qdrant in parallel.
+    #[tool(description = "Check health of all Yggdrasil services (Odin, Mimir, Muninn, \
+        Ollama backends, Qdrant) in a single call. Returns a status table with latency. \
+        Use this to diagnose connectivity issues before other tool calls.")]
+    async fn service_health_tool(
+        &self,
+        Parameters(params): Parameters<ServiceHealthParams>,
+    ) -> String {
+        let result = service_health(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Run cargo check/clippy on the workspace and return structured diagnostics.
+    ///
+    /// Requires workspace_path to be configured.
+    #[tool(description = "Run cargo check, clippy, or test --no-run on the Yggdrasil \
+        workspace. Returns structured diagnostics (errors, warnings) with file locations. \
+        Use after code generation to verify compilation.")]
+    async fn build_check_tool(
+        &self,
+        Parameters(params): Parameters<BuildCheckParams>,
+    ) -> String {
+        let result = build_check(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Query engrams with temporal and tag filters.
+    ///
+    /// Supports time ranges, tag filtering, and tier filtering.
+    #[tool(description = "Query engram memory with temporal filters. Supports: \
+        after/before (ISO 8601 datetime), tags (must have ALL listed), \
+        tier (core/recall/archival), and optional semantic text search. \
+        Example: memory_timeline_tool(after: '2026-03-01', tags: ['decision'])")]
+    async fn memory_timeline_tool(
+        &self,
+        Parameters(params): Parameters<MemoryTimelineParams>,
+    ) -> String {
+        let result = memory_timeline(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Store, retrieve, or list offloaded context blocks.
+    ///
+    /// Use to offload large text (file contents, diffs, search results) to the
+    /// server and reference by short handle, freeing up context window space.
+    #[tool(description = "Offload large context to the server and reference by handle. \
+        Actions: 'store' (content + optional label → handle), \
+        'retrieve' (handle → content), 'list' (show all handles). \
+        Use to free up context window space when working with large files or diffs.")]
+    async fn context_offload_tool(
+        &self,
+        Parameters(params): Parameters<ContextOffloadParams>,
+    ) -> String {
+        let result = context_offload(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    // ── Parent AI tools (Sprint 029 Phase B/C/D) ────────────────────────────
+
+    /// Delegate code generation to a local LLM with full project context.
+    ///
+    /// Assembles context from code search + memory, then delegates to Ollama.
+    #[tool(description = "Delegate code generation to a local LLM (free, fast). \
+        Describe the task in natural language. Yggdrasil assembles context from \
+        code search + memory + reference patterns, then generates code via Ollama. \
+        Use for boilerplate, new handlers, tests, and repetitive code.")]
+    async fn task_delegate_tool(
+        &self,
+        Parameters(params): Parameters<TaskDelegateParams>,
+    ) -> String {
+        let result = task_delegate(
+            &self.client,
+            &self.config,
+            params,
+            Some(&self.session_id),
+            self.config.project.as_deref(),
+        )
+        .await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Review a code diff or file content using local LLM with project memory.
+    ///
+    /// Fetches architectural decisions from memory to inform the review.
+    #[tool(description = "Review code changes using local LLM with full project memory. \
+        Pass a git diff or file content. The review checks for bugs, security issues, \
+        architecture violations, and performance regressions. Reviews are stored as \
+        engrams for future reference. Focus: 'security', 'performance', 'architecture', \
+        'bugs', or 'all'.")]
+    async fn diff_review_tool(
+        &self,
+        Parameters(params): Parameters<DiffReviewParams>,
+    ) -> String {
+        let result = diff_review(
+            &self.client,
+            &self.config,
+            params,
+            Some(&self.session_id),
+            self.config.project.as_deref(),
+        )
+        .await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Export or import context snapshots for cross-IDE continuity.
+    ///
+    /// Export context in one IDE, import in another to continue seamlessly.
+    #[tool(description = "Export or import context snapshots for cross-IDE continuity. \
+        Use 'export' to save current context (recent engrams, sprint info) with a label. \
+        Use 'import' with the same label in another IDE to restore context. \
+        Enables: Claude Code → export → Firebase Studio → import → continue.")]
+    async fn context_bridge_tool(
+        &self,
+        Parameters(params): Parameters<ContextBridgeParams>,
+    ) -> String {
+        let result = context_bridge(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    // ── AST analysis tools (Sprint 029 Phase 2) ──────────────────────────────
+
+    /// Look up code symbols by name, type, language, or file path.
+    ///
+    /// Queries Huginn's tree-sitter indexed code_chunks table via Muninn.
+    #[tool(description = "Look up code symbols (functions, structs, enums, traits, impls) \
+        by exact name, chunk type, language, or file path. Uses Huginn's tree-sitter index. \
+        At least one filter required. Returns a table of matching symbols with locations.")]
+    async fn ast_analyze_tool(
+        &self,
+        Parameters(params): Parameters<AstAnalyzeParams>,
+    ) -> String {
+        let result = ast_analyze(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Find all references to a symbol across the indexed codebase.
+    ///
+    /// Uses BM25 text search over code chunks to find usages.
+    #[tool(description = "Find all references to a symbol across the indexed codebase. \
+        Uses BM25 full-text search on code content. Returns a table of chunks that \
+        reference the symbol, ranked by relevance. Use before refactoring to understand \
+        impact. Optionally exclude the definition chunk by passing its ID.")]
+    async fn impact_analysis_tool(
+        &self,
+        Parameters(params): Parameters<ImpactAnalysisParams>,
+    ) -> String {
+        let result = impact_analysis(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    // ── Task queue tool (Sprint 029 Phase 3) ──────────────────────────────────
+
+    /// Persistent task queue for agent coordination.
+    ///
+    /// Push, pop, complete, cancel, or list tasks stored in PostgreSQL.
+    #[tool(description = "Persistent task queue for agent coordination. \
+        Actions: 'push' (create task with title, description, priority, tags), \
+        'pop' (claim next pending task for an agent), \
+        'complete' (mark task done with result), 'cancel' (cancel a task), \
+        'list' (query tasks by status/project/agent). \
+        Tasks survive server restarts. Use for multi-step workflows and delegation.")]
+    async fn task_queue_tool(
+        &self,
+        Parameters(params): Parameters<TaskQueueParams>,
+    ) -> String {
+        let result = task_queue(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    // ── Memory graph tool (Sprint 029 Phase 4) ────────────────────────────────
+
+    /// Manage relationships between engrams in a directed graph.
+    ///
+    /// Create, remove, query, and traverse edges between memory engrams.
+    #[tool(description = "Manage engram relationship graph. \
+        Actions: 'link' (create edge between engrams with relation type and weight), \
+        'unlink' (remove edge), 'neighbors' (get connected engrams by direction), \
+        'traverse' (BFS walk up to N hops). \
+        Relations: 'related_to', 'depends_on', 'supersedes', 'caused_by'. \
+        Use to build knowledge graphs over memory for richer recall and reasoning.")]
+    async fn memory_graph_tool(
+        &self,
+        Parameters(params): Parameters<MemoryGraphParams>,
+    ) -> String {
+        let result = memory_graph(&self.client, &self.config, params).await;
         result
             .content
             .into_iter()

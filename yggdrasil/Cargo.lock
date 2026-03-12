@@ -4977,14 +4977,19 @@ dependencies = [
  "anyhow",
  "axum 0.8.8",
  "clap",
+ "futures",
  "rmcp",
+ "serde_json",
  "serde_yaml",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "ygg-domain",
  "ygg-mcp",
+ "ygg-store",
 ]
 
 [[package]]

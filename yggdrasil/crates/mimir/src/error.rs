@@ -32,6 +32,14 @@ pub enum MimirError {
     /// ONNX embedder failures (model load, tokenization, inference).
     #[error("embedder error: {0}")]
     Embedder(String),
+
+    /// Internal server errors (500).
+    #[error("{0}")]
+    Internal(String),
+
+    /// Resource not found (404).
+    #[error("{0}")]
+    NotFound(String),
 }
 
 impl From<EmbedError> for MimirError {
@@ -49,6 +57,8 @@ impl IntoResponse for MimirError {
             MimirError::Validation(msg) => tracing::warn!(error = %msg, "validation error"),
             MimirError::Summarization(msg) => tracing::error!(error = %msg, "summarization error"),
             MimirError::Embedder(msg) => tracing::error!(error = %msg, "embedder error"),
+            MimirError::Internal(msg) => tracing::error!(error = %msg, "internal error"),
+            MimirError::NotFound(msg) => tracing::warn!(error = %msg, "not found"),
         }
 
         let (status, message) = match &self {
@@ -62,6 +72,8 @@ impl IntoResponse for MimirError {
             MimirError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             MimirError::Summarization(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             MimirError::Embedder(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            MimirError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            MimirError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
         };
 
         (status, Json(json!({ "error": message }))).into_response()

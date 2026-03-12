@@ -168,6 +168,14 @@ pub struct SdrConfig {
     pub dim_bits: usize,
     /// Path to the ONNX model directory (contains model.onnx + tokenizer.json).
     pub model_dir: String,
+    /// Hamming similarity threshold for semantic dedup on store (default 0.90).
+    /// Set to 1.0 to disable (only exact SDR matches rejected).
+    #[serde(default = "default_dedup_threshold")]
+    pub dedup_threshold: f64,
+}
+
+fn default_dedup_threshold() -> f64 {
+    0.90
 }
 
 fn default_sdr_dim_bits() -> usize {
@@ -313,6 +321,17 @@ pub struct McpServerConfig {
     /// Required by sync_docs_tool for reading/writing local files.
     #[serde(default)]
     pub workspace_path: Option<String>,
+    /// PostgreSQL database URL for session persistence (optional).
+    /// When set, MCP remote server persists session metadata to PG.
+    #[serde(default)]
+    pub database_url: Option<String>,
+    /// Path to SQL migrations directory (default: "migrations").
+    #[serde(default = "default_migrations_path")]
+    pub migrations_path: Option<String>,
+}
+
+fn default_migrations_path() -> Option<String> {
+    None
 }
 
 fn default_prefetch_query() -> String {

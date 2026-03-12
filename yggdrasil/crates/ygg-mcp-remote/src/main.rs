@@ -10,6 +10,8 @@
 //! Usage:
 //!   ygg-mcp-remote [--config <path>] [--bind <addr:port>]
 
+mod session_manager;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use rmcp::transport::streamable_http_server::{
@@ -23,6 +25,8 @@ use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 use ygg_domain::config::McpServerConfig;
 use ygg_mcp::server::YggdrasilServer;
+
+use crate::session_manager::PersistentSessionManager;
 
 /// Yggdrasil Remote MCP server — always-on HTTP endpoint for IDE clients.
 #[derive(Debug, Parser)]
@@ -91,18 +95,60 @@ async fn main() -> Result<()> {
 
     let ct = CancellationToken::new();
 
-    let service: StreamableHttpService<YggdrasilServer, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(YggdrasilServer::from_config(&config)),
-            Arc::new(LocalSessionManager::default()),
-            StreamableHttpServerConfig {
-                stateful_mode: true,
-                cancellation_token: ct.clone(),
-                ..Default::default()
-            },
-        );
+    // --- Session persistence setup ---
+    // If database_url is configured, use PG-backed session manager.
+    // Otherwise, fall back to in-memory LocalSessionManager.
+    let has_db = config.database_url.is_some();
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router = if has_db {
+        let db_url = config.database_url.as_ref().unwrap().clone();
+        let store = ygg_store::Store::connect(&db_url)
+            .await
+            .context("failed to connect to PostgreSQL for session persistence")?;
+
+        // Run migrations if path is configured
+        if let Some(ref mig_path) = config.migrations_path {
+            store
+                .migrate(mig_path)
+                .await
+                .context("failed to run session migrations")?;
+            info!(path = mig_path, "database migrations applied");
+        }
+
+        // Spawn session cleanup background task
+        PersistentSessionManager::spawn_cleanup_task(store.clone(), ct.clone());
+
+        let project_id = config.project.clone();
+        let session_manager = Arc::new(PersistentSessionManager::new(store, project_id));
+
+        let service: StreamableHttpService<YggdrasilServer, PersistentSessionManager> =
+            StreamableHttpService::new(
+                move || Ok(YggdrasilServer::from_config(&config)),
+                session_manager,
+                StreamableHttpServerConfig {
+                    stateful_mode: true,
+                    cancellation_token: ct.clone(),
+                    ..Default::default()
+                },
+            );
+
+        info!("session persistence enabled (PostgreSQL)");
+        axum::Router::new().nest_service("/mcp", service)
+    } else {
+        let service: StreamableHttpService<YggdrasilServer, LocalSessionManager> =
+            StreamableHttpService::new(
+                move || Ok(YggdrasilServer::from_config(&config)),
+                Arc::new(LocalSessionManager::default()),
+                StreamableHttpServerConfig {
+                    stateful_mode: true,
+                    cancellation_token: ct.clone(),
+                    ..Default::default()
+                },
+            );
+
+        info!("session persistence disabled (in-memory only)");
+        axum::Router::new().nest_service("/mcp", service)
+    };
 
     let tcp_listener = tokio::net::TcpListener::bind(&args.bind)
         .await

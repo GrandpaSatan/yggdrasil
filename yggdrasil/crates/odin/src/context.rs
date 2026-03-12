@@ -173,6 +173,8 @@ mod tests {
             project_id: None,
             created_at: std::time::Instant::now(),
             last_accessed: std::time::Instant::now(),
+            session_sdr: ygg_domain::sdr::ZERO,
+            sdr_message_count: 0,
         }
     }
 

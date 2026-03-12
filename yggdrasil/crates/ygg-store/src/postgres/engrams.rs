@@ -287,6 +287,46 @@ pub async fn insert_engram_sdr(
     Ok(id)
 }
 
+/// Update an existing engram's content and SDR in place.
+///
+/// Used for update-by-ID to bypass the novelty gate when intentionally
+/// replacing an engram's content (e.g., sprint summary updates).
+/// Returns `Ok(true)` if a row was updated, `Ok(false)` if the ID was not found.
+pub async fn update_engram_sdr(
+    pool: &PgPool,
+    id: Uuid,
+    cause: &str,
+    effect: &str,
+    sdr_bits: &[u8],
+    content_hash: &[u8],
+    tags: &[String],
+    trigger_type: &str,
+    trigger_label: &str,
+) -> Result<bool, StoreError> {
+    let rows = sqlx::query(
+        r#"
+        UPDATE yggdrasil.engrams
+        SET cause = $2, effect = $3, sdr_bits = $4, content_hash = $5,
+            tags = $6, trigger_type = $7, trigger_label = $8,
+            last_accessed = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(cause)
+    .bind(effect)
+    .bind(sdr_bits)
+    .bind(content_hash)
+    .bind(tags)
+    .bind(trigger_type)
+    .bind(trigger_label)
+    .execute(pool)
+    .await
+    .map_err(|e| StoreError::Query(e.to_string()))?;
+
+    Ok(rows.rows_affected() > 0)
+}
+
 /// Fetch event metadata for a batch of engram IDs (no cause/effect text).
 ///
 /// Returns `(id, tier, tags, trigger_type, trigger_label, created_at, access_count)` tuples.
@@ -358,6 +398,73 @@ pub async fn get_core_engram_events(
                     .unwrap_or_default(),
                 r.get::<DateTime<Utc>, _>("created_at"),
                 r.get::<i64, _>("access_count"),
+            )
+        })
+        .collect())
+}
+
+/// Query engrams with temporal and tag filters for the timeline endpoint.
+///
+/// Returns `(cause, effect, tier, tags, created_at)` tuples ordered by creation time descending.
+pub async fn query_timeline(
+    pool: &PgPool,
+    after: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
+    tags: Option<&[String]>,
+    tier: Option<&str>,
+    limit: u32,
+) -> Result<Vec<(String, String, String, Vec<String>, DateTime<Utc>)>, StoreError> {
+    let mut query = String::from(
+        "SELECT cause, effect, tier, tags, created_at FROM yggdrasil.engrams WHERE 1=1",
+    );
+    let mut param_idx = 0u32;
+
+    if after.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND created_at >= ${}", param_idx));
+    }
+    if before.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND created_at <= ${}", param_idx));
+    }
+    if tags.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND tags @> ${}", param_idx));
+    }
+    if tier.is_some() {
+        param_idx += 1;
+        query.push_str(&format!(" AND tier = ${}", param_idx));
+    }
+
+    query.push_str(" ORDER BY created_at DESC");
+    query.push_str(&format!(" LIMIT {}", limit.min(50)));
+
+    let mut q = sqlx::query(&query);
+
+    if let Some(ref a) = after {
+        q = q.bind(a);
+    }
+    if let Some(ref b) = before {
+        q = q.bind(b);
+    }
+    if let Some(ref t) = tags {
+        q = q.bind(t);
+    }
+    if let Some(ref ti) = tier {
+        q = q.bind(ti);
+    }
+
+    let rows = q.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<String, _>("cause"),
+                r.get::<String, _>("effect"),
+                r.get::<String, _>("tier"),
+                r.get::<Vec<String>, _>("tags"),
+                r.get::<DateTime<Utc>, _>("created_at"),
             )
         })
         .collect())

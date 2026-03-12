@@ -256,6 +256,26 @@ pub async fn chat_handler(
     .await
     {
         memory_router::apply_memory_events(&recall, &mut decision);
+
+        // ── 6b. Topic drift tracking via session SDR ─────────────
+        if let Some(hex) = &recall.query_sdr_hex {
+            if let Some(query_sdr) = ygg_domain::sdr::from_hex(hex) {
+                if let Some(drift) = state.session_store.update_session_sdr(&session_id, &query_sdr) {
+                    tracing::debug!(
+                        session_id = %session_id,
+                        drift_score = %drift,
+                        "session SDR drift score"
+                    );
+                    if drift < 0.5 {
+                        tracing::info!(
+                            session_id = %session_id,
+                            drift_score = %drift,
+                            "topic drift detected — session SDR reset"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     tracing::info!(
@@ -808,6 +828,21 @@ pub async fn proxy_store(
     forward_to_mimir(&state.http_client, &url, body, "store").await
 }
 
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/sdr/operations  (transparent Mimir proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/sdr/operations`.
+///
+/// See `proxy_query` for the forwarding semantics.
+pub async fn proxy_sdr_operations(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/sdr/operations", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "sdr_operations").await
+}
+
 /// Shared transparent proxy logic for Mimir endpoints.
 async fn forward_to_mimir(
     client: &reqwest::Client,
@@ -828,6 +863,223 @@ async fn forward_to_mimir(
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     // Forward content-type header if present.
+    let mut headers = HeaderMap::new();
+    if let Some(ct) = upstream.headers().get("content-type") {
+        headers.insert("content-type", ct.clone());
+    }
+
+    let response_body = upstream
+        .bytes()
+        .await
+        .map_err(|e| OdinError::Proxy(format!("mimir body read error ({op}): {e}")))?;
+
+    Ok((status, headers, response_body).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/timeline  (transparent Mimir proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/timeline`.
+pub async fn proxy_timeline(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/timeline", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "timeline").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Context offload proxies (POST / GET)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/context` (store).
+pub async fn proxy_context_store(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/context", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "context_store").await
+}
+
+/// Transparent proxy to Mimir's `GET /api/v1/context` (list).
+pub async fn proxy_context_list(
+    State(state): State<AppState>,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/context", state.mimir_url);
+    forward_get_to_mimir(&state.http_client, &url, "context_list").await
+}
+
+/// Transparent proxy to Mimir's `GET /api/v1/context/:handle` (retrieve).
+pub async fn proxy_context_retrieve(
+    State(state): State<AppState>,
+    axum::extract::Path(handle): axum::extract::Path<String>,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/context/{}", state.mimir_url, handle);
+    forward_get_to_mimir(&state.http_client, &url, "context_retrieve").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Task queue proxies (Mimir)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/tasks/push`.
+pub async fn proxy_task_push(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/tasks/push", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "task_push").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/tasks/pop`.
+pub async fn proxy_task_pop(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/tasks/pop", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "task_pop").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/tasks/complete`.
+pub async fn proxy_task_complete(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/tasks/complete", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "task_complete").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/tasks/cancel`.
+pub async fn proxy_task_cancel(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/tasks/cancel", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "task_cancel").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/tasks/list`.
+pub async fn proxy_task_list(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/tasks/list", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "task_list").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Graph proxies (Mimir)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/graph/link`.
+pub async fn proxy_graph_link(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/graph/link", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "graph_link").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/graph/unlink`.
+pub async fn proxy_graph_unlink(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/graph/unlink", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "graph_unlink").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/graph/neighbors`.
+pub async fn proxy_graph_neighbors(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/graph/neighbors", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "graph_neighbors").await
+}
+
+/// Transparent proxy to Mimir's `POST /api/v1/graph/traverse`.
+pub async fn proxy_graph_traverse(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/graph/traverse", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "graph_traverse").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/symbols  (transparent Muninn proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Muninn's `POST /api/v1/symbols`.
+pub async fn proxy_symbols(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/symbols", state.muninn_url);
+    forward_to_muninn(&state.http_client, &url, body, "symbols").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/references  (transparent Muninn proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Muninn's `POST /api/v1/references`.
+pub async fn proxy_references(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/references", state.muninn_url);
+    forward_to_muninn(&state.http_client, &url, body, "references").await
+}
+
+/// Shared transparent proxy logic for Muninn endpoints.
+async fn forward_to_muninn(
+    client: &reqwest::Client,
+    url: &str,
+    body: Bytes,
+    op: &str,
+) -> Result<Response, OdinError> {
+    let upstream = client
+        .post(url)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| OdinError::Proxy(format!("muninn unreachable ({op}): {e}")))?;
+
+    let status = StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    let mut headers = HeaderMap::new();
+    if let Some(ct) = upstream.headers().get("content-type") {
+        headers.insert("content-type", ct.clone());
+    }
+
+    let response_body = upstream
+        .bytes()
+        .await
+        .map_err(|e| OdinError::Proxy(format!("muninn body read error ({op}): {e}")))?;
+
+    Ok((status, headers, response_body).into_response())
+}
+
+/// Shared GET proxy logic for Mimir endpoints.
+async fn forward_get_to_mimir(
+    client: &reqwest::Client,
+    url: &str,
+    op: &str,
+) -> Result<Response, OdinError> {
+    let upstream = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| OdinError::Proxy(format!("mimir unreachable ({op}): {e}")))?;
+
+    let status = StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
     let mut headers = HeaderMap::new();
     if let Some(ct) = upstream.headers().get("content-type") {
         headers.insert("content-type", ct.clone());

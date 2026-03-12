@@ -178,6 +178,25 @@ async fn main() -> anyhow::Result<()> {
         // Mimir transparent proxy endpoints (Fergus client compatibility).
         .route("/api/v1/query", post(handlers::proxy_query))
         .route("/api/v1/store", post(handlers::proxy_store))
+        .route("/api/v1/sdr/operations", post(handlers::proxy_sdr_operations))
+        .route("/api/v1/timeline", post(handlers::proxy_timeline))
+        .route("/api/v1/context", post(handlers::proxy_context_store))
+        .route("/api/v1/context", get(handlers::proxy_context_list))
+        .route("/api/v1/context/{handle}", get(handlers::proxy_context_retrieve))
+        // Task queue proxy endpoints (Mimir).
+        .route("/api/v1/tasks/push", post(handlers::proxy_task_push))
+        .route("/api/v1/tasks/pop", post(handlers::proxy_task_pop))
+        .route("/api/v1/tasks/complete", post(handlers::proxy_task_complete))
+        .route("/api/v1/tasks/cancel", post(handlers::proxy_task_cancel))
+        .route("/api/v1/tasks/list", post(handlers::proxy_task_list))
+        // Graph proxy endpoints (Mimir).
+        .route("/api/v1/graph/link", post(handlers::proxy_graph_link))
+        .route("/api/v1/graph/unlink", post(handlers::proxy_graph_unlink))
+        .route("/api/v1/graph/neighbors", post(handlers::proxy_graph_neighbors))
+        .route("/api/v1/graph/traverse", post(handlers::proxy_graph_traverse))
+        // Muninn transparent proxy endpoints (AST analysis).
+        .route("/api/v1/symbols", post(handlers::proxy_symbols))
+        .route("/api/v1/references", post(handlers::proxy_references))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

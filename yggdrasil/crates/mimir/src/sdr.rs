@@ -101,6 +101,53 @@ pub fn popcount(sdr: &Sdr) -> u32 {
     sdr.iter().map(|w| w.count_ones()).sum()
 }
 
+/// Bitwise AND of two SDRs — concept intersection.
+///
+/// The result contains only features present in both inputs.
+pub fn and(a: &Sdr, b: &Sdr) -> Sdr {
+    let mut out = ZERO;
+    for i in 0..SDR_WORDS {
+        out[i] = a[i] & b[i];
+    }
+    out
+}
+
+/// Bitwise OR of two SDRs — concept union.
+///
+/// The result contains features present in either input.
+pub fn or(a: &Sdr, b: &Sdr) -> Sdr {
+    let mut out = ZERO;
+    for i in 0..SDR_WORDS {
+        out[i] = a[i] | b[i];
+    }
+    out
+}
+
+/// Bitwise XOR of two SDRs — symmetric difference.
+///
+/// The result contains features unique to one input but not the other.
+pub fn xor(a: &Sdr, b: &Sdr) -> Sdr {
+    let mut out = ZERO;
+    for i in 0..SDR_WORDS {
+        out[i] = a[i] ^ b[i];
+    }
+    out
+}
+
+/// Jaccard similarity between two SDRs: `popcount(AND) / popcount(OR)`.
+///
+/// Returns 0.0 if both SDRs are all-zero (no features).
+/// Returns a value in `[0.0, 1.0]` where 1.0 means identical feature sets.
+pub fn jaccard(a: &Sdr, b: &Sdr) -> f64 {
+    let intersection = popcount(&and(a, b)) as f64;
+    let union = popcount(&or(a, b)) as f64;
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +218,56 @@ mod tests {
     fn popcount_works() {
         let sdr: Sdr = [0xFF, 0, 0, 0]; // 8 bits set
         assert_eq!(popcount(&sdr), 8);
+    }
+
+    #[test]
+    fn and_intersection() {
+        let a: Sdr = [0xFF, 0xF0, 0, 0];
+        let b: Sdr = [0x0F, 0xFF, 0, 0];
+        let result = and(&a, &b);
+        assert_eq!(result, [0x0F, 0xF0, 0, 0]);
+    }
+
+    #[test]
+    fn or_union() {
+        let a: Sdr = [0xFF, 0x00, 0, 0];
+        let b: Sdr = [0x00, 0xFF, 0, 0];
+        let result = or(&a, &b);
+        assert_eq!(result, [0xFF, 0xFF, 0, 0]);
+    }
+
+    #[test]
+    fn xor_symmetric_difference() {
+        let a: Sdr = [0xFF, 0xF0, 0, 0];
+        let b: Sdr = [0xFF, 0x0F, 0, 0];
+        let result = xor(&a, &b);
+        assert_eq!(result, [0x00, 0xFF, 0, 0]);
+    }
+
+    #[test]
+    fn jaccard_identical() {
+        let a: Sdr = [0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(jaccard(&a, &a), 1.0);
+    }
+
+    #[test]
+    fn jaccard_disjoint() {
+        let a: Sdr = [0xFF, 0, 0, 0];
+        let b: Sdr = [0, 0xFF, 0, 0];
+        // AND = 0 bits, OR = 16 bits → Jaccard = 0.0
+        assert_eq!(jaccard(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn jaccard_zero_sdrs() {
+        assert_eq!(jaccard(&ZERO, &ZERO), 0.0);
+    }
+
+    #[test]
+    fn jaccard_partial_overlap() {
+        let a: Sdr = [0xFF, 0xFF, 0, 0]; // 16 bits
+        let b: Sdr = [0xFF, 0, 0, 0];    // 8 bits
+        // AND = 8 bits, OR = 16 bits → Jaccard = 0.5
+        assert_eq!(jaccard(&a, &b), 0.5);
     }
 }

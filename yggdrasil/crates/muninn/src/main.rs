@@ -13,7 +13,10 @@ use ygg_store::{Store, qdrant::VectorStore};
 use ygg_embed::OnnxEmbedder;
 
 use muninn::{
-    handlers::{health_handler, search_handler, stats_handler},
+    handlers::{
+        find_references_handler, health_handler, search_handler, stats_handler,
+        symbol_lookup_handler,
+    },
     metrics::metrics_middleware,
     state::AppState,
 };
@@ -107,6 +110,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/api/v1/search", post(search_handler))
+        .route("/api/v1/symbols", post(symbol_lookup_handler))
+        .route("/api/v1/references", post(find_references_handler))
         .route("/api/v1/stats", get(stats_handler))
         // Prometheus scrape endpoint.
         .route(

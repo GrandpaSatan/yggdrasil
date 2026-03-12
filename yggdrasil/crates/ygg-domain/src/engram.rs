@@ -50,11 +50,15 @@ pub struct Engram {
     pub last_accessed: DateTime<Utc>,
 }
 
-/// Payload for storing a new engram.
+/// Payload for storing a new engram (or updating an existing one).
 ///
 /// Matches the Fergus `NewEngram` struct: `{ cause, effect }`.
+/// When `id` is provided, performs an update-by-ID (bypasses novelty gate).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewEngram {
+    /// If set, update this existing engram instead of creating a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
     pub cause: String,
     pub effect: String,
     #[serde(default)]
@@ -131,4 +135,7 @@ pub struct RecallQuery {
 pub struct RecallResponse {
     pub events: Vec<EngramEvent>,
     pub core_events: Vec<EngramEvent>,
+    /// Hex-encoded 256-bit SDR of the query text (optional, for session drift tracking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_sdr_hex: Option<String>,
 }

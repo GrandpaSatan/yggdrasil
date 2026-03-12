@@ -18,6 +18,7 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use ygg_domain::config::SessionConfig;
+use ygg_domain::sdr as sdr_core;
 
 /// A single message stored in session history.
 #[derive(Debug, Clone)]
@@ -60,6 +61,10 @@ pub struct ConversationSession {
     pub project_id: Option<String>,
     pub created_at: Instant,
     pub last_accessed: Instant,
+    /// Running OR-accumulation of query SDRs for topic drift detection.
+    pub session_sdr: sdr_core::Sdr,
+    /// Number of messages accumulated into session_sdr.
+    pub sdr_message_count: usize,
 }
 
 impl ConversationSession {
@@ -72,7 +77,25 @@ impl ConversationSession {
             project_id,
             created_at: now,
             last_accessed: now,
+            session_sdr: sdr_core::ZERO,
+            sdr_message_count: 0,
         }
+    }
+
+    /// Update the session SDR with a new query SDR (OR accumulation).
+    ///
+    /// Returns the drift score: Hamming similarity between the new query SDR
+    /// and the accumulated session SDR. Low values (< 0.5) indicate topic drift.
+    /// Returns `None` if this is the first message (no drift to compute).
+    pub fn update_sdr(&mut self, query_sdr: &sdr_core::Sdr) -> Option<f64> {
+        let drift = if self.sdr_message_count > 0 {
+            Some(sdr_core::hamming_similarity(query_sdr, &self.session_sdr))
+        } else {
+            None
+        };
+        self.session_sdr = sdr_core::or(&self.session_sdr, query_sdr);
+        self.sdr_message_count += 1;
+        drift
     }
 
     /// Estimated total tokens across all messages + summary.
@@ -148,6 +171,31 @@ impl SessionStore {
         if let Some(mut entry) = self.sessions.get_mut(session_id) {
             entry.messages.extend(messages.iter().cloned());
             entry.last_accessed = Instant::now();
+        }
+    }
+
+    /// Update the session's SDR with a new query SDR from a recall response.
+    ///
+    /// Returns the drift score (Hamming similarity to accumulated session SDR).
+    /// Returns `None` if the session doesn't exist or this is the first message.
+    /// If drift is below 0.5, resets the session SDR to just this query.
+    pub fn update_session_sdr(
+        &self,
+        session_id: &str,
+        query_sdr: &sdr_core::Sdr,
+    ) -> Option<f64> {
+        if let Some(mut entry) = self.sessions.get_mut(session_id) {
+            let drift = entry.update_sdr(query_sdr);
+            // On high drift, reset to just the current query
+            if let Some(d) = drift {
+                if d < 0.5 {
+                    entry.session_sdr = *query_sdr;
+                    entry.sdr_message_count = 1;
+                }
+            }
+            drift
+        } else {
+            None
         }
     }
 
@@ -388,5 +436,101 @@ mod tests {
         assert_eq!(session.summary.as_deref(), Some("summary of first 2 turns"));
         assert_eq!(session.messages.len(), 2); // msg2 + resp2 remain
         assert_eq!(session.messages[0].content, "msg2");
+    }
+
+    // --- SDR drift tracking tests ---
+
+    #[test]
+    fn first_sdr_update_returns_none() {
+        let store = SessionStore::new(test_config());
+        store.resolve(Some("s1"), None);
+
+        let sdr: sdr_core::Sdr = [0xFF, 0, 0, 0];
+        let drift = store.update_session_sdr("s1", &sdr);
+        assert!(drift.is_none(), "first message should return None (no prior state)");
+    }
+
+    #[test]
+    fn same_topic_has_high_drift_score() {
+        let store = SessionStore::new(test_config());
+        store.resolve(Some("s1"), None);
+
+        // First message — sets session SDR
+        let sdr_a: sdr_core::Sdr = [0xFF, 0xFF, 0, 0];
+        store.update_session_sdr("s1", &sdr_a);
+
+        // Second message — identical SDR should give similarity = 1.0
+        let drift = store.update_session_sdr("s1", &sdr_a);
+        assert_eq!(drift, Some(1.0), "identical SDR should have drift score 1.0");
+    }
+
+    #[test]
+    fn similar_topic_has_moderate_drift_score() {
+        let store = SessionStore::new(test_config());
+        store.resolve(Some("s1"), None);
+
+        let sdr_a: sdr_core::Sdr = [0xFF, 0xFF, 0, 0]; // 16 bits in words 0,1
+        store.update_session_sdr("s1", &sdr_a);
+
+        // Second message — overlapping but not identical
+        let sdr_b: sdr_core::Sdr = [0xFF, 0, 0xFF, 0]; // shares word 0, differs in 1,2
+        let drift = store.update_session_sdr("s1", &sdr_b);
+        let d = drift.expect("should have drift score");
+        // session_sdr after first = [0xFF, 0xFF, 0, 0]
+        // sdr_b = [0xFF, 0, 0xFF, 0]
+        // hamming distance = bits differing in word1 (8) + word2 (8) = 16
+        // similarity = 1 - 16/256 = 0.9375
+        assert!(d > 0.5, "similar topic should have drift > 0.5, got {d}");
+        assert!(d < 1.0, "not identical, so drift < 1.0, got {d}");
+    }
+
+    #[test]
+    fn topic_drift_resets_session_sdr() {
+        let store = SessionStore::new(test_config());
+        store.resolve(Some("s1"), None);
+
+        // First message: bits in words 0,1
+        let sdr_a: sdr_core::Sdr = [u64::MAX, u64::MAX, 0, 0];
+        store.update_session_sdr("s1", &sdr_a);
+
+        // Second message: completely disjoint — bits only in words 2,3
+        let sdr_b: sdr_core::Sdr = [0, 0, u64::MAX, u64::MAX];
+        let drift = store.update_session_sdr("s1", &sdr_b);
+        let d = drift.expect("should have drift score");
+        // hamming distance = 256 (all bits differ) → similarity = 0.0
+        assert!(d < 0.5, "disjoint SDR should trigger drift, got {d}");
+
+        // After drift, session SDR should be reset to sdr_b (not accumulated)
+        let session = store.get_session("s1").unwrap();
+        assert_eq!(session.session_sdr, sdr_b, "session SDR should reset to new topic");
+        assert_eq!(session.sdr_message_count, 1, "message count should reset to 1");
+    }
+
+    #[test]
+    fn or_accumulation_grows_session_sdr() {
+        let store = SessionStore::new(test_config());
+        store.resolve(Some("s1"), None);
+
+        // Three on-topic messages with different but overlapping bits
+        let sdr_a: sdr_core::Sdr = [0xFF, 0, 0, 0]; // 8 bits
+        let sdr_b: sdr_core::Sdr = [0xFF, 0xFF, 0, 0]; // 16 bits (superset of a)
+        let sdr_c: sdr_core::Sdr = [0xFF, 0xFF, 0xFF, 0]; // 24 bits (superset of b)
+
+        store.update_session_sdr("s1", &sdr_a);
+        store.update_session_sdr("s1", &sdr_b);
+        store.update_session_sdr("s1", &sdr_c);
+
+        let session = store.get_session("s1").unwrap();
+        // OR of all three = sdr_c (since c is superset)
+        assert_eq!(session.session_sdr, sdr_c);
+        assert_eq!(session.sdr_message_count, 3);
+    }
+
+    #[test]
+    fn nonexistent_session_returns_none() {
+        let store = SessionStore::new(test_config());
+        let sdr: sdr_core::Sdr = [0xFF, 0, 0, 0];
+        let drift = store.update_session_sdr("nonexistent", &sdr);
+        assert!(drift.is_none());
     }
 }

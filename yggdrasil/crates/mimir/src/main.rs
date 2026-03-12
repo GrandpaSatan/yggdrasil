@@ -14,8 +14,10 @@ use tracing_subscriber::EnvFilter;
 
 use mimir::{
     handlers::{
-        get_core_engrams_handler, get_stats, health, promote_engram, query_engrams,
-        recall_engrams, store_engram,
+        context_list, context_retrieve, context_store, get_core_engrams_handler, get_stats,
+        graph_link, graph_neighbors, graph_traverse, graph_unlink, health, promote_engram,
+        query_engrams, recall_engrams, sdr_operations, store_engram, task_cancel, task_complete,
+        task_list, task_pop, task_push, timeline,
     },
     metrics::metrics_middleware,
     state::{AppState, load_sdr_rows},
@@ -97,6 +99,22 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/promote", post(promote_engram))
         .route("/api/v1/core", get(get_core_engrams_handler))
         .route("/api/v1/recall", post(recall_engrams))
+        .route("/api/v1/sdr/operations", post(sdr_operations))
+        .route("/api/v1/timeline", post(timeline))
+        .route("/api/v1/context", post(context_store))
+        .route("/api/v1/context", get(context_list))
+        .route("/api/v1/context/{handle}", get(context_retrieve))
+        // Task queue endpoints.
+        .route("/api/v1/tasks/push", post(task_push))
+        .route("/api/v1/tasks/pop", post(task_pop))
+        .route("/api/v1/tasks/complete", post(task_complete))
+        .route("/api/v1/tasks/cancel", post(task_cancel))
+        .route("/api/v1/tasks/list", post(task_list))
+        // Graph endpoints.
+        .route("/api/v1/graph/link", post(graph_link))
+        .route("/api/v1/graph/unlink", post(graph_unlink))
+        .route("/api/v1/graph/neighbors", post(graph_neighbors))
+        .route("/api/v1/graph/traverse", post(graph_traverse))
         // Prometheus scrape endpoint.
         .route(
             "/metrics",
@@ -125,6 +143,31 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to bind to {listen_addr}: {e}"))?;
 
     tracing::info!("mimir listening on {listen_addr}");
+
+    // --- Background SDR health metrics ---
+    // Refresh SDR distribution stats every 60s for Prometheus/Grafana.
+    {
+        let state = shared_state.clone();
+        let mut shutdown_rx = state.shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let stats = state.sdr_index.stats();
+                        mimir::metrics::record_sdr_health(
+                            stats.count as f64,
+                            stats.avg_popcount,
+                            stats.concept_coverage as f64,
+                            stats.similarity_p50,
+                            stats.similarity_p90,
+                        );
+                    }
+                    _ = shutdown_rx.changed() => break,
+                }
+            }
+        });
+    }
 
     // --- Background SDR index backfill ---
     // Spawn after the listener is bound so the server can accept requests immediately.

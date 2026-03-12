@@ -14,6 +14,7 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `GET`  | `/v1/models` | List all LLM models across backends |
 | `POST` | `/api/v1/query` | Proxy to Mimir: semantic engram query. Body: `{text, limit?}` |
 | `POST` | `/api/v1/store` | Proxy to Mimir: store engram. Body: `{cause, effect, tags?}` |
+| `POST` | `/api/v1/sdr/operations` | SDR set operations (and, or, xor, jaccard) on N input texts. Body: `{texts: [string], operation: "and"|"or"|"xor"|"jaccard"}` → returns `{sdr_hex: string, popcount: int, matched_engrams: [EngramEvent], jaccard_matrix?: [[float]]}` |
 | `GET`  | `/health` | Health check (always HTTP 200, status in body) |
 | `GET`  | `/metrics` | Prometheus text metrics |
 
@@ -30,6 +31,7 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `POST` | `/api/v1/store` | Store new engram. Body: `{cause, effect, tags?: [string]}` |
 | `POST` | `/api/v1/recall` | SDR dual-system recall. Body: `{text, limit?}` → returns `{engrams: [EngramEvent]}` |
 | `POST` | `/api/v1/query` | Legacy semantic query (uses SDR). Body: `{text, limit?}` → returns `{results: [{cause, effect, similarity}]}` |
+| `POST` | `/api/v1/sdr/operations` | SDR set operations (and, or, xor, jaccard) on N input texts. Body: `{texts: [string], operation: "and"|"or"|"xor"|"jaccard"}` → returns `{sdr_hex: string, popcount: int, matched_engrams: [EngramEvent], jaccard_matrix?: [[float]]}` |
 | `GET`  | `/health` | Health check |
 | `GET`  | `/metrics` | Prometheus metrics |
 
@@ -92,6 +94,10 @@ The MCP layer is split into two servers (Sprint 027):
 | `ha_list_entities_tool` | List HA entities by domain |
 | `ha_call_service_tool` | Call HA service (device control) |
 | `ha_generate_automation_tool` | Generate HA automation YAML via LLM |
+| `memory_intersect_tool` | Proxied SDR set operations for Claude tool use |
+| `task_delegate_tool` | Delegate code generation task to local Qwen3-30B with full Muninn+Mimir context |
+| `diff_review_tool` | Perform memory-aware code review via local LLM |
+| `context_bridge_tool` | Share context across IDE windows using Antigravity |
 
 | Resource URI | Description |
 |--------------|-------------|
@@ -377,3 +383,16 @@ cd ~/Yggdrasil
 ```
 get_sprint_history_tool(project: "yggdrasil", limit: 5)
 ```
+
+---
+
+## Antigravity Integration
+
+The Antigravity integration enables cross-IDE context sharing via the `context_bridge_tool`. This requires setting up an Antigravity server and configuring the `context_bridge_tool` to communicate with it.
+
+To enable this functionality, ensure:
+1. The Antigravity server is running
+2. The `context_bridge_tool` is properly configured in the MCP server
+3. Claude Code is configured to use the `yggdrasil` MCP server with the appropriate URL
+
+The `context_bridge_tool` allows sharing context between different IDE windows by bridging them through the Antigravity infrastructure.
