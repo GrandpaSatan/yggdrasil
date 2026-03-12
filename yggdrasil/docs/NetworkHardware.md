@@ -195,5 +195,6 @@ NOTE: I have never used this before, no idea if it's configured yet. Please ensu
 
 
 
+ha network update enp6s19 --ipv4-method auto --ipv4-gateway ""
 
 

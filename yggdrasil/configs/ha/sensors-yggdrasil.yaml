@@ -1,0 +1,172 @@
+# Yggdrasil Mesh Network - REST Sensor Definitions
+# Include in HA configuration.yaml:
+#   rest: !include configs/ha/sensors-yggdrasil.yaml
+# Or merge into your existing rest: section.
+
+# ─────────────────────────────────────────────────────────
+#  Odin - LLM Gateway (Munin REDACTED_MUNIN_IP:8080)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_MUNIN_IP:8080/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Odin Status"
+      unique_id: ygg_odin_status
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - status
+        - version
+        - uptime
+      icon: mdi:brain
+      availability: >-
+        {{ value_json is defined }}
+
+# ─────────────────────────────────────────────────────────
+#  Mimir - Memory Service (Munin REDACTED_MUNIN_IP:9090)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_MUNIN_IP:9090/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Mimir Status"
+      unique_id: ygg_mimir_status
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - status
+        - version
+        - uptime
+        - engram_count
+      icon: mdi:database-search
+
+# ─────────────────────────────────────────────────────────
+#  Muninn - Code Agent (Hugin REDACTED_HUGIN_IP:9091)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HUGIN_IP:9091/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Muninn Status"
+      unique_id: ygg_muninn_status
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - status
+        - version
+        - uptime
+      icon: mdi:code-braces
+
+# ─────────────────────────────────────────────────────────
+#  Huginn - Task Orchestrator (Hugin REDACTED_HUGIN_IP:9092)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HUGIN_IP:9092/health
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Huginn Status"
+      unique_id: ygg_huginn_status
+      value_template: >-
+        {% if value_json is defined and value_json.status is defined %}
+          {{ value_json.status }}
+        {% else %}
+          unknown
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - status
+        - version
+        - uptime
+      icon: mdi:head-cog-outline
+
+# ─────────────────────────────────────────────────────────
+#  Qdrant - Vector Database (Hades REDACTED_HADES_IP:6333)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HADES_IP:6333/healthz
+  scan_interval: 60
+  timeout: 10
+  sensor:
+    - name: "Ygg Qdrant Status"
+      unique_id: ygg_qdrant_status
+      value_template: >-
+        {% if value == "ok" or (value_json is defined and value_json.status is defined) %}
+          ok
+        {% else %}
+          unknown
+        {% endif %}
+      icon: mdi:vector-triangle
+
+# ─────────────────────────────────────────────────────────
+#  Ollama - Munin Node (REDACTED_MUNIN_IP:11434)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_MUNIN_IP:11434/api/tags
+  scan_interval: 120
+  timeout: 15
+  sensor:
+    - name: "Ygg Ollama Munin"
+      unique_id: ygg_ollama_munin
+      value_template: >-
+        {% if value_json is defined and value_json.models is defined %}
+          {{ value_json.models | length }} model(s)
+        {% else %}
+          unavailable
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - models
+      icon: mdi:robot
+
+# ─────────────────────────────────────────────────────────
+#  Ollama - Hugin Node (REDACTED_HUGIN_IP:11434)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HUGIN_IP:11434/api/tags
+  scan_interval: 120
+  timeout: 15
+  sensor:
+    - name: "Ygg Ollama Hugin"
+      unique_id: ygg_ollama_hugin
+      value_template: >-
+        {% if value_json is defined and value_json.models is defined %}
+          {{ value_json.models | length }} model(s)
+        {% else %}
+          unavailable
+        {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - models
+      icon: mdi:robot
+
+# ─────────────────────────────────────────────────────────
+#  Qdrant Collection Stats (Hades REDACTED_HADES_IP:6333)
+# ─────────────────────────────────────────────────────────
+- resource: http://REDACTED_HADES_IP:6333/collections
+  scan_interval: 300
+  timeout: 10
+  sensor:
+    - name: "Ygg Qdrant Collections"
+      unique_id: ygg_qdrant_collections
+      value_template: >-
+        {% if value_json is defined and value_json.result is defined and value_json.result.collections is defined %}
+          {{ value_json.result.collections | length }} collection(s)
+        {% else %}
+          unknown
+        {% endif %}
+      json_attributes_path: "$.result"
+      json_attributes:
+        - collections
+      icon: mdi:database

@@ -1888,7 +1888,37 @@ pub async fn build_check(
         }
     };
 
-    let mut cmd_args = vec!["cargo".to_string()];
+    // Resolve cargo binary — the MCP server may run as a service user without
+    // cargo in PATH. Check $CARGO, then common rustup install locations.
+    let cargo_bin = {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(c) = std::env::var("CARGO") {
+            candidates.push(c);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            candidates.push(format!("{home}/.cargo/bin/cargo"));
+        }
+        // Also check the workspace owner's cargo (for service-user execution)
+        if let Some(ref ws) = config.workspace_path {
+            // Walk up to find a .cargo/bin/cargo relative to repo owner's home
+            let ws_path = std::path::Path::new(ws);
+            for ancestor in ws_path.ancestors() {
+                let candidate = ancestor.join(".cargo/bin/cargo");
+                if candidate.exists() {
+                    candidates.push(candidate.to_string_lossy().into_owned());
+                    break;
+                }
+            }
+        }
+        candidates.push("/usr/local/bin/cargo".to_string());
+        candidates.push("/usr/bin/cargo".to_string());
+        candidates
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .unwrap_or_else(|| "cargo".to_string())
+    };
+
+    let mut cmd_args = vec![cargo_bin];
     match mode {
         "check" => cmd_args.push("check".to_string()),
         "clippy" => {
