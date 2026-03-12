@@ -1,0 +1,18 @@
+{
+  "odin_url": "http://REDACTED_MUNIN_IP:8080",
+  "whisper_model_dir": "/opt/yggdrasil/models/whisper-base",
+  "kokoro_model_path": "/opt/yggdrasil/models/kokoro-v1.0.onnx",
+  "kokoro_voices_path": "/opt/yggdrasil/models/voices-v1.0.bin",
+  "kokoro_voice": "af_heart",
+  "kokoro_speed": 1.0,
+  "audio_device": "default",
+  "sample_rate": 16000,
+  "wake_word": "yggdrasil",
+  "inference_device": "NPU",
+  "fallback_device": "CPU",
+  "busy_sound_path": "/opt/yggdrasil/sounds/busy.wav",
+  "sdr_commands": {
+    "threshold": 0.85,
+    "commands": []
+  }
+}

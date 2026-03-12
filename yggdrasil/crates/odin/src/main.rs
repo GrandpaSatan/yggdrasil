@@ -2,7 +2,7 @@
 ///
 /// Responsibilities:
 ///   1. Parse CLI flags (`--config`, `--listen-addr`).
-///   2. Load `OdinConfig` from YAML.
+///   2. Load `OdinConfig` from JSON.
 ///   3. Install Prometheus metrics recorder.
 ///   4. Build `AppState` (reqwest client, semantic router, backend semaphores).
 ///   5. Mount Axum router with all endpoints, CORS middleware, and metrics layer.
@@ -33,7 +33,7 @@ use odin::{
     metrics::metrics_middleware,
     router::SemanticRouter,
     session::{self, SessionStore},
-    state::{AppState, BackendState},
+    state::{AppState, BackendState, CloudPool},
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -43,8 +43,8 @@ use odin::{
 #[derive(Parser)]
 #[command(name = "odin", about = "Yggdrasil LLM orchestrator and semantic router")]
 struct Cli {
-    /// Path to the YAML configuration file.
-    #[arg(short, long, default_value = "configs/odin/node.yaml")]
+    /// Path to the JSON configuration file.
+    #[arg(short, long, default_value = "configs/odin/config.json")]
     config: String,
 
     /// Listen address override (e.g. "0.0.0.0:9000").
@@ -71,10 +71,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(config = %cli.config, "loading configuration");
 
     // ── Config ────────────────────────────────────────────────────
-    let file = std::fs::File::open(&cli.config)
-        .with_context(|| format!("failed to open config file: {}", cli.config))?;
-    let config: OdinConfig = serde_yaml::from_reader(file)
-        .with_context(|| format!("failed to parse config file: {}", cli.config))?;
+    let config: OdinConfig =
+        ygg_config::load_json(std::path::Path::new(&cli.config))
+            .with_context(|| format!("failed to load config: {}", cli.config))?;
 
     let listen_addr = cli
         .listen_addr
@@ -144,6 +143,66 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("HA integration disabled (no ha config)");
     }
 
+    // ── Cloud fallback pool ────────────────────────────────────────
+    let cloud_pool = config.cloud.as_ref().map(|cloud_cfg| {
+        use ygg_cloud::adapter::CloudAdapter;
+        let mut adapters: Vec<Box<dyn CloudAdapter>> = Vec::new();
+
+        if let Some(ref openai) = cloud_cfg.openai {
+            match ygg_cloud::providers::openai::OpenAiAdapter::new(
+                openai.api_key.clone(),
+                openai.requests_per_minute,
+            ) {
+                Ok(adapter) => {
+                    tracing::info!("cloud fallback: OpenAI enabled");
+                    adapters.push(Box::new(adapter));
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to init OpenAI cloud adapter"),
+            }
+        }
+
+        if let Some(ref claude) = cloud_cfg.claude {
+            match ygg_cloud::providers::claude::ClaudeAdapter::new(
+                claude.api_key.clone(),
+                claude.requests_per_minute,
+            ) {
+                Ok(adapter) => {
+                    tracing::info!("cloud fallback: Claude enabled");
+                    adapters.push(Box::new(adapter));
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to init Claude cloud adapter"),
+            }
+        }
+
+        if let Some(ref gemini) = cloud_cfg.gemini {
+            match ygg_cloud::providers::gemini::GeminiAdapter::new(
+                gemini.api_key.clone(),
+                gemini.requests_per_minute,
+            ) {
+                Ok(adapter) => {
+                    tracing::info!("cloud fallback: Gemini enabled");
+                    adapters.push(Box::new(adapter));
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to init Gemini cloud adapter"),
+            }
+        }
+
+        tracing::info!(
+            providers = adapters.len(),
+            fallback = cloud_cfg.fallback_enabled,
+            "cloud pool initialized"
+        );
+
+        CloudPool {
+            adapters: Arc::new(adapters),
+            fallback_enabled: cloud_cfg.fallback_enabled,
+        }
+    });
+
+    if cloud_pool.is_none() {
+        tracing::info!("cloud fallback disabled (no cloud config)");
+    }
+
     // ── Session store ──────────────────────────────────────────────
     let session_store = SessionStore::new(config.session.clone());
     tracing::info!(
@@ -163,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
         ha_client,
         ha_context_cache: Arc::new(tokio::sync::RwLock::new(None)),
         session_store: session_store.clone(),
+        cloud_pool,
         config,
     };
 
@@ -197,6 +257,9 @@ async fn main() -> anyhow::Result<()> {
         // Muninn transparent proxy endpoints (AST analysis).
         .route("/api/v1/symbols", post(handlers::proxy_symbols))
         .route("/api/v1/references", post(handlers::proxy_references))
+        // Notification and webhook endpoints (HA integration).
+        .route("/api/v1/notify", post(handlers::notify_handler))
+        .route("/api/v1/webhook", post(ygg_ha::webhook::handle_webhook))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

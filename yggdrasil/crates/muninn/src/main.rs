@@ -24,8 +24,8 @@ use muninn::{
 #[derive(Parser)]
 #[command(name = "muninn", about = "Yggdrasil retrieval engine")]
 struct Cli {
-    /// Path to configuration file.
-    #[arg(short, long, default_value = "configs/muninn/config.yaml")]
+    /// Path to JSON configuration file.
+    #[arg(short, long, default_value = "configs/muninn/config.json")]
     config: String,
 
     /// Listen address override (also accepts MUNINN_LISTEN_ADDR env var).
@@ -44,11 +44,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(config = %cli.config, "muninn starting");
 
     // --- Load configuration ---
-    let config_bytes = std::fs::read(&cli.config)
-        .map_err(|e| anyhow::anyhow!("failed to read config file '{}': {}", cli.config, e))?;
     let config: ygg_domain::config::MuninnConfig =
-        serde_yaml::from_slice(&config_bytes)
-            .map_err(|e| anyhow::anyhow!("failed to parse config file '{}': {}", cli.config, e))?;
+        ygg_config::load_json(std::path::Path::new(&cli.config))
+            .map_err(|e| anyhow::anyhow!("failed to load config '{}': {}", cli.config, e))?;
 
     // Determine listen address: CLI flag overrides config file.
     let listen_addr = cli

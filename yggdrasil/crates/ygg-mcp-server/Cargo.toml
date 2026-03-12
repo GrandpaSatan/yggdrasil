@@ -12,10 +12,10 @@ path = "src/main.rs"
 [dependencies]
 ygg-mcp = { path = "../ygg-mcp" }
 ygg-domain = { path = "../ygg-domain" }
+ygg-config = { path = "../ygg-config" }
 rmcp = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
-serde_yaml = { workspace = true }
 anyhow = { workspace = true }

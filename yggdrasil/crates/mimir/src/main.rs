@@ -27,8 +27,8 @@ use mimir::{
 #[derive(Parser)]
 #[command(name = "mimir", about = "Yggdrasil engram memory service")]
 struct Cli {
-    /// Path to configuration file.
-    #[arg(short, long, default_value = "configs/mimir/config.yaml")]
+    /// Path to JSON configuration file.
+    #[arg(short, long, default_value = "configs/mimir/config.json")]
     config: String,
 
     /// Database URL override (also accepts MIMIR_DATABASE_URL env var).
@@ -47,12 +47,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(config = %cli.config, "mimir starting");
 
     // --- Load configuration ---
-    let config_bytes = std::fs::read(&cli.config).map_err(|e| {
-        anyhow::anyhow!("failed to read config file '{}': {}", cli.config, e)
-    })?;
     let mut config: ygg_domain::config::MimirConfig =
-        serde_yaml::from_slice(&config_bytes).map_err(|e| {
-            anyhow::anyhow!("failed to parse config file '{}': {}", cli.config, e)
+        ygg_config::load_json(std::path::Path::new(&cli.config)).map_err(|e| {
+            anyhow::anyhow!("failed to load config '{}': {}", cli.config, e)
         })?;
 
     // CLI / env override for database_url.

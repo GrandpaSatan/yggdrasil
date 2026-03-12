@@ -32,11 +32,11 @@ use crate::session_manager::PersistentSessionManager;
 #[derive(Debug, Parser)]
 #[command(name = "ygg-mcp-remote", version, about)]
 struct Args {
-    /// Path to the YAML configuration file.
+    /// Path to the JSON configuration file.
     #[arg(
         short,
         long,
-        default_value = "configs/mcp-remote/config.yaml",
+        default_value = "configs/mcp-remote/config.json",
         env = "YGG_MCP_CONFIG"
     )]
     config: PathBuf,
@@ -58,32 +58,9 @@ async fn main() -> Result<()> {
 
     info!(config = %args.config.display(), "loading MCP remote server configuration");
 
-    let raw = std::fs::read_to_string(&args.config).with_context(|| {
-        format!(
-            "failed to read config file: {}",
-            args.config.display()
-        )
-    })?;
-
-    let mut config: McpServerConfig =
-        serde_yaml::from_str(&raw).context("failed to parse config YAML")?;
-
-    // Expand ${ENV_VAR} placeholders that serde_yaml does not resolve itself.
-    if let Some(ref mut ha) = config.ha {
-        if ha.token.starts_with("${") && ha.token.ends_with('}') {
-            let var_name = &ha.token[2..ha.token.len() - 1];
-            match std::env::var(var_name) {
-                Ok(val) => ha.token = val,
-                Err(_) => {
-                    tracing::warn!(
-                        "HA token placeholder '{}': env var {} is not set",
-                        ha.token,
-                        var_name
-                    );
-                }
-            }
-        }
-    }
+    let config: McpServerConfig =
+        ygg_config::load_json(&args.config)
+            .with_context(|| format!("failed to load config: {}", args.config.display()))?;
 
     info!(
         odin_url = %config.odin_url,

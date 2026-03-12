@@ -20,11 +20,11 @@ use ygg_mcp::local_server::YggdrasilLocalServer;
 #[derive(Debug, Parser)]
 #[command(name = "ygg-mcp-server", version, about)]
 struct Args {
-    /// Path to the YAML configuration file.
+    /// Path to the JSON configuration file.
     #[arg(
         short,
         long,
-        default_value = "configs/mcp-server/config.yaml",
+        default_value = "configs/mcp-server/config.json",
         env = "YGG_MCP_CONFIG"
     )]
     config: PathBuf,
@@ -44,15 +44,9 @@ async fn main() -> Result<()> {
 
     info!(config = %args.config.display(), "loading local MCP server configuration");
 
-    let raw = std::fs::read_to_string(&args.config).with_context(|| {
-        format!(
-            "failed to read config file: {}",
-            args.config.display()
-        )
-    })?;
-
     let config: McpServerConfig =
-        serde_yaml::from_str(&raw).context("failed to parse config YAML")?;
+        ygg_config::load_json(&args.config)
+            .with_context(|| format!("failed to load config: {}", args.config.display()))?;
 
     info!(
         odin_url = %config.odin_url,

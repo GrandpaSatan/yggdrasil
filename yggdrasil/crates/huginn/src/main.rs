@@ -15,8 +15,8 @@ use huginn::watcher::FileWatcher;
 #[derive(Parser)]
 #[command(name = "huginn", about = "Yggdrasil knowledge indexer")]
 struct Cli {
-    /// Path to configuration YAML file.
-    #[arg(short, long, default_value = "configs/huginn/config.yaml")]
+    /// Path to JSON configuration file.
+    #[arg(short, long, default_value = "configs/huginn/config.json")]
     config: String,
 
     #[command(subcommand)]
@@ -48,11 +48,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     info!(config = %cli.config, "huginn starting");
 
-    // Load configuration from YAML.
-    let config_file = std::fs::File::open(&cli.config)
-        .with_context(|| format!("failed to open config file: {}", cli.config))?;
-    let mut config: HuginnConfig = serde_yaml::from_reader(config_file)
-        .with_context(|| format!("failed to parse config file: {}", cli.config))?;
+    // Load configuration from JSON.
+    let mut config: HuginnConfig =
+        ygg_config::load_json(std::path::Path::new(&cli.config))
+            .with_context(|| format!("failed to load config: {}", cli.config))?;
 
     // --- Validate watch_paths ---
     for path in &config.watch_paths {
