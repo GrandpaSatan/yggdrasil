@@ -3,7 +3,6 @@ views:
   - title: Home
     path: home
     icon: mdi:home
-    type: sections
     cards:
       # ──────────────────────────────────────────────
       #  Person / Presence

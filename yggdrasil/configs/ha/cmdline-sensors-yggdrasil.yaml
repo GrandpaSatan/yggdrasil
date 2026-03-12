@@ -1,0 +1,28 @@
+# Yggdrasil command_line sensors for services with non-JSON health endpoints.
+# Include in HA configuration.yaml:
+#   command_line: !include cmdline-sensors-yggdrasil.yaml
+
+# ─────────────────────────────────────────────────────────
+#  Mimir - Memory Service (Munin REDACTED_MUNIN_IP:9090)
+#  Health returns HTTP 200 with empty body.
+#  curl returns 0 on success → "ok", non-zero → "offline".
+# ─────────────────────────────────────────────────────────
+- sensor:
+    name: "Ygg Mimir Status"
+    unique_id: ygg_mimir_status
+    command: "curl -sf -o /dev/null -w 'ok' http://REDACTED_MUNIN_IP:9090/health || echo 'offline'"
+    scan_interval: 60
+    command_timeout: 10
+    icon: mdi:database-search
+
+# ─────────────────────────────────────────────────────────
+#  Muninn - Retrieval Engine (Hugin REDACTED_HUGIN_IP:9091)
+#  Health returns {} (empty JSON object).
+# ─────────────────────────────────────────────────────────
+- sensor:
+    name: "Ygg Muninn Status"
+    unique_id: ygg_muninn_status
+    command: "curl -sf -o /dev/null -w 'ok' http://REDACTED_HUGIN_IP:9091/health || echo 'offline'"
+    scan_interval: 60
+    command_timeout: 10
+    icon: mdi:code-braces

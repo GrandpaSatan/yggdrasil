@@ -28,49 +28,10 @@
         {{ value_json is defined }}
 
 # ─────────────────────────────────────────────────────────
-#  Mimir - Memory Service (Munin REDACTED_MUNIN_IP:9090)
+#  Mimir & Muninn use command_line sensors (see below).
+#  Their health endpoints return empty/minimal bodies that
+#  break HA's REST JSON parser.
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_MUNIN_IP:9090/health
-  scan_interval: 60
-  timeout: 10
-  sensor:
-    - name: "Ygg Mimir Status"
-      unique_id: ygg_mimir_status
-      value_template: >-
-        {% if value_json is defined and value_json.status is defined %}
-          {{ value_json.status }}
-        {% else %}
-          unknown
-        {% endif %}
-      json_attributes_path: "$"
-      json_attributes:
-        - status
-        - version
-        - uptime
-        - engram_count
-      icon: mdi:database-search
-
-# ─────────────────────────────────────────────────────────
-#  Muninn - Code Agent (Hugin REDACTED_HUGIN_IP:9091)
-# ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HUGIN_IP:9091/health
-  scan_interval: 60
-  timeout: 10
-  sensor:
-    - name: "Ygg Muninn Status"
-      unique_id: ygg_muninn_status
-      value_template: >-
-        {% if value_json is defined and value_json.status is defined %}
-          {{ value_json.status }}
-        {% else %}
-          unknown
-        {% endif %}
-      json_attributes_path: "$"
-      json_attributes:
-        - status
-        - version
-        - uptime
-      icon: mdi:code-braces
 
 # ─────────────────────────────────────────────────────────
 #  Huginn - Task Orchestrator (Hugin REDACTED_HUGIN_IP:9092)
@@ -96,19 +57,24 @@
 
 # ─────────────────────────────────────────────────────────
 #  Qdrant - Vector Database (Hades REDACTED_HADES_IP:6333)
+#  /healthz returns plain text — use / which returns JSON.
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HADES_IP:6333/healthz
+- resource: http://REDACTED_HADES_IP:6333/
   scan_interval: 60
   timeout: 10
   sensor:
     - name: "Ygg Qdrant Status"
       unique_id: ygg_qdrant_status
       value_template: >-
-        {% if value == "ok" or (value_json is defined and value_json.status is defined) %}
-          ok
+        {% if value_json is defined and value_json.version is defined %}
+          ok ({{ value_json.version }})
         {% else %}
           unknown
         {% endif %}
+      json_attributes_path: "$"
+      json_attributes:
+        - title
+        - version
       icon: mdi:vector-triangle
 
 # ─────────────────────────────────────────────────────────
