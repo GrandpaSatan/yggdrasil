@@ -63,6 +63,10 @@ pub struct NewEngram {
     pub effect: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// When true, bypass the novelty gate and force-create a new engram even
+    /// when a near-duplicate exists.  Ignored on the update-by-ID path.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Response after storing an engram.

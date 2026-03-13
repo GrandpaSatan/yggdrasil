@@ -240,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/store", post(handlers::proxy_store))
         .route("/api/v1/sdr/operations", post(handlers::proxy_sdr_operations))
         .route("/api/v1/timeline", post(handlers::proxy_timeline))
+        .route("/api/v1/sprints/list", post(handlers::proxy_sprint_list))
         .route("/api/v1/context", post(handlers::proxy_context_store))
         .route("/api/v1/context", get(handlers::proxy_context_list))
         .route("/api/v1/context/{handle}", get(handlers::proxy_context_retrieve))

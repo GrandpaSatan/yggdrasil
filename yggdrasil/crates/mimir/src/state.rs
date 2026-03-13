@@ -74,6 +74,17 @@ impl AppState {
             .map_err(MimirError::Store)?;
         tracing::info!("qdrant collection 'engrams_sdr' ready (256-dim, Dot)");
 
+        // Category collections: 384-dim Cosine (dense ONNX embeddings).
+        // These scope the novelty gate per category so sprints don't compete
+        // with topology entries, etc.
+        for name in ["sprints", "topology", "projects"] {
+            vectors
+                .ensure_collection(name)
+                .await
+                .map_err(MimirError::Store)?;
+            tracing::info!("qdrant collection '{name}' ready (384-dim, Cosine)");
+        }
+
         // --- ONNX Embedder ---
         // Load synchronously at startup. The ONNX session builder is blocking I/O
         // (file read + model parse). We accept this cost at startup to keep the

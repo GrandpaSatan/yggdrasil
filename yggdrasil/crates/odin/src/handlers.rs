@@ -971,6 +971,15 @@ pub async fn proxy_timeline(
     forward_to_mimir(&state.http_client, &url, body, "timeline").await
 }
 
+/// Transparent proxy to Mimir's `POST /api/v1/sprints/list`.
+pub async fn proxy_sprint_list(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/sprints/list", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "sprint_list").await
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Context offload proxies (POST / GET)
 // ─────────────────────────────────────────────────────────────────
