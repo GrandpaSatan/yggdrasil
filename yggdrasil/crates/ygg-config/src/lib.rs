@@ -1,8 +1,9 @@
-//! Unified JSON configuration loader for Yggdrasil.
+//! Unified configuration loader for Yggdrasil.
 //!
 //! Provides [`load_json`] for loading any serde-deserializable config from JSON
-//! with `${ENV_VAR}` placeholder expansion, [`validate`] for config validation,
-//! and [`watch`] for hot-reload via filesystem notifications.
+//! or YAML (auto-detected by file extension) with `${ENV_VAR}` placeholder
+//! expansion, [`validate`] for config validation, and [`watch`] for hot-reload
+//! via filesystem notifications.
 
 mod expand;
 pub mod impls;
@@ -35,6 +36,12 @@ pub enum ConfigError {
         source: serde_json::Error,
     },
 
+    #[error("failed to parse YAML config '{path}': {source}")]
+    ParseYaml {
+        path: String,
+        source: serde_yaml::Error,
+    },
+
     #[error("environment variable '{var}' referenced in config is not set")]
     MissingEnvVar { var: String },
 
@@ -45,10 +52,18 @@ pub enum ConfigError {
     },
 }
 
-/// Load a JSON config file, expanding `${ENV_VAR}` placeholders in string values.
+/// Returns true if the path has a YAML extension (.yaml or .yml).
+fn is_yaml(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+}
+
+/// Load a config file, expanding `${ENV_VAR}` placeholders in string values.
 ///
-/// # Arguments
-/// * `path` — Path to the JSON config file.
+/// Auto-detects format by file extension:
+/// - `.yaml` / `.yml` → parsed as YAML
+/// - everything else → parsed as JSON
 ///
 /// # Env Var Expansion
 /// Any string value containing `${VAR_NAME}` will have the placeholder replaced
@@ -60,7 +75,7 @@ pub enum ConfigError {
 pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
     let path_str = path.display().to_string();
 
-    tracing::debug!(path = %path_str, "loading JSON config");
+    tracing::debug!(path = %path_str, "loading config");
 
     let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
         path: path_str.clone(),
@@ -70,16 +85,20 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
     // Expand ${ENV_VAR} placeholders before parsing.
     let expanded = expand_env_vars(&raw);
 
-    let config: T =
+    if is_yaml(path) {
+        serde_yaml::from_str(&expanded).map_err(|e| ConfigError::ParseYaml {
+            path: path_str,
+            source: e,
+        })
+    } else {
         serde_json::from_str(&expanded).map_err(|e| ConfigError::ParseJson {
             path: path_str,
             source: e,
-        })?;
-
-    Ok(config)
+        })
+    }
 }
 
-/// Load a JSON config file with env expansion and validation.
+/// Load a config file with env expansion and validation.
 ///
 /// Same as [`load_json`] but additionally runs `Validate::validate()` on the
 /// loaded config, returning the first validation error if any.
@@ -152,6 +171,21 @@ mod tests {
         assert_eq!(config.name, "mimir");
 
         unsafe { std::env::remove_var("YGG_TEST_NAME") };
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_yaml_parses_config() {
+        let dir = std::env::temp_dir().join("ygg_config_test_yaml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.yaml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, "name: odin\nport: 8080\n").unwrap();
+
+        let config: TestConfig = load_json(&path).unwrap();
+        assert_eq!(config.name, "odin");
+        assert_eq!(config.port, 8080);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

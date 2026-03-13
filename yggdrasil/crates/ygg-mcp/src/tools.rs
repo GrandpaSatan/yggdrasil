@@ -409,6 +409,38 @@ fn default_graph_tool_limit() -> Option<u32> {
     Some(20)
 }
 
+/// Parameters for the `config_version` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigVersionParams {
+    /// Action: "check" (compare versions), "bump" (increment version), or "info" (show all).
+    pub action: String,
+    /// Bump type: "minor" or "patch" (required for "bump" action).
+    #[serde(default)]
+    pub bump_type: Option<String>,
+    /// Component to bump: "server", "client", or "config" (default: "config").
+    #[serde(default)]
+    pub component: Option<String>,
+}
+
+/// Parameters for the `config_sync` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigSyncParams {
+    /// Action: "push" (upload config), "pull" (download config), or "status" (show all configs).
+    pub action: String,
+    /// File type: "global_settings", "global_claude_md", "project_settings", "project_claude_md".
+    #[serde(default)]
+    pub file_type: Option<String>,
+    /// Config file content (required for "push" action).
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Workstation identifier (for "push", defaults to hostname).
+    #[serde(default)]
+    pub workstation_id: Option<String>,
+    /// Project ID for project-scoped configs (optional).
+    #[serde(default)]
+    pub project_id: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal HTTP response types (Muninn / Odin shapes)
 // ---------------------------------------------------------------------------
@@ -3945,6 +3977,253 @@ pub async fn screenshot(
          Use the Read tool to view this image.\n\
          Viewport: {width}x{height}, full_page: {full_page}",
     ))
+}
+
+// ---------------------------------------------------------------------------
+// config_version — version checking and management
+// ---------------------------------------------------------------------------
+
+/// Derive the config API base URL from the Odin URL.
+/// Odin runs on :8080, the config API runs on :9093 on the same host.
+fn config_api_base(config: &McpServerConfig) -> String {
+    config
+        .odin_url
+        .replace(":8080", ":9093")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+pub async fn config_version(
+    client: &Client,
+    config: &McpServerConfig,
+    params: ConfigVersionParams,
+) -> CallToolResult {
+    let base = config_api_base(config);
+
+    match params.action.as_str() {
+        "info" | "check" => {
+            let resp = client
+                .get(format!("{}/api/v1/version", base))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await;
+
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let body = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+
+                    let mut out = String::from("## Version Info\n\n");
+                    out.push_str(&format!(
+                        "| Component | Version |\n|---|---|\n"
+                    ));
+                    out.push_str(&format!(
+                        "| Server | {} |\n",
+                        v["server_version"].as_str().unwrap_or("?")
+                    ));
+                    out.push_str(&format!(
+                        "| Client (latest) | {} |\n",
+                        v["client_latest"].as_str().unwrap_or("?")
+                    ));
+                    out.push_str(&format!(
+                        "| Config | {} |\n",
+                        v["config_version"].as_str().unwrap_or("?")
+                    ));
+
+                    if params.action == "check" {
+                        let client_v = env!("CARGO_PKG_VERSION");
+                        let latest = v["client_latest"].as_str().unwrap_or("?");
+                        if client_v != latest {
+                            out.push_str(&format!(
+                                "\n**WARNING:** This client is v{client_v}, latest is v{latest}."
+                            ));
+                        } else {
+                            out.push_str(&format!("\nClient v{client_v} is up to date."));
+                        }
+                    }
+
+                    tool_ok(out)
+                }
+                Ok(r) => tool_error(format!("version endpoint returned {}", r.status())),
+                Err(e) => tool_error(format!("failed to reach version endpoint: {e}")),
+            }
+        }
+        "bump" => {
+            let bump_type = params.bump_type.as_deref().unwrap_or("patch");
+            let component = params.component.as_deref().unwrap_or("config");
+
+            // We bump by pushing a version update through the REST API.
+            // For now, fetch current version and report — the actual bump
+            // happens via the POST /api/v1/config endpoint (auto-bumps on change).
+            tool_ok(format!(
+                "Version bump ({bump_type}) requested for component '{component}'.\n\
+                 Note: config version auto-bumps on each config push. \
+                 Server/client versions are set at build time via Cargo.toml."
+            ))
+        }
+        _ => tool_error(format!(
+            "Unknown action '{}'. Expected: check, info, bump",
+            params.action
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// config_sync — interactive push/pull/status of config files
+// ---------------------------------------------------------------------------
+
+pub async fn config_sync(
+    client: &Client,
+    config: &McpServerConfig,
+    params: ConfigSyncParams,
+) -> CallToolResult {
+    let base = config_api_base(config);
+
+    match params.action.as_str() {
+        "status" => {
+            // Fetch version info
+            let version_resp = client
+                .get(format!("{}/api/v1/version", base))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await;
+
+            let config_version = match version_resp {
+                Ok(r) if r.status().is_success() => {
+                    let body = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                    v["config_version"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .to_string()
+                }
+                _ => "unreachable".to_string(),
+            };
+
+            let mut out = format!("## Config Sync Status\n\nConfig version: {config_version}\n\n");
+            out.push_str("| File Type | Hash | Updated By | Updated At |\n|---|---|---|---|\n");
+
+            for ft in &[
+                "global_settings",
+                "global_claude_md",
+                "project_settings",
+                "project_claude_md",
+            ] {
+                let mut url = format!("{}/api/v1/config/{}", base, ft);
+                if let Some(ref pid) = params.project_id {
+                    url.push_str(&format!("?project_id={}", pid));
+                }
+
+                match client
+                    .get(&url)
+                    .timeout(Duration::from_secs(5))
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        let body = r.text().await.unwrap_or_default();
+                        let v: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                        let hash = v["content_hash"]
+                            .as_str()
+                            .map(|h| &h[..8.min(h.len())])
+                            .unwrap_or("-");
+                        let by = v["updated_by"].as_str().unwrap_or("-");
+                        let at = v["updated_at"].as_str().unwrap_or("-");
+                        out.push_str(&format!("| {ft} | {hash}... | {by} | {at} |\n"));
+                    }
+                    _ => {
+                        out.push_str(&format!("| {ft} | (not synced) | - | - |\n"));
+                    }
+                }
+            }
+
+            tool_ok(out)
+        }
+        "push" => {
+            let ft = match params.file_type {
+                Some(ref ft) => ft.clone(),
+                None => return tool_error("file_type is required for push action"),
+            };
+            let content = match params.content {
+                Some(ref c) => c.clone(),
+                None => return tool_error("content is required for push action"),
+            };
+            let wid = params
+                .workstation_id
+                .as_deref()
+                .unwrap_or("mcp-tool")
+                .to_string();
+
+            let body = serde_json::json!({
+                "project_id": params.project_id,
+                "content": content,
+                "workstation_id": wid,
+            });
+
+            match client
+                .post(format!("{}/api/v1/config/{}", base, ft))
+                .json(&body)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let body = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                    tool_ok(format!(
+                        "Push result: {} (config version: {})",
+                        v["status"].as_str().unwrap_or("?"),
+                        v["config_version"].as_str().unwrap_or("?")
+                    ))
+                }
+                Ok(r) => tool_error(format!("push failed: HTTP {}", r.status())),
+                Err(e) => tool_error(format!("push failed: {e}")),
+            }
+        }
+        "pull" => {
+            let ft = match params.file_type {
+                Some(ref ft) => ft.clone(),
+                None => return tool_error("file_type is required for pull action"),
+            };
+
+            let mut url = format!("{}/api/v1/config/{}", base, ft);
+            if let Some(ref pid) = params.project_id {
+                url.push_str(&format!("?project_id={}", pid));
+            }
+
+            match client
+                .get(&url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let body = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
+                    let content = v["content"].as_str().unwrap_or("");
+                    let hash = v["content_hash"].as_str().unwrap_or("?");
+                    let by = v["updated_by"].as_str().unwrap_or("?");
+                    tool_ok(format!(
+                        "## Pulled: {ft}\n\nHash: {hash}\nUpdated by: {by}\n\n```\n{content}\n```"
+                    ))
+                }
+                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                    tool_error(format!("no config found for file_type '{ft}'"))
+                }
+                Ok(r) => tool_error(format!("pull failed: HTTP {}", r.status())),
+                Err(e) => tool_error(format!("pull failed: {e}")),
+            }
+        }
+        _ => tool_error(format!(
+            "Unknown action '{}'. Expected: push, pull, status",
+            params.action
+        )),
+    }
 }
 
 #[cfg(test)]

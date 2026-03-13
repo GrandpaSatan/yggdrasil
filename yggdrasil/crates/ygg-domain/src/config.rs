@@ -358,6 +358,10 @@ pub struct McpServerConfig {
     /// Required by sync_docs_tool for reading/writing local files.
     #[serde(default)]
     pub workspace_path: Option<String>,
+    /// URL of the remote MCP server for version check + config sync.
+    /// Only used by the local server binary. Example: "http://REDACTED_MUNIN_IP:9093"
+    #[serde(default)]
+    pub remote_url: Option<String>,
     /// PostgreSQL database URL for session persistence (optional).
     /// When set, MCP remote server persists session metadata to PG.
     #[serde(default)]

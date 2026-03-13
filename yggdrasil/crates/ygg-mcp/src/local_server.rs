@@ -191,6 +191,6 @@ impl ServerHandler for YggdrasilLocalServer {
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(Implementation::new("yggdrasil-local", "0.1.0"))
+        .with_server_info(Implementation::new("yggdrasil-local", env!("CARGO_PKG_VERSION")))
     }
 }

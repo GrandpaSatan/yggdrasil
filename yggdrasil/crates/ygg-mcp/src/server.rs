@@ -28,12 +28,13 @@ use ygg_ha::{AutomationGenerator, HaClient};
 use crate::{
     resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS, RESOURCE_SESSION_CONTEXT},
     tools::{
-        AstAnalyzeParams, BuildCheckParams, ContextBridgeParams, ContextOffloadParams,
-        DiffReviewParams, GenerateParams, GetSprintHistoryParams, HaCallServiceParams,
-        HaGenerateAutomationParams, HaGetStatesParams, HaListEntitiesParams,
-        ImpactAnalysisParams, MemoryGraphParams, MemoryIntersectParams, MemoryTimelineParams,
-        QueryMemoryParams, SearchCodeParams, ServiceHealthParams, StoreMemoryParams,
-        TaskDelegateParams, TaskQueueParams, ast_analyze, build_check, context_bridge,
+        AstAnalyzeParams, BuildCheckParams, ConfigSyncParams, ConfigVersionParams,
+        ContextBridgeParams, ContextOffloadParams, DiffReviewParams, GenerateParams,
+        GetSprintHistoryParams, HaCallServiceParams, HaGenerateAutomationParams,
+        HaGetStatesParams, HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
+        MemoryIntersectParams, MemoryTimelineParams, QueryMemoryParams, SearchCodeParams,
+        ServiceHealthParams, StoreMemoryParams, TaskDelegateParams, TaskQueueParams,
+        ast_analyze, build_check, config_sync, config_version, context_bridge,
         context_offload, diff_review, generate, get_sprint_history, ha_call_service,
         ha_generate_automation, ha_get_states, ha_list_entities, impact_analysis, list_models,
         memory_graph, memory_intersect, memory_timeline, query_memory, search_code,
@@ -554,6 +555,43 @@ impl YggdrasilServer {
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
             .unwrap_or_default()
     }
+
+    // ── Config sync tools ───────────────────────────────────────────────
+
+    /// Check version info across server, client, and config components.
+    #[tool(description = "Check version info for Yggdrasil server, client, and config. \
+        Actions: 'info' (show all versions), 'check' (compare client vs latest), \
+        'bump' (increment version — config auto-bumps on push).")]
+    async fn config_version_tool(
+        &self,
+        Parameters(params): Parameters<ConfigVersionParams>,
+    ) -> String {
+        let result = config_version(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Push, pull, or check status of synced config files.
+    #[tool(description = "Manage cross-workstation config file sync. \
+        Actions: 'push' (upload a config file), 'pull' (download a config file), \
+        'status' (show all synced configs with hashes and timestamps). \
+        File types: 'global_settings', 'global_claude_md', 'project_settings', 'project_claude_md'.")]
+    async fn config_sync_tool(
+        &self,
+        Parameters(params): Parameters<ConfigSyncParams>,
+    ) -> String {
+        let result = config_sync(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
 }
 
 impl YggdrasilServer {
@@ -634,7 +672,7 @@ impl ServerHandler for YggdrasilServer {
                 .enable_resources()
                 .build(),
         )
-        .with_server_info(Implementation::new("yggdrasil", "0.1.0"))
+        .with_server_info(Implementation::new("yggdrasil", env!("CARGO_PKG_VERSION")))
     }
 
     async fn list_resources(

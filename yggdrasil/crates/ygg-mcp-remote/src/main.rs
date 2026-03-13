@@ -10,9 +10,11 @@
 //! Usage:
 //!   ygg-mcp-remote [--config <path>] [--bind <addr:port>]
 
+mod config_api;
 mod session_manager;
 
 use anyhow::{Context, Result};
+use axum::routing::{get, post};
 use clap::Parser;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService,
@@ -95,6 +97,7 @@ async fn main() -> Result<()> {
         // Spawn session cleanup background task
         PersistentSessionManager::spawn_cleanup_task(store.clone(), ct.clone());
 
+        let store_for_api = Arc::new(store.clone());
         let project_id = config.project.clone();
         let session_manager = Arc::new(PersistentSessionManager::new(store, project_id));
 
@@ -110,7 +113,17 @@ async fn main() -> Result<()> {
             );
 
         info!("session persistence enabled (PostgreSQL)");
-        axum::Router::new().nest_service("/mcp", service)
+
+        // Config sync REST API (requires PG)
+        let config_routes = axum::Router::new()
+            .route("/api/v1/version", get(config_api::get_version))
+            .route("/api/v1/config/{file_type}", get(config_api::get_config))
+            .route("/api/v1/config/{file_type}", post(config_api::push_config))
+            .with_state(store_for_api);
+
+        axum::Router::new()
+            .nest_service("/mcp", service)
+            .merge(config_routes)
     } else {
         let service: StreamableHttpService<YggdrasilServer, LocalSessionManager> =
             StreamableHttpService::new(

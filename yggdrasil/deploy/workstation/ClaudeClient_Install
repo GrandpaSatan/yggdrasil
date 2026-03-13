@@ -181,6 +181,7 @@ generate_tok_per_sec: 15.0
 prefetch_query: "active sprint $PROJECT_NAME"
 project: "$PROJECT_NAME"
 workspace_path: "$PROJECT_DIR"
+remote_url: "http://REDACTED_MUNIN_IP:9093"
 YAML
 
 ok "Config: $LOCAL_CONFIG"

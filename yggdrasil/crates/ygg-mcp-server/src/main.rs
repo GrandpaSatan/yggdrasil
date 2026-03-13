@@ -7,6 +7,8 @@
 //! Usage:
 //!   ygg-mcp-server [--config <path>]
 
+mod config_sync;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use rmcp::{ServiceExt, transport::stdio};
@@ -53,6 +55,19 @@ async fn main() -> Result<()> {
         timeout_secs = config.timeout_secs,
         "configuration loaded"
     );
+
+    // Run config sync before creating the server (non-fatal on failure)
+    if let Some(ref remote_url) = config.remote_url {
+        if let Err(e) = config_sync::run_startup_sync(
+            remote_url,
+            config.workspace_path.as_deref(),
+            config.project.as_deref(),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "config sync failed — continuing with local config");
+        }
+    }
 
     let server = YggdrasilLocalServer::from_config(&config);
 

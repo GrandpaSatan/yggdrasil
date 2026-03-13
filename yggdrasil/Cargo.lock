@@ -1434,7 +1434,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "huginn"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2124,7 +2124,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mimir"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "muninn"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "odin"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -5407,7 +5407,7 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
 name = "ygg-agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5424,7 +5424,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-cloud"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -5438,11 +5438,12 @@ dependencies = [
 
 [[package]]
 name = "ygg-config"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5451,7 +5452,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-domain"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -5462,7 +5463,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-embed"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ndarray",
  "ort",
@@ -5474,7 +5475,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-energy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -5487,7 +5488,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-ha"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum 0.8.8",
  "reqwest 0.12.28",
@@ -5502,7 +5503,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-installer"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5516,7 +5517,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chromiumoxide",
  "futures",
@@ -5535,14 +5536,16 @@ dependencies = [
 
 [[package]]
 name = "ygg-mcp-remote"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
  "clap",
  "futures",
  "rmcp",
+ "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5557,11 +5560,15 @@ dependencies = [
 
 [[package]]
 name = "ygg-mcp-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "reqwest 0.12.28",
  "rmcp",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5572,7 +5579,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-mesh"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5591,7 +5598,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-node"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -5610,7 +5617,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-sentinel"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -5632,7 +5639,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-store"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "qdrant-client",
@@ -5648,7 +5655,7 @@ dependencies = [
 
 [[package]]
 name = "ygg-voice"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
