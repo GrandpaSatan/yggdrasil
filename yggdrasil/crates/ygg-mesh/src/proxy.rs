@@ -14,17 +14,17 @@ pub struct MeshProxy {
 }
 
 impl MeshProxy {
-    pub fn new(registry: NodeRegistry, gate: Gate) -> Self {
+    pub fn new(registry: NodeRegistry, gate: Gate) -> Result<Self, ProxyError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("failed to build HTTP client");
+            .map_err(|e| ProxyError::ClientBuild(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             registry,
             gate,
             client,
-        }
+        })
     }
 
     /// Route a proxy request to the appropriate node and service.
@@ -66,8 +66,16 @@ impl MeshProxy {
             .header("X-Ygg-Target-Node", &target_node)
             .header("X-Ygg-Mesh-Proxy", "true");
 
-        // Add custom headers
+        // Add custom headers (with injection protection)
         for (k, v) in &req.headers {
+            if k.bytes().any(|b| b == b'\r' || b == b'\n')
+                || v.bytes().any(|b| b == b'\r' || b == b'\n')
+            {
+                return Err(ProxyError::InvalidHeader(format!(
+                    "header contains invalid characters: {}",
+                    k
+                )));
+            }
             http_req = http_req.header(k, v);
         }
 
@@ -124,6 +132,12 @@ pub enum ProxyError {
 
     #[error("network error: {0}")]
     Network(String),
+
+    #[error("failed to build HTTP client: {0}")]
+    ClientBuild(String),
+
+    #[error("invalid header: {0}")]
+    InvalidHeader(String),
 }
 
 #[cfg(test)]
@@ -131,7 +145,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use ygg_domain::mesh::{
-        ClusterConfig, GateConfig, GatePolicy, GateRule, HeartbeatConfig, NodeCapabilities,
+        ClusterConfig, GateConfig, GatePolicy, HeartbeatConfig, NodeCapabilities,
         NodeIdentity, ServiceEndpoint,
     };
 
@@ -210,7 +224,7 @@ mod tests {
             default_policy: GatePolicy::Deny,
             rules: vec![],
         });
-        let proxy = MeshProxy::new(registry, gate);
+        let proxy = MeshProxy::new(registry, gate).unwrap();
 
         let req = MeshProxyRequest {
             source_node: "thor".to_string(),
@@ -239,7 +253,7 @@ mod tests {
             default_policy: GatePolicy::Allow,
             rules: vec![],
         });
-        let proxy = MeshProxy::new(registry, gate);
+        let proxy = MeshProxy::new(registry, gate).unwrap();
 
         let req = MeshProxyRequest {
             source_node: "munin".to_string(),

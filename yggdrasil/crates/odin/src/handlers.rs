@@ -42,6 +42,24 @@ use crate::state::AppState;
 // Helpers
 // ─────────────────────────────────────────────────────────────────
 
+/// RAII guard that decrements the backend active requests gauge on drop.
+struct BackendActiveGuard {
+    backend: String,
+}
+
+impl BackendActiveGuard {
+    fn new(backend: &str) -> Self {
+        crate::metrics::adjust_backend_active(backend, 1.0);
+        Self { backend: backend.to_string() }
+    }
+}
+
+impl Drop for BackendActiveGuard {
+    fn drop(&mut self) {
+        crate::metrics::adjust_backend_active(&self.backend, -1.0);
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -284,6 +302,8 @@ pub async fn chat_handler(
         "routing decision (post memory refinement)"
     );
 
+    crate::metrics::record_routing_intent(&decision.intent);
+
     // ── 7. Acquire semaphore ─────────────────────────────────────
     let backend_state = state
         .backends
@@ -305,6 +325,9 @@ pub async fn chat_handler(
                 decision.backend_name
             ))
         })?;
+
+    // RAII guard: +1 on creation, -1 on drop (covers all return paths)
+    let _backend_guard = BackendActiveGuard::new(&decision.backend_name);
 
     // ── 8. Fetch RAG context ─────────────────────────────────────
     let span = tracing::info_span!("rag_fetch");
@@ -408,12 +431,14 @@ pub async fn chat_handler(
                 Ok(resp)
             } else {
                 openai_request.stream = false;
+                let gen_start = std::time::Instant::now();
                 let local_result = proxy::generate_chat_openai(
                     &state.http_client,
                     &decision.backend_url,
                     openai_request,
                 )
                 .await;
+                crate::metrics::record_llm_generation(&decision.model, gen_start.elapsed().as_secs_f64());
 
                 let response = match local_result {
                     Ok(resp) => resp,
@@ -582,6 +607,7 @@ pub async fn chat_handler(
                 );
                 Ok(resp)
             } else {
+                let gen_start = std::time::Instant::now();
                 let local_result = proxy::generate_chat(
                     &state.http_client,
                     &decision.backend_url,
@@ -589,6 +615,7 @@ pub async fn chat_handler(
                     &completion_id,
                 )
                 .await;
+                crate::metrics::record_llm_generation(&decision.model, gen_start.elapsed().as_secs_f64());
 
                 let response = match local_result {
                     Ok(resp) => resp,

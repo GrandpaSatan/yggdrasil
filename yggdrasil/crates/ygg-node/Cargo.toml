@@ -22,4 +22,6 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
+sd-notify = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }

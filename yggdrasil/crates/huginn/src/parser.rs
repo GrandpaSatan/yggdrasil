@@ -144,18 +144,6 @@ pub fn extraction_query(lang: Language) -> &'static str {
     }
 }
 
-/// Extract the display name from the named child captured by the query.
-///
-/// The `name_capture` node is the child capture (e.g., `@fn_name`, `@struct_name`).
-/// For most languages this is simply the UTF-8 text of that node.
-#[must_use]
-pub fn extract_name(name_node: tree_sitter::Node, source: &[u8]) -> String {
-    name_node
-        .utf8_text(source)
-        .unwrap_or("<unnamed>")
-        .to_string()
-}
-
 /// Walk up the AST from `node` to extract parent context (e.g., the enclosing
 /// impl/trait/class signature).
 ///

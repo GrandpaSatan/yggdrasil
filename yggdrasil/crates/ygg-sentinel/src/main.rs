@@ -176,9 +176,17 @@ async fn main() -> Result<()> {
                 }),
             );
 
-        let listener = tokio::net::TcpListener::bind(&health_addr).await.unwrap();
+        let listener = match tokio::net::TcpListener::bind(&health_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(addr = %health_addr, error = %e, "sentinel health server failed to bind");
+                return;
+            }
+        };
         info!(addr = %health_addr, "sentinel health server listening");
-        axum::serve(listener, app).await.unwrap();
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(error = %e, "sentinel health server exited with error");
+        }
     });
 
     info!(

@@ -106,31 +106,44 @@ async fn main() -> Result<()> {
     // Initialize the node registry
     let registry = Arc::new(NodeRegistry::new(config.clone()));
     let gate = Gate::new(config.gate.clone());
-    let proxy = Arc::new(MeshProxy::new((*registry).clone(), gate));
+    let proxy = Arc::new(MeshProxy::new((*registry).clone(), gate)?);
 
     // Start discovery
     let mut discovery_rx = discovery::start_discovery(&config).await?;
 
+    // CancellationToken for graceful shutdown of background tasks
+    let token = tokio_util::sync::CancellationToken::new();
+
     // Spawn discovery event processor
     let registry_disc = Arc::clone(&registry);
     let local_hello = registry.local_hello(capabilities.clone());
+    let token_disc = token.clone();
     tokio::spawn(async move {
-        while let Some(event) = discovery_rx.recv().await {
-            match event {
-                DiscoveryEvent::NodeFound { addr, port, name } => {
-                    info!(peer = %name, addr = %addr, port = port, "attempting handshake");
-                    match discovery::handshake(&addr, port, &local_hello).await {
-                        Ok(remote_hello) => {
-                            registry_disc.register(remote_hello);
-                        }
-                        Err(e) => {
-                            tracing::warn!(peer = %name, error = %e, "handshake failed");
-                        }
-                    }
+        loop {
+            tokio::select! {
+                _ = token_disc.cancelled() => {
+                    info!("discovery task shutting down");
+                    break;
                 }
-                DiscoveryEvent::NodeLost { name } => {
-                    info!(peer = %name, "node lost from discovery");
-                    registry_disc.remove(&name);
+                event = discovery_rx.recv() => {
+                    match event {
+                        Some(DiscoveryEvent::NodeFound { addr, port, name }) => {
+                            info!(peer = %name, addr = %addr, port = port, "attempting handshake");
+                            match discovery::handshake(&addr, port, &local_hello).await {
+                                Ok(remote_hello) => {
+                                    registry_disc.register(remote_hello);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(peer = %name, error = %e, "handshake failed");
+                                }
+                            }
+                        }
+                        Some(DiscoveryEvent::NodeLost { name }) => {
+                            info!(peer = %name, "node lost from discovery");
+                            registry_disc.remove(&name);
+                        }
+                        None => break, // channel closed
+                    }
                 }
             }
         }
@@ -140,11 +153,18 @@ async fn main() -> Result<()> {
     let registry_hb = Arc::clone(&registry);
     let energy_hb = energy_manager.clone();
     let hb_interval = config.heartbeat.interval_secs;
+    let token_hb = token.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(hb_interval));
         let mut idle_check_counter: u64 = 0;
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = token_hb.cancelled() => {
+                    info!("heartbeat task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {}
+            }
             let hb = registry_hb.local_heartbeat();
 
             // Send heartbeat to all online peers
@@ -157,7 +177,9 @@ async fn main() -> Result<()> {
                 let hb_clone = hb.clone();
                 tokio::spawn(async move {
                     let client = reqwest::Client::new();
-                    let _ = client.post(&url).json(&hb_clone).send().await;
+                    if let Err(e) = client.post(&url).json(&hb_clone).send().await {
+                        tracing::warn!(peer_url = %url, error = %e, "heartbeat POST failed");
+                    }
                 });
             }
 
@@ -201,12 +223,14 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind to {}", bind_addr))?;
 
     info!(addr = %bind_addr, "mesh node ready");
+    let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("mesh node HTTP server error")?;
 
+    token.cancel();
     info!("mesh node shut down cleanly");
     Ok(())
 }

@@ -162,8 +162,9 @@ pub async fn store_engram(
                 .next()
         };
 
-        if let Some((dup_id, sim)) = nearest_match {
-            if sim >= dedup_threshold {
+        if let Some((dup_id, sim)) = nearest_match
+            && sim >= dedup_threshold
+        {
                 tracing::info!(
                     duplicate_id = %dup_id,
                     similarity = %sim,
@@ -198,7 +199,6 @@ pub async fn store_engram(
                         "existing_effect": existing_effect
                     })),
                 ));
-            }
         }
     }
 
