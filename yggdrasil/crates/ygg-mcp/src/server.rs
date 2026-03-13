@@ -115,7 +115,10 @@ impl YggdrasilServer {
     ///
     /// Calls Odin /api/v1/store, which proxies to Mimir.
     #[tool(description = "Store a new memory engram as a cause/effect pair. Returns the UUID of the created engram. \
-        To update an existing engram (bypassing the novelty gate), pass the engram UUID in the 'id' field.")]
+        To update an existing engram (bypassing the novelty gate), pass the engram UUID in the 'id' field. \
+        To force-create a new engram even when a similar one exists, set force=true. \
+        If a near-duplicate is detected, returns the existing memory for comparison — \
+        you should then decide whether to update (pass id) or create new (pass force=true).")]
     async fn store_memory_tool(
         &self,
         Parameters(params): Parameters<StoreMemoryParams>,

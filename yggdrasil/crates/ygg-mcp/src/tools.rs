@@ -64,6 +64,9 @@ pub struct StoreMemoryParams {
     /// Optional engram UUID for update-by-ID. When provided, bypasses the novelty
     /// gate and updates the existing engram in place instead of creating a new one.
     pub id: Option<String>,
+    /// Set to true to bypass the novelty gate and force-create a new engram
+    /// even when a similar one exists.
+    pub force: Option<bool>,
 }
 
 /// Parameters for the `generate` tool.
@@ -743,6 +746,8 @@ pub async fn store_memory(
         effect: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         tags: Option<&'a Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
     }
 
     let body = Req {
@@ -750,6 +755,7 @@ pub async fn store_memory(
         cause: &params.cause,
         effect: &params.effect,
         tags: params.tags.as_ref(),
+        force: params.force,
     };
 
     let resp = match client
@@ -776,7 +782,27 @@ pub async fn store_memory(
     };
 
     let status = resp.status();
-    if status.is_client_error() {
+    if status == reqwest::StatusCode::CONFLICT {
+        // Novelty gate fired — parse the match and return a tiebreak prompt
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        let dup_id = body["duplicate_id"].as_str().unwrap_or("unknown");
+        let sim = body["similarity"].as_f64().unwrap_or(0.0);
+        let existing_cause = body["existing_cause"].as_str().unwrap_or("");
+        let existing_effect = body["existing_effect"].as_str().unwrap_or("");
+
+        return tool_ok(format!(
+            "Near-duplicate detected (similarity: {sim:.2}).\n\n\
+             **Existing memory** (ID: {dup_id}):\n\
+             Cause: {existing_cause}\n\
+             Effect: {existing_effect}\n\n\
+             **Your new memory:**\n\
+             Cause: {}\n\
+             Effect: {}\n\n\
+             To UPDATE the existing memory, call store_memory again with id=\"{dup_id}\".\n\
+             To CREATE a new separate memory, call store_memory again with force=true.",
+            params.cause, params.effect
+        ));
+    } else if status.is_client_error() {
         let body = resp.text().await.unwrap_or_default();
         return tool_error(format!("Memory store failed (HTTP {}): {}", status, body));
     }
@@ -1103,7 +1129,10 @@ pub async fn list_models(client: &Client, config: &McpServerConfig) -> CallToolR
 // Tool: get_sprint_history
 // ---------------------------------------------------------------------------
 
-/// Query Odin/Mimir for sprint engrams, filter by project, return as markdown.
+/// Query Mimir's dedicated `sprints` Qdrant collection for sprint engrams.
+///
+/// Uses `/api/v1/sprints/list` which searches the category-scoped `sprints`
+/// collection with dense embeddings, then fetches full records from PostgreSQL.
 #[instrument(skip(client, config), fields(project = ?params.project))]
 pub async fn get_sprint_history(
     client: &Client,
@@ -1112,27 +1141,22 @@ pub async fn get_sprint_history(
 ) -> CallToolResult {
     let timeout = Duration::from_secs(config.timeout_secs);
     let url = format!(
-        "{}/api/v1/query",
+        "{}/api/v1/sprints/list",
         config.odin_url.trim_end_matches('/')
     );
 
-    let project = params.project.as_deref().unwrap_or("");
-    let query_text = if project.is_empty() {
-        "sprint history".to_string()
-    } else {
-        format!("{project} sprint history")
-    };
-    let limit = params.limit.unwrap_or(5).min(20);
+    let limit = params.limit.unwrap_or(10).min(50);
 
     #[derive(Serialize)]
     struct Req<'a> {
-        text: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project: Option<&'a str>,
         limit: u32,
     }
 
     let body = Req {
-        text: &query_text,
-        limit: limit * 2, // fetch extra, filter client-side by sprint tag
+        project: params.project.as_deref(),
+        limit,
     };
 
     let resp = match client
@@ -1169,31 +1193,22 @@ pub async fn get_sprint_history(
     };
 
     let results = api.results.unwrap_or_default();
-    // Filter: keep only engrams whose cause starts with "Sprint " (from archival pattern).
-    let sprint_results: Vec<_> = results
-        .iter()
-        .filter(|e| {
-            e.cause
-                .as_deref()
-                .map(|c| c.starts_with("Sprint "))
-                .unwrap_or(false)
-        })
-        .take(limit as usize)
-        .collect();
-
-    if sprint_results.is_empty() {
+    if results.is_empty() {
+        let project = params.project.as_deref().unwrap_or("");
         let project_note = if project.is_empty() {
             String::new()
         } else {
             format!(" for project '{project}'")
         };
         return tool_ok(format!(
-            "## Sprint History{}\n\nNo sprint engrams found. \
-             Run sync_docs_tool(event: \"sprint_end\", ...) to archive sprints.",
+            "## Sprint History{}\n\nNo sprint engrams found in the sprints collection. \
+             Ensure sprint memories are tagged with \"sprint\" so they are routed to the \
+             dedicated sprints collection.",
             project_note
         ));
     }
 
+    let project = params.project.as_deref().unwrap_or("");
     let project_note = if project.is_empty() {
         String::new()
     } else {
@@ -1202,9 +1217,9 @@ pub async fn get_sprint_history(
     let mut out = format!(
         "## Sprint History{} ({} results)\n\n",
         project_note,
-        sprint_results.len()
+        results.len()
     );
-    for (i, engram) in sprint_results.iter().enumerate() {
+    for (i, engram) in results.iter().enumerate() {
         let cause = engram.cause.as_deref().unwrap_or("(unknown)");
         let effect = engram.effect.as_deref().unwrap_or("(unknown)");
         let sim = engram.similarity.unwrap_or(0.0);
@@ -2532,6 +2547,7 @@ pub async fn diff_review(
             cause: format!("diff_review: {}", desc_clone),
             effect: review_clone,
             tags: Some(vec!["review".to_string(), focus_owned]),
+            force: None,
         };
         let _ = store_memory(&store_client, &store_config, p).await;
     });
@@ -2580,6 +2596,7 @@ pub async fn context_bridge(
                     "context_bridge".to_string(),
                     label.to_string(),
                 ]),
+                force: None,
             };
             let store_result = store_memory(client, config, store_params).await;
             let id = store_result

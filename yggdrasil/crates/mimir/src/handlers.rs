@@ -131,27 +131,75 @@ pub async fn store_engram(
         return Ok((StatusCode::OK, Json(serde_json::json!({ "id": existing_id, "updated": true }))));
     }
 
-    // Step 4b: Novelty gate — reject near-duplicates by SDR similarity (new inserts only)
+    // Determine target Qdrant collection from tags
+    let collection = if tags_lower.iter().any(|t| t == "sprint") {
+        "sprints"
+    } else if tags_lower.iter().any(|t| t == "topology") {
+        "topology"
+    } else if tags_lower.iter().any(|t| t == "project") {
+        "projects"
+    } else {
+        "engrams_sdr"
+    };
+
+    // Step 4b: Novelty gate — reject near-duplicates (new inserts only, skipped when force=true)
     let dedup_threshold = state.config.sdr.dedup_threshold;
-    if dedup_threshold < 1.0 {
-        let nearest = state.sdr_index.query(&sdr_val, 1);
-        if let Some((dup_id, sim)) = nearest.first()
-            && *sim >= dedup_threshold {
+    if dedup_threshold < 1.0 && !body.force {
+        // For category collections, search Qdrant with dense embedding.
+        // For engrams_sdr (default), use the fast in-memory SDR index.
+        let nearest_match: Option<(Uuid, f64)> = if collection != "engrams_sdr" {
+            let hits = state
+                .vectors
+                .search(collection, embedding.clone(), 1)
+                .await
+                .unwrap_or_default();
+            hits.into_iter().next().map(|(id, sim)| (id, sim as f64))
+        } else {
+            state
+                .sdr_index
+                .query(&sdr_val, 1)
+                .into_iter()
+                .next()
+        };
+
+        if let Some((dup_id, sim)) = nearest_match {
+            if sim >= dedup_threshold {
                 tracing::info!(
                     duplicate_id = %dup_id,
                     similarity = %sim,
                     threshold = %dedup_threshold,
-                    "engram rejected by novelty gate"
+                    collection,
+                    "engram flagged by novelty gate — returning match for client tiebreak"
                 );
+
+                // Fetch the existing engram so the client can compare
+                let dup_ids = vec![dup_id];
+                let empty_sim = std::collections::HashMap::new();
+                let existing = engrams::fetch_engrams_by_ids(
+                    state.store.pool(),
+                    &dup_ids,
+                    &empty_sim,
+                )
+                .await
+                .ok()
+                .and_then(|mut v| v.pop());
+
+                let (existing_cause, existing_effect) = existing
+                    .map(|e| (e.cause, e.effect))
+                    .unwrap_or_default();
+
                 return Ok((
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
                         "error": "near-duplicate detected",
                         "duplicate_id": dup_id,
-                        "similarity": sim
+                        "similarity": sim,
+                        "existing_cause": existing_cause,
+                        "existing_effect": existing_effect
                     })),
                 ));
             }
+        }
     }
 
     // Step 8: Insert into PostgreSQL
@@ -175,15 +223,76 @@ pub async fn store_engram(
     // Step 9: Insert into in-memory SDR index
     state.sdr_index.insert(id, sdr_val);
 
-    // Step 10: Upsert into Qdrant engrams_sdr collection
-    let sdr_f32 = sdr::to_f32_vec(&sdr_val);
-    state
-        .vectors
-        .upsert("engrams_sdr", id, sdr_f32, HashMap::new())
-        .await?;
+    // Step 10: Upsert into Qdrant — route to category collection or default SDR
+    if collection == "engrams_sdr" {
+        let sdr_f32 = sdr::to_f32_vec(&sdr_val);
+        state
+            .vectors
+            .upsert("engrams_sdr", id, sdr_f32, HashMap::new())
+            .await?;
+    } else {
+        // Category collections use dense 384-dim embeddings for better semantic recall
+        state
+            .vectors
+            .upsert(collection, id, embedding.clone(), HashMap::new())
+            .await?;
+    }
 
     // Step 11: Return 201 Created
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/sprints/list
+// ---------------------------------------------------------------------------
+
+/// List sprint engrams by searching the dedicated `sprints` Qdrant collection.
+///
+/// Uses dense 384-dim embeddings (not SDR) for semantic search, then fetches
+/// full engram records from PostgreSQL.
+pub async fn list_sprints(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SprintListRequest>,
+) -> Result<Json<serde_json::Value>, MimirError> {
+    let query_text = body
+        .project
+        .as_deref()
+        .map(|p| format!("{p} sprint history"))
+        .unwrap_or_else(|| "sprint history".to_string());
+    let limit = body.limit.unwrap_or(10).min(50) as usize;
+
+    let embedder = state.embedder.clone();
+    let qt = query_text.clone();
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&qt))
+            .await
+            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+
+    let results = state
+        .vectors
+        .search("sprints", embedding, limit as u64)
+        .await
+        .map_err(MimirError::Store)?;
+
+    let ids: Vec<Uuid> = results.iter().map(|(id, _)| *id).collect();
+    let sim_map: std::collections::HashMap<Uuid, f64> = results
+        .into_iter()
+        .map(|(id, sim)| (id, sim as f64))
+        .collect();
+    let engrams =
+        engrams::fetch_engrams_by_ids(state.store.pool(), &ids, &sim_map).await?;
+
+    Ok(Json(serde_json::json!({ "results": engrams })))
+}
+
+/// Request body for `POST /api/v1/sprints/list`.
+#[derive(Debug, Deserialize)]
+pub struct SprintListRequest {
+    /// Optional project name filter (e.g. "yggdrasil").
+    pub project: Option<String>,
+    /// Max results to return (default 10, max 50).
+    pub limit: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
