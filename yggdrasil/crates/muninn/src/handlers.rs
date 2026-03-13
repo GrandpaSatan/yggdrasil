@@ -53,6 +53,7 @@ pub async fn search_handler(
     });
 
     // --- Execute hybrid search ---
+    let search_start = std::time::Instant::now();
     let results = hybrid_search(
         &state,
         &query.query,
@@ -60,6 +61,8 @@ pub async fn search_handler(
         languages_vec.as_deref(),
     )
     .await?;
+    crate::metrics::record_search_duration(search_start.elapsed().as_secs_f64());
+    crate::metrics::record_search_results_count(results.len() as f64);
 
     // --- Assemble context string ---
     let effective_budget = (state.search_config.context_token_budget as f64
@@ -71,9 +74,32 @@ pub async fn search_handler(
 
 /// `GET /health`
 ///
-/// Returns HTTP 200 with an empty JSON object body.
-pub async fn health_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({}))
+/// Returns HTTP 200 if PostgreSQL and Qdrant are reachable, HTTP 503 otherwise.
+pub async fn health_handler(
+    State(state): State<AppState>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let pg_ok = sqlx::query("SELECT 1")
+        .fetch_one(&state.pool)
+        .await
+        .is_ok();
+
+    let qdrant_ok = state.vectors
+        .ensure_collection("code_chunks")
+        .await
+        .is_ok();
+
+    let status = if pg_ok && qdrant_ok { "healthy" } else { "degraded" };
+    let code = if pg_ok && qdrant_ok {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (code, Json(serde_json::json!({
+        "status": status,
+        "postgresql": pg_ok,
+        "qdrant": qdrant_ok,
+    })))
 }
 
 /// `GET /api/v1/stats`

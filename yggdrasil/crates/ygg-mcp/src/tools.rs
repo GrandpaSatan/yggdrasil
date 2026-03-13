@@ -4015,9 +4015,7 @@ pub async fn config_version(
                         serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
 
                     let mut out = String::from("## Version Info\n\n");
-                    out.push_str(&format!(
-                        "| Component | Version |\n|---|---|\n"
-                    ));
+                    out.push_str("| Component | Version |\n|---|---|\n");
                     out.push_str(&format!(
                         "| Server | {} |\n",
                         v["server_version"].as_str().unwrap_or("?")

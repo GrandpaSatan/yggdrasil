@@ -20,17 +20,17 @@ pub struct GiteaRepo {
 
 #[allow(dead_code)]
 impl GiteaClient {
-    pub fn new(base_url: String, token: String) -> Self {
+    pub fn new(base_url: String, token: String) -> Result<Self, GiteaError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("failed to build HTTP client");
+            .map_err(|e| GiteaError::ClientBuild(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             token,
-        }
+        })
     }
 
     /// List repositories accessible to the authenticated user.
@@ -142,4 +142,7 @@ pub enum GiteaError {
 
     #[error("network error: {0}")]
     Network(String),
+
+    #[error("failed to build HTTP client: {0}")]
+    ClientBuild(String),
 }

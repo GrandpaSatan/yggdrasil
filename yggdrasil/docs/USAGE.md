@@ -15,6 +15,24 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `POST` | `/api/v1/query` | Proxy to Mimir: semantic engram query. Body: `{text, limit?}` |
 | `POST` | `/api/v1/store` | Proxy to Mimir: store engram. Body: `{cause, effect, tags?}` |
 | `POST` | `/api/v1/sdr/operations` | SDR set operations (and, or, xor, jaccard) on N input texts. Body: `{texts: [string], operation: "and"|"or"|"xor"|"jaccard"}` → returns `{sdr_hex: string, popcount: int, matched_engrams: [EngramEvent], jaccard_matrix?: [[float]]}` |
+| `POST` | `/api/v1/timeline` | Proxy to Mimir: query engram timeline. Body: `{after?, before?, tags?, limit?}` |
+| `POST` | `/api/v1/sprints/list` | Proxy to Mimir: list sprint engrams. Body: `{project?, limit?}` |
+| `POST` | `/api/v1/context` | Proxy to Mimir: store context blob. Body: `{content, label?}` |
+| `GET`  | `/api/v1/context` | Proxy to Mimir: list stored context blobs |
+| `GET`  | `/api/v1/context/{handle}` | Proxy to Mimir: retrieve context blob by handle |
+| `POST` | `/api/v1/tasks/push` | Proxy to Mimir: push task. Body: `{title, description?, priority?, tags?}` |
+| `POST` | `/api/v1/tasks/pop` | Proxy to Mimir: pop next task. Body: `{agent}` |
+| `POST` | `/api/v1/tasks/complete` | Proxy to Mimir: complete task. Body: `{task_id, result?}` |
+| `POST` | `/api/v1/tasks/cancel` | Proxy to Mimir: cancel task. Body: `{task_id}` |
+| `POST` | `/api/v1/tasks/list` | Proxy to Mimir: list tasks. Body: `{status?, agent?, limit?}` |
+| `POST` | `/api/v1/graph/link` | Proxy to Mimir: link engrams. Body: `{source_id, target_id, relation, weight?}` |
+| `POST` | `/api/v1/graph/unlink` | Proxy to Mimir: unlink engrams. Body: `{source_id, target_id, relation?}` |
+| `POST` | `/api/v1/graph/neighbors` | Proxy to Mimir: get neighbors. Body: `{engram_id, direction, relation?, depth?}` |
+| `POST` | `/api/v1/graph/traverse` | Proxy to Mimir: traverse graph. Body: `{start_id, max_depth?, relation?, limit?}` |
+| `POST` | `/api/v1/symbols` | Proxy to Muninn: symbol lookup. Body: `{name?, chunk_type?, language?, file_path?, limit?}` |
+| `POST` | `/api/v1/references` | Proxy to Muninn: find references. Body: `{symbol, language?, limit?}` |
+| `POST` | `/api/v1/notify` | Send HA notification. Body: `{title, message, target?}` |
+| `POST` | `/api/v1/webhook` | Home Assistant webhook receiver |
 | `GET`  | `/health` | Health check (always HTTP 200, status in body) |
 | `GET`  | `/metrics` | Prometheus text metrics |
 
@@ -32,6 +50,23 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `POST` | `/api/v1/recall` | SDR dual-system recall. Body: `{text, limit?}` → returns `{engrams: [EngramEvent]}` |
 | `POST` | `/api/v1/query` | Legacy semantic query (uses SDR). Body: `{text, limit?}` → returns `{results: [{cause, effect, similarity}]}` |
 | `POST` | `/api/v1/sdr/operations` | SDR set operations (and, or, xor, jaccard) on N input texts. Body: `{texts: [string], operation: "and"|"or"|"xor"|"jaccard"}` → returns `{sdr_hex: string, popcount: int, matched_engrams: [EngramEvent], jaccard_matrix?: [[float]]}` |
+| `GET`  | `/api/v1/stats` | Engram statistics (count, tier breakdown, recall capacity) |
+| `POST` | `/api/v1/promote` | Promote engram tier. Body: `{id, tier}` |
+| `GET`  | `/api/v1/core` | Get core (highest tier) engrams |
+| `POST` | `/api/v1/timeline` | Query engram timeline. Body: `{after?, before?, tags?, limit?}` |
+| `POST` | `/api/v1/sprints/list` | List sprint engrams. Body: `{project?, limit?}` |
+| `POST` | `/api/v1/context` | Store context blob. Body: `{content, label?}` |
+| `GET`  | `/api/v1/context` | List stored context blobs |
+| `GET`  | `/api/v1/context/{handle}` | Retrieve context blob by handle |
+| `POST` | `/api/v1/tasks/push` | Push task. Body: `{title, description?, priority?, tags?}` |
+| `POST` | `/api/v1/tasks/pop` | Pop next task. Body: `{agent}` |
+| `POST` | `/api/v1/tasks/complete` | Complete task. Body: `{task_id, result?}` |
+| `POST` | `/api/v1/tasks/cancel` | Cancel task. Body: `{task_id}` |
+| `POST` | `/api/v1/tasks/list` | List tasks. Body: `{status?, agent?, limit?}` |
+| `POST` | `/api/v1/graph/link` | Link engrams. Body: `{source_id, target_id, relation, weight?}` |
+| `POST` | `/api/v1/graph/unlink` | Unlink engrams. Body: `{source_id, target_id, relation?}` |
+| `POST` | `/api/v1/graph/neighbors` | Get neighbors. Body: `{engram_id, direction, relation?, depth?}` |
+| `POST` | `/api/v1/graph/traverse` | Traverse graph. Body: `{start_id, max_depth?, relation?, limit?}` |
 | `GET`  | `/health` | Health check |
 | `GET`  | `/metrics` | Prometheus metrics |
 
@@ -44,8 +79,10 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/search` | Hybrid code search (BM25 + Qdrant + RRF). Body: `{query, languages?: [string], limit?}` |
+| `POST` | `/api/v1/symbols` | Symbol lookup. Body: `{name?, chunk_type?, language?, file_path?, limit?}` |
+| `POST` | `/api/v1/references` | Find references. Body: `{symbol, language?, limit?}` |
+| `GET`  | `/api/v1/stats` | Index statistics (chunk count, file count, language breakdown) |
 | `GET`  | `/health` | Health check |
-| `GET`  | `/stats` | Index statistics (chunk count, last indexed, etc.) |
 | `GET`  | `/metrics` | Prometheus metrics |
 
 **Response shape:** `{results: [{chunk: {file_path, language, content, name, start_line, end_line}, score}], context: string}`
@@ -78,7 +115,7 @@ The MCP layer is split into two servers (Sprint 027):
 #### Remote Server — `yggdrasil` (Munin :9093)
 
 **Binary:** `ygg-mcp-remote` at `/opt/yggdrasil/bin/ygg-mcp-remote`
-**Config:** `/etc/yggdrasil/mcp-remote/config.yaml` (on Munin)
+**Config:** `/etc/yggdrasil/mcp-remote/config.json` (on Munin)
 **Systemd:** `yggdrasil-mcp-remote.service`
 **Claude Code config:** `type: "http"`, `url: "http://<munin-ip>:9093/mcp"`
 

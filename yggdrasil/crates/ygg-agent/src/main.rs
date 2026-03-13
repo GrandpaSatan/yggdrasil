@@ -138,7 +138,8 @@ async fn main() -> Result<()> {
     let queue_name = config.queue_name.clone();
     let project = config.project.clone();
 
-    let gitea = gitea::GiteaClient::new(config.gitea_url.clone(), config.gitea_token.clone());
+    let gitea = gitea::GiteaClient::new(config.gitea_url.clone(), config.gitea_token.clone())
+        .context("failed to build Gitea HTTP client")?;
     let runner = runner::TaskRunner::new(config, gitea);
 
     let http = reqwest::Client::builder()

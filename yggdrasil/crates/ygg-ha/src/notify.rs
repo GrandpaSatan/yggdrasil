@@ -47,36 +47,40 @@ impl HaClient {
         });
 
         // Add optional fields to data map
-        let data_obj = data.as_object_mut().unwrap();
+        if let Some(data_obj) = data.as_object_mut() {
+            if let Some(ref priority) = notification.priority {
+                data_obj.insert(
+                    "data".to_string(),
+                    serde_json::json!({
+                        "priority": priority,
+                    }),
+                );
+            }
 
-        if let Some(ref priority) = notification.priority {
-            data_obj.insert(
-                "data".to_string(),
-                serde_json::json!({
-                    "priority": priority,
-                }),
-            );
-        }
+            if let Some(ref image) = notification.image {
+                let data_inner = data_obj
+                    .entry("data")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(inner_obj) = data_inner.as_object_mut() {
+                    inner_obj.insert(
+                        "image".to_string(),
+                        serde_json::Value::String(image.clone()),
+                    );
+                }
+            }
 
-        if let Some(ref image) = notification.image {
-            let data_inner = data_obj
-                .entry("data")
-                .or_insert_with(|| serde_json::json!({}));
-            data_inner
-                .as_object_mut()
-                .unwrap()
-                .insert("image".to_string(), serde_json::Value::String(image.clone()));
-        }
-
-        if !notification.actions.is_empty() {
-            let data_inner = data_obj
-                .entry("data")
-                .or_insert_with(|| serde_json::json!({}));
-            data_inner.as_object_mut().unwrap().insert(
-                "actions".to_string(),
-                serde_json::to_value(&notification.actions)
-                    .unwrap_or(serde_json::Value::Array(vec![])),
-            );
+            if !notification.actions.is_empty() {
+                let data_inner = data_obj
+                    .entry("data")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(inner_obj) = data_inner.as_object_mut() {
+                    inner_obj.insert(
+                        "actions".to_string(),
+                        serde_json::to_value(&notification.actions)
+                            .unwrap_or(serde_json::Value::Array(vec![])),
+                    );
+                }
+            }
         }
 
         info!(

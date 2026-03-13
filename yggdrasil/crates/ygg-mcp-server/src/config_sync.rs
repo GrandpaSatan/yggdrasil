@@ -259,10 +259,10 @@ fn sync_state_path() -> PathBuf {
 
 fn load_sync_state() -> SyncState {
     let path = sync_state_path();
-    if let Ok(contents) = fs::read_to_string(&path) {
-        if let Ok(state) = serde_json::from_str(&contents) {
-            return state;
-        }
+    if let Ok(contents) = fs::read_to_string(&path)
+        && let Ok(state) = serde_json::from_str(&contents)
+    {
+        return state;
     }
     SyncState {
         config_version: "0.0.0".to_string(),

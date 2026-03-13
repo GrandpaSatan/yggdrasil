@@ -80,12 +80,28 @@ impl TaskRunner {
         let changes = self.generate_changes(task).await?;
         let changes_count = changes.len();
 
-        // 3. Apply changes
+        // 3. Apply changes (with path traversal protection)
+        let work_root = std::path::Path::new(&work_path)
+            .canonicalize()
+            .map_err(|e| RunnerError::Io(e.to_string()))?;
+
         for (file, content) in &changes {
-            let file_path = format!("{}/{}", work_path, file);
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
+            let file_path = std::path::PathBuf::from(format!("{}/{}", work_path, file));
+            if let Some(parent) = file_path.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| RunnerError::Io(e.to_string()))?;
+            }
+            // Canonicalize parent after create_dir_all (file doesn't exist yet)
+            let canonical_parent = file_path
+                .parent()
+                .unwrap_or(&file_path)
+                .canonicalize()
+                .map_err(|e| RunnerError::Io(e.to_string()))?;
+            if !canonical_parent.starts_with(&work_root) {
+                return Err(RunnerError::Io(format!(
+                    "path traversal blocked: '{}' escapes workspace root",
+                    file
+                )));
             }
             std::fs::write(&file_path, content)
                 .map_err(|e| RunnerError::Io(e.to_string()))?;
@@ -377,7 +393,7 @@ fn real() {}
             allowed_repos: vec!["myorg/*".to_string()],
             allowed_branches: vec![],
         };
-        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new());
+        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new()).unwrap();
         let runner = TaskRunner::new(config, gitea);
 
         assert!(runner.check_gate("myorg/myrepo", "main").is_ok());
@@ -396,7 +412,7 @@ fn real() {}
             allowed_repos: vec!["myorg/*".to_string()],
             allowed_branches: vec![],
         };
-        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new());
+        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new()).unwrap();
         let runner = TaskRunner::new(config, gitea);
 
         let result = runner.check_gate("evilorg/hack", "main");
@@ -422,7 +438,7 @@ fn real() {}
             allowed_repos: vec![],
             allowed_branches: vec![],
         };
-        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new());
+        let gitea = crate::gitea::GiteaClient::new(String::new(), String::new()).unwrap();
         let runner = TaskRunner::new(config, gitea);
 
         assert!(runner.check_gate("any/repo", "any-branch").is_ok());

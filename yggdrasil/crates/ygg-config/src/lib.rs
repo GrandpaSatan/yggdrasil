@@ -42,9 +42,6 @@ pub enum ConfigError {
         source: serde_yaml::Error,
     },
 
-    #[error("environment variable '{var}' referenced in config is not set")]
-    MissingEnvVar { var: String },
-
     #[error("config validation failed for '{path}': {error}")]
     Validation {
         path: String,

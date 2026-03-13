@@ -391,12 +391,3 @@ pub fn collect_files(root: &str) -> Vec<std::path::PathBuf> {
         })
         .collect()
 }
-
-/// Check whether a path component matches any of the ignore patterns.
-#[allow(dead_code)]
-pub fn is_ignored_path(path: &Path) -> bool {
-    path.components().any(|c| {
-        let s = c.as_os_str().to_string_lossy();
-        IGNORE_DIRS.iter().any(|d| s == *d)
-    })
-}

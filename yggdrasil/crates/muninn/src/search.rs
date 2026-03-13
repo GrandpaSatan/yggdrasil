@@ -40,10 +40,18 @@ pub async fn hybrid_search(
     // --- Step 2: Run vector search and BM25 search in parallel ---
     let search_start = std::time::Instant::now();
 
-    let (vector_result, bm25_result) = tokio::join!(
-        state
+    let qdrant_timed = async {
+        let qdrant_start = std::time::Instant::now();
+        let result = state
             .vectors
-            .search("code_chunks", query_embedding, candidate_limit as u64),
+            .search("code_chunks", query_embedding, candidate_limit as u64)
+            .await;
+        crate::metrics::record_qdrant_duration("search", qdrant_start.elapsed().as_secs_f64());
+        result
+    };
+
+    let (vector_result, bm25_result) = tokio::join!(
+        qdrant_timed,
         search_bm25(&state.pool, query, candidate_limit, languages),
     );
 
