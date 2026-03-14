@@ -11,7 +11,9 @@ use rmcp::model::{CallToolResult, Content};
 // same schemars::JsonSchema trait object.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 use tracing::instrument;
 use ygg_domain::config::McpServerConfig;
@@ -249,6 +251,52 @@ fn default_delegate_max_tokens() -> Option<u64> {
     Some(8192)
 }
 
+/// Inline file content for the delegate tool (client reads files, passes content here).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FileContext {
+    /// File path (for display/context, not read from server disk).
+    pub path: String,
+    /// File content.
+    pub content: String,
+}
+
+/// Parameters for the unified `delegate` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DelegateParams {
+    /// Agent type determines system prompt: "executor", "docs", "qa", "review", "general".
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    /// Task instructions from the client AI.
+    pub instructions: String,
+    /// Engram UUIDs to fetch and inject as memory context.
+    #[serde(default)]
+    pub memory_ids: Option<Vec<String>>,
+    /// Code search queries to run for context assembly.
+    #[serde(default)]
+    pub search_queries: Option<Vec<String>>,
+    /// Inline file content to include as context (client reads files, passes content here).
+    #[serde(default)]
+    pub file_context: Option<Vec<FileContext>>,
+    /// Reference pattern code to follow.
+    #[serde(default)]
+    pub reference_pattern: Option<String>,
+    /// Whether to parse output as file blocks (```path/to/file.rs content ```).
+    #[serde(default)]
+    pub structured_output: Option<bool>,
+    /// Model override.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Max tokens for generation (default 8192).
+    #[serde(default = "default_delegate_max_tokens")]
+    pub max_tokens: Option<u64>,
+    /// Language hint.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Constraints list.
+    #[serde(default)]
+    pub constraints: Option<Vec<String>>,
+}
+
 /// Parameters for the `diff_review` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffReviewParams {
@@ -430,7 +478,7 @@ pub struct ConfigSyncParams {
     /// File type: "global_settings", "global_claude_md", "project_settings", "project_claude_md".
     #[serde(default)]
     pub file_type: Option<String>,
-    /// Config file content (required for "push" action).
+    /// Config file content (optional for "push" — reads from local disk if omitted).
     #[serde(default)]
     pub content: Option<String>,
     /// Workstation identifier (for "push", defaults to hostname).
@@ -2498,6 +2546,338 @@ pub async fn task_delegate(
 }
 
 // ---------------------------------------------------------------------------
+// Tool: delegate (unified — replaces generate + task_delegate)
+// ---------------------------------------------------------------------------
+
+/// Parse markdown code blocks with file paths into (path, content) pairs.
+///
+/// Expected format:
+/// ```path/to/file.rs
+/// fn main() {}
+/// ```
+pub fn parse_file_blocks(content: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let mut lines = content.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if let Some(path) = trimmed.strip_prefix("```") {
+            let path = path.trim();
+            // Skip blocks with no file path or generic language tags
+            if path.is_empty() || !path.contains('.') {
+                for inner in lines.by_ref() {
+                    if inner.trim() == "```" {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            let file_path = path.to_string();
+            let mut block_content = String::new();
+
+            for inner in lines.by_ref() {
+                if inner.trim() == "```" {
+                    break;
+                }
+                if !block_content.is_empty() {
+                    block_content.push('\n');
+                }
+                block_content.push_str(inner);
+            }
+
+            if !file_path.is_empty() && !block_content.is_empty() {
+                results.push((file_path, block_content));
+            }
+        }
+    }
+
+    results
+}
+
+/// Unified delegate tool — assembles context, calls local LLM, returns
+/// structured or raw output.
+#[instrument(skip(client, config))]
+pub async fn delegate(
+    client: &Client,
+    config: &McpServerConfig,
+    params: DelegateParams,
+    session_id: Option<&str>,
+    project_id: Option<&str>,
+) -> CallToolResult {
+    use crate::agent_prompts;
+
+    if params.instructions.len() > MAX_INPUT_BYTES {
+        return tool_error(format!(
+            "instructions exceed maximum size of {MAX_INPUT_BYTES} bytes"
+        ));
+    }
+
+    let agent_type = params.agent_type.as_deref().unwrap_or("general");
+
+    // Load agent system prompt (re-read from disk each call).
+    let workspace = config
+        .workspace_path
+        .as_deref()
+        .unwrap_or("/home/jesushernandez/Documents/Code/Yggdrasil/yggdrasil");
+    let prompt_config = agent_prompts::load_prompt(
+        std::path::Path::new(workspace),
+        agent_type,
+    );
+
+    // Phase 1: Parallel context assembly
+    let code_future = if let Some(ref queries) = params.search_queries {
+        let c = client.clone();
+        let cfg = config.clone();
+        let queries = queries.clone();
+        let langs = params.language.as_ref().map(|l| vec![l.clone()]);
+        Some(tokio::spawn(async move {
+            let mut combined = String::new();
+            for q in queries {
+                let p = SearchCodeParams {
+                    query: q,
+                    languages: langs.clone(),
+                    limit: Some(5),
+                };
+                let result = search_code(&c, &cfg, p).await;
+                let text = result
+                    .content
+                    .into_iter()
+                    .next()
+                    .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    if !combined.is_empty() {
+                        combined.push_str("\n---\n");
+                    }
+                    combined.push_str(&text);
+                }
+            }
+            combined
+        }))
+    } else {
+        None
+    };
+
+    let memory_future = if let Some(ref ids) = params.memory_ids {
+        let c = client.clone();
+        let odin_url = config.odin_url.trim_end_matches('/').to_string();
+        let timeout = Duration::from_secs(config.timeout_secs);
+        let ids = ids.clone();
+        Some(tokio::spawn(async move {
+            let mut combined = String::new();
+            for id in ids {
+                let url = format!("{}/api/v1/engrams/{}", odin_url, id);
+                match c.get(&url).timeout(timeout).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(body) = resp.text().await {
+                            if !combined.is_empty() {
+                                combined.push_str("\n---\n");
+                            }
+                            combined.push_str(&body);
+                        }
+                    }
+                    _ => {} // Skip failed fetches
+                }
+            }
+            combined
+        }))
+    } else {
+        None
+    };
+
+    // Await both futures
+    let code_context = match code_future {
+        Some(f) => f.await.unwrap_or_default(),
+        None => String::new(),
+    };
+
+    let memory_context = match memory_future {
+        Some(f) => f.await.unwrap_or_default(),
+        None => String::new(),
+    };
+
+    // Phase 2: Build prompt with token budgets
+    let budget = &prompt_config.budget;
+    let mut system_prompt = prompt_config.prompt.system.clone();
+
+    // Append constraints from config + params
+    if !prompt_config.prompt.constraints.is_empty() || params.constraints.is_some() {
+        system_prompt.push_str("\n\n## Constraints\n");
+        for c in &prompt_config.prompt.constraints {
+            system_prompt.push_str(&format!("- {}\n", c));
+        }
+        if let Some(ref extra) = params.constraints {
+            for c in extra {
+                system_prompt.push_str(&format!("- {}\n", c));
+            }
+        }
+    }
+
+    let mut user_prompt = format!("## Task\n{}\n", params.instructions);
+
+    if !memory_context.is_empty() {
+        let truncated = agent_prompts::truncate_to_budget(
+            &memory_context,
+            budget.max_memory_tokens,
+        );
+        user_prompt.push_str(&format!(
+            "\n## Project Memory\n{}\n",
+            truncated
+        ));
+    }
+
+    if !code_context.is_empty() {
+        let truncated = agent_prompts::truncate_to_budget(
+            &code_context,
+            budget.max_code_tokens,
+        );
+        user_prompt.push_str(&format!(
+            "\n## Code Context\n{}\n",
+            truncated
+        ));
+    }
+
+    if let Some(ref files) = params.file_context {
+        let mut file_section = String::new();
+        for fc in files {
+            file_section.push_str(&format!(
+                "\n### {}\n```\n{}\n```\n",
+                fc.path, fc.content
+            ));
+        }
+        let truncated = agent_prompts::truncate_to_budget(
+            &file_section,
+            budget.max_file_tokens,
+        );
+        user_prompt.push_str(&format!("\n## File Context\n{}\n", truncated));
+    }
+
+    if let Some(ref pattern) = params.reference_pattern {
+        let language = params.language.as_deref().unwrap_or("rust");
+        user_prompt.push_str(&format!(
+            "\n## Reference Pattern (follow this style exactly)\n```{}\n{}\n```\n",
+            language, pattern
+        ));
+    }
+
+    // Phase 3: Call Odin
+    let max_tokens = params.max_tokens.unwrap_or(8192);
+
+    #[derive(Serialize)]
+    struct Message {
+        role: String,
+        content: String,
+    }
+
+    #[derive(Serialize)]
+    struct Req {
+        model: Option<String>,
+        messages: Vec<Message>,
+        stream: bool,
+        max_tokens: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+    }
+
+    let token_based_secs = if config.generate_tok_per_sec > 0.0 {
+        (max_tokens as f64 / config.generate_tok_per_sec).ceil() as u64
+    } else {
+        0
+    };
+    let dynamic_timeout_secs = config.timeout_secs.max(token_based_secs + GENERATE_OVERHEAD_SECS);
+    let timeout = Duration::from_secs(dynamic_timeout_secs);
+
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    let body = Req {
+        model: params.model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: system_prompt,
+            },
+            Message {
+                role: "user".to_string(),
+                content: user_prompt,
+            },
+        ],
+        stream: false,
+        max_tokens,
+        session_id: session_id.map(|s| s.to_string()),
+        project_id: project_id.map(|s| s.to_string()),
+    };
+
+    let resp = match client.post(&url).json(&body).timeout(timeout).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Delegate timed out after {}s ({}tok / {:.1}tok/s + {}s overhead)",
+                dynamic_timeout_secs, max_tokens, config.generate_tok_per_sec, GENERATE_OVERHEAD_SECS
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!(
+                "Odin unreachable at {}. Error: {}",
+                config.odin_url, e
+            ));
+        }
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Delegate failed (HTTP {}): {}", status, body));
+    }
+
+    let api: ChatApiResponse = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
+    };
+
+    let text = api
+        .choices
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_else(|| "(empty response)".to_string());
+
+    // Phase 4: Format output
+    let model_used = params.model.as_deref().unwrap_or("(default routing)");
+
+    if params.structured_output.unwrap_or(false) {
+        let files = parse_file_blocks(&text);
+        let file_entries: Vec<serde_json::Value> = files
+            .iter()
+            .map(|(path, content)| {
+                serde_json::json!({
+                    "path": path,
+                    "content": content,
+                })
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "files": file_entries,
+            "summary": format!("Generated {} file(s)", file_entries.len()),
+            "model_used": model_used,
+            "agent_type": agent_type,
+        });
+
+        tool_ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+    } else {
+        tool_ok(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tool: diff_review
 // ---------------------------------------------------------------------------
 
@@ -3993,6 +4373,35 @@ fn config_api_base(config: &McpServerConfig) -> String {
         .to_string()
 }
 
+fn file_type_to_local_path(file_type: &str, config: &McpServerConfig) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
+    match file_type {
+        "global_settings" => Some(home.join(".claude").join("settings.json")),
+        "global_claude_md" => Some(home.join(".claude").join("CLAUDE.md")),
+        "project_settings" => config.workspace_path.as_ref().map(|w| {
+            PathBuf::from(w).join(".claude").join("settings.local.json")
+        }),
+        "project_claude_md" => config.workspace_path.as_ref().map(|w| {
+            PathBuf::from(w).join("CLAUDE.md")
+        }),
+        _ => None,
+    }
+}
+
+fn write_with_backup(path: &PathBuf, content: &str) -> Result<(), String> {
+    if path.exists() {
+        let bak = path.with_extension("bak");
+        std::fs::copy(path, &bak)
+            .map_err(|e| format!("failed to create backup: {e}"))?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create directory: {e}"))?;
+    }
+    std::fs::write(path, content)
+        .map_err(|e| format!("failed to write file: {e}"))
+}
+
 pub async fn config_version(
     client: &Client,
     config: &McpServerConfig,
@@ -4051,14 +4460,32 @@ pub async fn config_version(
             let bump_type = params.bump_type.as_deref().unwrap_or("patch");
             let component = params.component.as_deref().unwrap_or("config");
 
-            // We bump by pushing a version update through the REST API.
-            // For now, fetch current version and report — the actual bump
-            // happens via the POST /api/v1/config endpoint (auto-bumps on change).
-            tool_ok(format!(
-                "Version bump ({bump_type}) requested for component '{component}'.\n\
-                 Note: config version auto-bumps on each config push. \
-                 Server/client versions are set at build time via Cargo.toml."
-            ))
+            let body = serde_json::json!({
+                "component": component,
+                "bump_type": bump_type,
+            });
+
+            match client
+                .post(format!("{}/api/v1/version/bump", base))
+                .json(&body)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let resp = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&resp).unwrap_or(serde_json::json!({}));
+                    tool_ok(format!(
+                        "Bumped {} version: {} -> {}",
+                        v["component"].as_str().unwrap_or(component),
+                        v["old_version"].as_str().unwrap_or("?"),
+                        v["new_version"].as_str().unwrap_or("?"),
+                    ))
+                }
+                Ok(r) => tool_error(format!("bump failed: HTTP {}", r.status())),
+                Err(e) => tool_error(format!("bump failed: {e}")),
+            }
         }
         _ => tool_error(format!(
             "Unknown action '{}'. Expected: check, info, bump",
@@ -4147,7 +4574,21 @@ pub async fn config_sync(
             };
             let content = match params.content {
                 Some(ref c) => c.clone(),
-                None => return tool_error("content is required for push action"),
+                None => {
+                    match file_type_to_local_path(&ft, config) {
+                        Some(path) => match std::fs::read_to_string(&path) {
+                            Ok(c) => c,
+                            Err(e) => return tool_error(format!(
+                                "No content provided and failed to read local file '{}': {e}",
+                                path.display()
+                            )),
+                        },
+                        None => return tool_error(
+                            "No content provided and cannot resolve local path for file_type. \
+                             Either pass content or ensure workspace_path is configured."
+                        ),
+                    }
+                }
             };
             let wid = params
                 .workstation_id
@@ -4206,9 +4647,43 @@ pub async fn config_sync(
                     let content = v["content"].as_str().unwrap_or("");
                     let hash = v["content_hash"].as_str().unwrap_or("?");
                     let by = v["updated_by"].as_str().unwrap_or("?");
-                    tool_ok(format!(
-                        "## Pulled: {ft}\n\nHash: {hash}\nUpdated by: {by}\n\n```\n{content}\n```"
-                    ))
+
+                    match file_type_to_local_path(&ft, config) {
+                        Some(path) => {
+                            let local_hash = std::fs::read(&path)
+                                .map(|bytes| format!("{:x}", Sha256::digest(&bytes)))
+                                .unwrap_or_default();
+
+                            if local_hash == hash {
+                                tool_ok(format!(
+                                    "## Pulled: {ft}\n\nLocal file already up to date.\n\
+                                     Path: `{}`\nHash: {hash}\nUpdated by: {by}",
+                                    path.display()
+                                ))
+                            } else {
+                                match write_with_backup(&path, content) {
+                                    Ok(()) => tool_ok(format!(
+                                        "## Pulled: {ft}\n\nWritten to: `{}`\n\
+                                         Hash: {hash}\nUpdated by: {by}\n\
+                                         Backup: `{}.bak`",
+                                        path.display(),
+                                        path.display()
+                                    )),
+                                    Err(e) => tool_error(format!(
+                                        "Fetched {ft} from remote but failed to write: {e}\n\n\
+                                         Content (not saved):\n```\n{content}\n```"
+                                    )),
+                                }
+                            }
+                        }
+                        None => {
+                            tool_ok(format!(
+                                "## Pulled: {ft}\n\nHash: {hash}\nUpdated by: {by}\n\
+                                 **Warning:** Could not resolve local path for '{ft}' \
+                                 (workspace_path may not be configured).\n\n```\n{content}\n```"
+                            ))
+                        }
+                    }
                 }
                 Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
                     tool_error(format!("no config found for file_type '{ft}'"))

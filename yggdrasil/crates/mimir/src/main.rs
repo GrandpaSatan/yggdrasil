@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use mimir::{
     handlers::{
-        context_list, context_retrieve, context_store, get_core_engrams_handler, get_stats,
+        context_list, context_retrieve, context_store, get_core_engrams_handler, get_engram_by_id, get_stats,
         graph_link, graph_neighbors, graph_traverse, graph_unlink, health, promote_engram,
         list_sprints, query_engrams, recall_engrams, sdr_operations, store_engram,
         task_cancel, task_complete, task_list, task_pop, task_push, timeline,
@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/sprints/list", post(list_sprints))
         .route("/api/v1/query", post(query_engrams))
         .route("/api/v1/stats", get(get_stats))
+        .route("/api/v1/engrams/{id}", get(get_engram_by_id))
         .route("/api/v1/promote", post(promote_engram))
         .route("/api/v1/core", get(get_core_engrams_handler))
         .route("/api/v1/recall", post(recall_engrams))

@@ -244,6 +244,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/context", post(handlers::proxy_context_store))
         .route("/api/v1/context", get(handlers::proxy_context_list))
         .route("/api/v1/context/{handle}", get(handlers::proxy_context_retrieve))
+        // Engram by ID proxy (Mimir).
+        .route("/api/v1/engrams/{id}", get(handlers::proxy_engram_by_id))
         // Task queue proxy endpoints (Mimir).
         .route("/api/v1/tasks/push", post(handlers::proxy_task_push))
         .route("/api/v1/tasks/pop", post(handlers::proxy_task_pop))

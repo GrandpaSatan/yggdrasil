@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
             .route("/api/v1/version", get(config_api::get_version))
             .route("/api/v1/config/{file_type}", get(config_api::get_config))
             .route("/api/v1/config/{file_type}", post(config_api::push_config))
+            .route("/api/v1/version/bump", post(config_api::bump_version))
             .with_state(store_for_api);
 
         axum::Router::new()

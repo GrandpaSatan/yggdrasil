@@ -545,6 +545,19 @@ pub async fn get_stats(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/engrams/{id}
+// ---------------------------------------------------------------------------
+
+/// Return a single engram by UUID.
+pub async fn get_engram_by_id(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> Result<impl IntoResponse, MimirError> {
+    let engram = engrams::get_engram(state.store.pool(), id).await?;
+    Ok((StatusCode::OK, Json(engram)))
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/core
 // ---------------------------------------------------------------------------
 

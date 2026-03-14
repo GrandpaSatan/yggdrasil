@@ -1037,6 +1037,15 @@ pub async fn proxy_context_retrieve(
     forward_get_to_mimir(&state.http_client, &url, "context_retrieve").await
 }
 
+/// Transparent proxy to Mimir's `GET /api/v1/engrams/:id`.
+pub async fn proxy_engram_by_id(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/engrams/{}", state.mimir_url, id);
+    forward_get_to_mimir(&state.http_client, &url, "engram_by_id").await
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Task queue proxies (Mimir)
 // ─────────────────────────────────────────────────────────────────

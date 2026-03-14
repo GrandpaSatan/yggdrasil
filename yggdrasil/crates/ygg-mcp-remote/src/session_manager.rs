@@ -114,20 +114,26 @@ impl SessionManager for PersistentSessionManager {
                 None
             };
 
-            tokio::spawn(async move {
-                let _ = ygg_store::postgres::sessions::create_session(
-                    &pool,
-                    uuid,
-                    "claude-code",
-                    project_id.as_deref(),
-                )
-                .await;
+            // PG insert must complete before returning the session ID,
+            // otherwise subsequent requests race with creation.
+            if let Err(e) = ygg_store::postgres::sessions::create_session(
+                &pool,
+                uuid,
+                "claude-code",
+                project_id.as_deref(),
+            )
+            .await
+            {
+                warn!(error = %e, "failed to persist session to PG");
+            }
 
-                // Carry over previous state to new session
-                if let Some(state) = prev_state {
+            // Context carryover is non-critical — run in background.
+            if let Some(state) = prev_state {
+                let pool = pool.clone();
+                tokio::spawn(async move {
                     let _ = ygg_store::postgres::sessions::update_state(&pool, uuid, &state).await;
-                }
-            });
+                });
+            }
         }
 
         Ok((id, transport))
@@ -143,7 +149,12 @@ impl SessionManager for PersistentSessionManager {
     }
 
     async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
-        // Only check local — transport state can't be reconstructed from PG
+        // Check local first — transport state can't be reconstructed from PG.
+        if self.local.has_session(id).await? {
+            return Ok(true);
+        }
+        // Brief retry: rmcp transport registration can race with the first request.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         Ok(self.local.has_session(id).await?)
     }
 

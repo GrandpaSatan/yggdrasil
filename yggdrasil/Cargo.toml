@@ -70,6 +70,9 @@ rand = "0.8"
 # Concurrent collections
 dashmap = "6"
 
+# Config
+toml = "0.8"
+
 # Async utilities
 futures = "0.3"
 async-trait = "0.1"

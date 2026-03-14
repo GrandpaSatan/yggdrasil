@@ -3,6 +3,7 @@
 //! Exposes tools and resources to IDE clients (Claude Code, VS Code, etc.)
 //! via the MCP protocol. The `ygg-mcp-server` binary crate wraps this library.
 
+pub mod agent_prompts;
 pub mod local_server;
 pub mod resources;
 pub mod server;

@@ -52,6 +52,21 @@ pub struct PushConfigResponse {
     pub config_version: String,
 }
 
+#[derive(Deserialize)]
+pub struct BumpVersionRequest {
+    /// Component: "server", "client", or "config"
+    pub component: String,
+    /// Bump type: "major", "minor", or "patch"
+    pub bump_type: String,
+}
+
+#[derive(Serialize)]
+pub struct BumpVersionResponse {
+    pub component: String,
+    pub old_version: String,
+    pub new_version: String,
+}
+
 // ---------------------------------------------------------------------------
 // Error helper
 // ---------------------------------------------------------------------------
@@ -184,4 +199,32 @@ pub async fn push_config(
         config_version: new_version,
     })
     .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/version/bump
+// ---------------------------------------------------------------------------
+
+pub async fn bump_version(
+    State(store): State<Arc<Store>>,
+    Json(body): Json<BumpVersionRequest>,
+) -> Response {
+    let pool = store.pool();
+
+    let old_version = config_files::get_version(pool, &body.component)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.version)
+        .unwrap_or_else(|| "0.0.0".to_string());
+
+    match config_files::bump_version(pool, &body.component, &body.bump_type).await {
+        Ok(new_version) => Json(BumpVersionResponse {
+            component: body.component,
+            old_version,
+            new_version,
+        })
+        .into_response(),
+        Err(e) => internal_error(e),
+    }
 }

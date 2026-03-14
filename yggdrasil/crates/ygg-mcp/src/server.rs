@@ -29,7 +29,7 @@ use crate::{
     resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS, RESOURCE_SESSION_CONTEXT},
     tools::{
         AstAnalyzeParams, BuildCheckParams, ConfigSyncParams, ConfigVersionParams,
-        ContextBridgeParams, ContextOffloadParams, DiffReviewParams, GenerateParams,
+        ContextBridgeParams, ContextOffloadParams, DelegateParams, DiffReviewParams, GenerateParams,
         GetSprintHistoryParams, HaCallServiceParams, HaGenerateAutomationParams,
         HaGetStatesParams, HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
         MemoryIntersectParams, MemoryTimelineParams, QueryMemoryParams, SearchCodeParams,
@@ -322,6 +322,36 @@ impl YggdrasilServer {
             .unwrap_or_default()
     }
 
+    /// Unified local AI delegation — replaces generate_tool + task_delegate_tool.
+    ///
+    /// Assembles context from memory (by UUID), code search, and inline files,
+    /// loads agent-specific system prompts, and calls the local LLM.
+    #[tool(description = "Delegate a task to the local LLM with full context assembly. \
+        Specify agent_type ('executor', 'docs', 'qa', 'review', 'general') to load \
+        the right system prompt. Provide memory_ids (engram UUIDs) and/or search_queries \
+        for automatic context. Use file_context to pass pre-read file content. \
+        Set structured_output=true to get parsed file blocks as JSON. \
+        Use for boilerplate, docs, tests, code review, and any menial task.")]
+    async fn delegate_tool(
+        &self,
+        Parameters(params): Parameters<DelegateParams>,
+    ) -> String {
+        let result = delegate(
+            &self.client,
+            &self.config,
+            params,
+            Some(&self.session_id),
+            self.config.project.as_deref(),
+        )
+        .await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
     /// Review a code diff or file content using local LLM with project memory.
     ///
     /// Fetches architectural decisions from memory to inform the review.
@@ -577,7 +607,8 @@ impl YggdrasilServer {
 
     /// Push, pull, or check status of synced config files.
     #[tool(description = "Manage cross-workstation config file sync. \
-        Actions: 'push' (upload a config file), 'pull' (download a config file), \
+        Actions: 'push' (upload a config file — reads from disk if content is omitted), \
+        'pull' (download and write a config file to disk with .bak backup), \
         'status' (show all synced configs with hashes and timestamps). \
         File types: 'global_settings', 'global_claude_md', 'project_settings', 'project_claude_md'.")]
     async fn config_sync_tool(
