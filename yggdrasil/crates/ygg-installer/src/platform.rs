@@ -186,7 +186,7 @@ fn install_windows_service(name: &str, bin_dir: &str, data_dir: &str) -> Result<
 /// Uninstall all Yggdrasil services.
 pub fn uninstall_all(os: &Os) -> Result<()> {
     let services = [
-        "odin", "mimir", "huginn", "muninn", "ygg-node", "ygg-sentinel", "ygg-voice", "ygg-agent",
+        "odin", "mimir", "huginn", "muninn", "ygg-node", "ygg-sentinel", "ygg-voice",
     ];
 
     match os {
@@ -225,7 +225,7 @@ pub fn uninstall_all(os: &Os) -> Result<()> {
 /// Get status of all Yggdrasil services.
 pub fn service_status(os: &Os) -> Result<Vec<(String, String)>> {
     let services = [
-        "odin", "mimir", "huginn", "muninn", "ygg-node", "ygg-sentinel", "ygg-voice", "ygg-agent",
+        "odin", "mimir", "huginn", "muninn", "ygg-node", "ygg-sentinel", "ygg-voice",
     ];
     let mut results = Vec::new();
 

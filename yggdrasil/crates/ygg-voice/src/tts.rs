@@ -13,7 +13,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array1, Array2};
 use ort::session::Session;
 use ort::value::TensorRef;
 use tracing::{info, warn};
@@ -126,8 +126,8 @@ impl KokoroTts {
         )
         .map_err(|e| VoiceError::Tts(format!("tokens shape error: {e}")))?;
 
-        let style_array = Array3::from_shape_vec(
-            (1, STYLE_DIM, 1),
+        let style_array = Array2::from_shape_vec(
+            (1, STYLE_DIM),
             style.to_vec(),
         )
         .map_err(|e| VoiceError::Tts(format!("style shape error: {e}")))?;
@@ -150,7 +150,7 @@ impl KokoroTts {
 
             let outputs = session
                 .run(ort::inputs![
-                    "tokens" => tokens_tensor,
+                    "input_ids" => tokens_tensor,
                     "style" => style_tensor,
                     "speed" => speed_tensor,
                 ])
@@ -229,8 +229,8 @@ impl KokoroTtsHandle {
         )
         .map_err(|e| VoiceError::Tts(format!("tokens shape error: {e}")))?;
 
-        let style_array = Array3::from_shape_vec(
-            (1, STYLE_DIM, 1),
+        let style_array = Array2::from_shape_vec(
+            (1, STYLE_DIM),
             style.to_vec(),
         )
         .map_err(|e| VoiceError::Tts(format!("style shape error: {e}")))?;

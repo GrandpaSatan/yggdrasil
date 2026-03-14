@@ -10,12 +10,13 @@
 //! Usage:
 //!   ygg-voice [--config <path>]
 
-mod audio;
-mod mel;
+pub(crate) mod api;
+pub(crate) mod audio;
+pub(crate) mod mel;
 mod pipeline;
 mod sdr_commands;
-mod stt;
-mod tts;
+pub(crate) mod stt;
+pub(crate) mod tts;
 
 pub use pipeline::VoiceError;
 
@@ -185,33 +186,45 @@ async fn main() -> Result<()> {
         sdr_commands::SdrCommandRegistry::load_from_config(&config.sdr_commands, &mel_for_sdr)
             .context("failed to load SDR command registry")?;
 
-    // Initialize audio capture
-    info!("initializing audio capture...");
-    let capture = audio::AudioCapture::new(&config.audio_device, config.sample_rate, 30)
-        .context("failed to initialize audio capture")?;
+    // Wrap STT/TTS in Arc for shared ownership between pipeline and API
+    let stt_arc = Arc::new(stt_engine);
+    let tts_arc = Arc::new(tts_engine);
 
-    // Initialize audio player
-    let player = audio::AudioPlayer::new(tts_engine.sample_rate())
-        .context("failed to initialize audio player")?;
-
-    // Build pipeline
-    let busy_sound = config.busy_sound_path.map(PathBuf::from);
-    let voice_pipeline = pipeline::VoicePipeline::new(
-        capture,
-        player,
-        stt_engine,
-        tts_engine,
-        sdr_registry,
-        mel::MelSpectrogram::new(),
-        config.odin_url.clone(),
-        busy_sound,
-        config.wake_word.clone(),
-        config.sample_rate,
-    );
+    // Try to initialize local mic pipeline (optional — may fail on headless servers)
+    let pipeline_handle = match audio::AudioCapture::new(&config.audio_device, config.sample_rate, 30) {
+        Ok(capture) => {
+            info!("audio capture initialized — local mic pipeline active");
+            let player = audio::AudioPlayer::new(tts_arc.sample_rate())
+                .context("failed to initialize audio player")?;
+            let busy_sound = config.busy_sound_path.map(PathBuf::from);
+            let voice_pipeline = pipeline::VoicePipeline::new(
+                capture,
+                player,
+                Arc::clone(&stt_arc),
+                Arc::clone(&tts_arc),
+                sdr_registry,
+                mel::MelSpectrogram::new(),
+                config.odin_url.clone(),
+                busy_sound,
+                config.wake_word.clone(),
+                config.sample_rate,
+            );
+            Some(tokio::spawn(async move {
+                voice_pipeline.run().await;
+            }))
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "no audio device available — local mic pipeline disabled, HTTP API only"
+            );
+            None
+        }
+    };
 
     // Notify systemd we're ready
     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
-    info!("ygg-voice: pipeline initialized and ready");
+    info!("ygg-voice: initialized and ready (HTTP API active)");
 
     // Spawn watchdog task for systemd
     tokio::spawn(async {
@@ -221,7 +234,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Spawn minimal health HTTP server for sentinel monitoring (port 9095)
+    // Spawn HTTP server for health + STT/TTS API (port 9095)
     let health_addr = config
         .listen_addr
         .as_deref()
@@ -229,29 +242,40 @@ async fn main() -> Result<()> {
     let health_listener = tokio::net::TcpListener::bind(health_addr)
         .await
         .with_context(|| format!("failed to bind health server to {health_addr}"))?;
-    info!(addr = %health_addr, "health endpoint ready");
+    info!(addr = %health_addr, "health + API endpoint ready");
 
+    // Pre-compute silence SDR for fast rejection in the API
+    let silence_audio = vec![0.0f32; mel::SAMPLE_RATE as usize * 2]; // 2 seconds of silence
+    let silence_sdr = mel_arc.fingerprint_sdr(&silence_audio);
+    info!("silence SDR computed for API noise rejection");
+
+    let api_state = api::ApiState {
+        stt: Arc::clone(&stt_arc),
+        tts: Arc::clone(&tts_arc),
+        mel: Arc::clone(&mel_arc),
+        silence_sdr,
+        sdr_cache: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+    };
     tokio::spawn(async move {
         use axum::{routing::get, Json, Router};
-        let app = Router::new().route(
-            "/health",
-            get(|| async {
-                Json(serde_json::json!({ "status": "ok", "service": "ygg-voice" }))
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async {
+                    Json(serde_json::json!({ "status": "ok", "service": "ygg-voice" }))
+                }),
+            )
+            .merge(api::api_routes().with_state(api_state));
         let _ = axum::serve(health_listener, app).await;
-    });
-
-    // Run pipeline in a spawned task so ctrl_c can still shut us down
-    let pipeline_handle = tokio::spawn(async move {
-        voice_pipeline.run().await;
     });
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
     info!("ygg-voice shutting down");
 
-    pipeline_handle.abort();
+    if let Some(handle) = pipeline_handle {
+        handle.abort();
+    }
 
     Ok(())
 }

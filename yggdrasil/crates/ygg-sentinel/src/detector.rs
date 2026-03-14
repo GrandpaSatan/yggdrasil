@@ -71,10 +71,9 @@ impl AnomalyDetector {
 
     /// Encode text to SDR via Odin's embedding endpoint, with hash-based fallback.
     async fn encode_sdr(&self, text: &str) -> Result<Vec<u8>, AnomalyError> {
-        let url = format!("{}/api/v1/query", self.odin_url);
+        let url = format!("{}/api/v1/embed", self.odin_url);
         let payload = serde_json::json!({
-            "text": text,
-            "mode": "embed"
+            "text": text
         });
 
         let resp = self

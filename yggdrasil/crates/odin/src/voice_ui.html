@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odin Voice</title>
+<style>
+  :root { --bg: #09090b; --surface: #18181b; --border: #27272a; --text: #fafafa; --muted: #a1a1aa; --accent: #3b82f6; --red: #ef4444; --green: #22c55e; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; }
+  .container { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 1.5rem; }
+  h1 { font-size: 1.25rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .status { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+  .status .dot.connected { background: var(--green); }
+  .status .dot.listening { background: var(--accent); animation: pulse 1s infinite; }
+  .status .dot.processing { background: #f59e0b; animation: pulse 0.5s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .mic-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; align-self: center; transition: all 0.2s; }
+  .mic-btn:hover { border-color: var(--accent); }
+  .mic-btn.active { border-color: var(--red); background: rgba(239,68,68,0.15); }
+  .mic-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .log { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-height: 200px; max-height: 400px; overflow-y: auto; font-size: 0.85rem; line-height: 1.6; }
+  .log .entry { margin-bottom: 0.5rem; }
+  .log .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .log .transcript { color: var(--accent); }
+  .log .response { color: var(--green); }
+  .log .error { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Odin Voice</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">disconnected</span></div>
+  <button class="mic-btn" id="micBtn" disabled>&#x1f3a4;</button>
+  <div class="log" id="log"></div>
+</div>
+<script>
+(function() {
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('statusText');
+  const micBtn = document.getElementById('micBtn');
+  const log = document.getElementById('log');
+
+  let ws = null;
+  let mediaStream = null;
+  let audioCtx = null;
+  let scriptNode = null;
+  let active = false;
+  let playbackCtx = null;
+  let audioChunks = [];
+  let audioSampleRate = 24000;
+
+  function addLog(label, text, cls) {
+    const d = document.createElement('div');
+    d.className = 'entry';
+    d.innerHTML = '<span class="label">' + label + '</span> <span class="' + (cls || '') + '">' + escHtml(text) + '</span>';
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  function setStatus(text, cls) {
+    statusText.textContent = text;
+    dot.className = 'dot' + (cls ? ' ' + cls : '');
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/v1/voice');
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() { setStatus('connected', 'connected'); micBtn.disabled = false; };
+    ws.onclose = function() { setStatus('disconnected', ''); micBtn.disabled = true; stopMic(); setTimeout(connect, 3000); };
+    ws.onerror = function() { setStatus('error', ''); };
+
+    ws.onmessage = function(ev) {
+      if (ev.data instanceof ArrayBuffer) {
+        // TTS audio chunk
+        audioChunks.push(new Uint8Array(ev.data));
+        return;
+      }
+      try {
+        const msg = JSON.parse(ev.data);
+        switch (msg.type) {
+          case 'ready': addLog('session', msg.session_id); break;
+          case 'listening': setStatus('listening...', 'listening'); break;
+          case 'processing': setStatus('processing...', 'processing'); break;
+          case 'transcript': addLog('you', msg.text, 'transcript'); break;
+          case 'response': addLog('odin', msg.text, 'response'); setStatus('connected', 'connected'); break;
+          case 'audio_start': audioChunks = []; audioSampleRate = msg.sample_rate || 24000; break;
+          case 'audio_end': playAudio(); break;
+          case 'error': addLog('error', msg.message, 'error'); setStatus('connected', 'connected'); break;
+        }
+      } catch(_) {}
+    };
+  }
+
+  function playAudio() {
+    if (audioChunks.length === 0) return;
+    // Merge chunks
+    let total = 0;
+    audioChunks.forEach(function(c) { total += c.length; });
+    const merged = new Uint8Array(total);
+    let off = 0;
+    audioChunks.forEach(function(c) { merged.set(c, off); off += c.length; });
+    audioChunks = [];
+
+    // Decode s16le PCM
+    const i16 = new Int16Array(merged.buffer, merged.byteOffset, merged.byteLength / 2);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+
+    if (!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioSampleRate });
+    const buf = playbackCtx.createBuffer(1, f32.length, audioSampleRate);
+    buf.getChannelData(0).set(f32);
+    const src = playbackCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(playbackCtx.destination);
+    src.start();
+  }
+
+  micBtn.addEventListener('click', function() {
+    if (active) { stopMic(); } else { startMic(); }
+  });
+
+  async function startMic() {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch(e) { addLog('error', 'mic access denied: ' + e.message, 'error'); return; }
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+
+    // ScriptProcessor fallback (AudioWorklet requires HTTPS + module)
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    scriptNode.onaudioprocess = function(ev) {
+      if (!active || !ws || ws.readyState !== 1) return;
+      const input = ev.inputBuffer.getChannelData(0);
+      // Resample if needed (browser may not honour 16kHz constraint)
+      const targetLen = Math.round(input.length * 16000 / audioCtx.sampleRate);
+      let samples;
+      if (Math.abs(audioCtx.sampleRate - 16000) < 100) {
+        samples = input;
+      } else {
+        samples = new Float32Array(targetLen);
+        const ratio = audioCtx.sampleRate / 16000;
+        for (let i = 0; i < targetLen; i++) {
+          const srcIdx = i * ratio;
+          const idx = Math.floor(srcIdx);
+          const frac = srcIdx - idx;
+          const a = input[idx] || 0;
+          const b = input[Math.min(idx + 1, input.length - 1)] || 0;
+          samples[i] = a + frac * (b - a);
+        }
+      }
+      // Convert float32 -> s16le
+      const buf = new ArrayBuffer(samples.length * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      ws.send(buf);
+    };
+
+    source.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
+
+    active = true;
+    micBtn.classList.add('active');
+    setStatus('mic active', 'listening');
+  }
+
+  function stopMic() {
+    active = false;
+    micBtn.classList.remove('active');
+    if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({type: 'vad_end'}));
+    }
+    setStatus('connected', 'connected');
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

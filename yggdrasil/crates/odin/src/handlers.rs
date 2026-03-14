@@ -36,7 +36,7 @@ use crate::openai::{
 use crate::proxy;
 use crate::rag;
 use crate::session::CompactMessage;
-use crate::state::AppState;
+use crate::state::{AppState, CloudPool};
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -65,6 +65,35 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Attempt cloud fallback when a local backend fails.
+///
+/// Converts `packed_messages` to cloud format and tries each adapter in order.
+/// Returns the cloud response text on success, or propagates the original error.
+async fn try_cloud_fallback(
+    cloud_pool: &Option<CloudPool>,
+    packed_messages: &[ChatMessage],
+    model: &str,
+    local_err: OdinError,
+) -> Result<String, OdinError> {
+    if let Some(pool) = cloud_pool
+        && pool.fallback_enabled
+    {
+        let cloud_messages: Vec<_> = packed_messages
+            .iter()
+            .map(|m| ygg_cloud::adapter::ChatMessage {
+                role: m.role.to_string(),
+                content: m.content.clone(),
+            })
+            .collect();
+
+        if let Some(cloud_content) = pool.fallback_chat(cloud_messages, Some(model)).await {
+            tracing::info!("cloud fallback produced response for voice pipeline");
+            return Ok(cloud_content);
+        }
+    }
+    Err(local_err)
 }
 
 /// Fire-and-forget: check if a session needs rolling summarization.
@@ -199,6 +228,270 @@ fn spawn_engram_store(
             }
         }
     });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Reusable text pipeline (used by chat_handler and voice_ws)
+// ─────────────────────────────────────────────────────────────────
+
+/// Process a text message through the full Odin pipeline (routing, RAG, LLM,
+/// session update).  Used by both the HTTP `chat_handler` (non-streaming path)
+/// and the WebSocket voice handler.
+///
+/// Returns the assistant's response text on success.
+pub async fn process_chat_text(
+    state: &AppState,
+    text: &str,
+    session_id: &str,
+) -> Result<String, OdinError> {
+    // ── 1. Append user message to session ─────────────────────────
+    state
+        .session_store
+        .append_messages(session_id, &[CompactMessage::new("user", text)]);
+
+    let user_text = text.to_string();
+
+    // ── 2. Route: classify intent via semantic router ─────────────
+    let mut decision = state.router.classify(&user_text);
+
+    // ── 3. Memory-event routing refinement ────────────────────────
+    if let Some(recall) = rag::fetch_memory_events(
+        &state.http_client,
+        &state.mimir_url,
+        &user_text,
+        state.config.mimir.query_limit,
+    )
+    .await
+    {
+        memory_router::apply_memory_events(&recall, &mut decision);
+
+        if let Some(hex) = &recall.query_sdr_hex
+            && let Some(query_sdr) = ygg_domain::sdr::from_hex(hex)
+                && let Some(drift) = state.session_store.update_session_sdr(session_id, &query_sdr) {
+                    tracing::debug!(
+                        session_id = %session_id,
+                        drift_score = %drift,
+                        "session SDR drift score (voice)"
+                    );
+                    if drift < 0.5 {
+                        tracing::info!(
+                            session_id = %session_id,
+                            drift_score = %drift,
+                            "topic drift detected — session SDR reset (voice)"
+                        );
+                    }
+                }
+    }
+
+    tracing::info!(
+        intent = %decision.intent,
+        model = %decision.model,
+        backend = %decision.backend_name,
+        session_id = %session_id,
+        "voice routing decision (post memory refinement)"
+    );
+
+    crate::metrics::record_routing_intent(&decision.intent);
+
+    // ── 4. Acquire semaphore ──────────────────────────────────────
+    let backend_state = state
+        .backends
+        .iter()
+        .find(|b| b.name == decision.backend_name)
+        .ok_or_else(|| {
+            OdinError::Internal(format!(
+                "backend '{}' not found in state",
+                decision.backend_name
+            ))
+        })?;
+
+    let _permit = backend_state
+        .semaphore
+        .try_acquire()
+        .map_err(|_| {
+            OdinError::BackendUnavailable(format!(
+                "backend '{}' is at capacity — try again later",
+                decision.backend_name
+            ))
+        })?;
+
+    let _backend_guard = BackendActiveGuard::new(&decision.backend_name);
+
+    // ── 5. Fetch RAG context ──────────────────────────────────────
+    let span = tracing::info_span!("rag_fetch_voice");
+    let rag_context = {
+        let _guard = span.enter();
+        rag::fetch_context(state, &user_text, &decision.intent).await
+    };
+
+    // ── 6. Pack context with session history ──────────────────────
+    let backend_context_window = backend_state.context_window;
+    let system_prompt = rag::build_system_prompt(&rag_context, &decision.intent);
+    let session_snapshot = state.session_store.get_session(session_id);
+
+    let packed_messages = if let Some(ref session) = session_snapshot {
+        let budget = ContextBudget {
+            total_budget: backend_context_window
+                .saturating_sub(state.config.session.generation_reserve),
+            generation_reserve: state.config.session.generation_reserve,
+        };
+        budget.pack(
+            session,
+            rag_context.code_context.as_deref(),
+            &system_prompt,
+            None, // No project-scoped cross-window context for voice
+        )
+    } else {
+        // Fallback: no session yet — construct a minimal message list.
+        vec![
+            ChatMessage {
+                role: Role::System,
+                content: system_prompt,
+            },
+            ChatMessage {
+                role: Role::User,
+                content: user_text.clone(),
+            },
+        ]
+    };
+
+    let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
+
+    // ── 7. Dispatch to LLM (non-streaming only) ──────────────────
+    let effect = match decision.backend_type {
+        BackendType::Openai => {
+            let openai_request = ChatCompletionRequest {
+                model: Some(decision.model.clone()),
+                messages: packed_messages.clone(),
+                stream: false,
+                temperature: Some(0.7),
+                max_tokens: None,
+                top_p: None,
+                stop: None,
+                session_id: None,
+                project_id: None,
+            };
+
+            let gen_start = std::time::Instant::now();
+            let local_result = proxy::generate_chat_openai(
+                &state.http_client,
+                &decision.backend_url,
+                openai_request,
+            )
+            .await;
+            crate::metrics::record_llm_generation(
+                &decision.model,
+                gen_start.elapsed().as_secs_f64(),
+            );
+
+            match local_result {
+                Ok(resp) => resp
+                    .choices
+                    .first()
+                    .map(|c| c.message.content.clone())
+                    .unwrap_or_default(),
+                Err(local_err) => try_cloud_fallback(
+                    &state.cloud_pool,
+                    &packed_messages,
+                    &decision.model,
+                    local_err,
+                )
+                .await?,
+            }
+        }
+        BackendType::Ollama => {
+            let ollama_messages: Vec<crate::openai::OllamaMessage> = packed_messages
+                .iter()
+                .map(|m| crate::openai::OllamaMessage {
+                    role: m.role.to_string(),
+                    content: m.content.clone(),
+                })
+                .collect();
+
+            let stop = Some(vec![
+                "\n\nWhat ".to_string(),
+                "\n\nHow ".to_string(),
+                "\n\nWhy ".to_string(),
+                "\n\nCan ".to_string(),
+                "\n\nIs ".to_string(),
+                "\nConclusion".to_string(),
+                "\nIn conclusion".to_string(),
+                "\nIn summary".to_string(),
+                "\n\nLet me ".to_string(),
+                "\n\nFeel free".to_string(),
+                "\n\nI hope".to_string(),
+            ]);
+
+            let options = Some(OllamaOptions {
+                temperature: Some(0.7),
+                num_predict: None,
+                num_ctx: Some(backend_context_window as u64),
+                top_p: None,
+                stop,
+            });
+
+            let ollama_request = OllamaChatRequest {
+                model: decision.model.clone(),
+                messages: ollama_messages,
+                stream: false,
+                options,
+            };
+
+            let gen_start = std::time::Instant::now();
+            let local_result = proxy::generate_chat(
+                &state.http_client,
+                &decision.backend_url,
+                ollama_request,
+                &completion_id,
+            )
+            .await;
+            crate::metrics::record_llm_generation(
+                &decision.model,
+                gen_start.elapsed().as_secs_f64(),
+            );
+
+            match local_result {
+                Ok(resp) => resp
+                    .choices
+                    .first()
+                    .map(|c| c.message.content.clone())
+                    .unwrap_or_default(),
+                Err(local_err) => try_cloud_fallback(
+                    &state.cloud_pool,
+                    &packed_messages,
+                    &decision.model,
+                    local_err,
+                )
+                .await?,
+            }
+        }
+    };
+
+    // ── 8. Update session + engram store ──────────────────────────
+    state
+        .session_store
+        .append_messages(session_id, &[CompactMessage::new("assistant", &effect)]);
+
+    if state.config.mimir.store_on_completion {
+        spawn_engram_store(
+            state.http_client.clone(),
+            state.mimir_url.clone(),
+            user_text,
+            effect.clone(),
+        );
+    }
+
+    maybe_summarize_session(
+        state.http_client.clone(),
+        state.session_store.clone(),
+        session_id.to_string(),
+        backend_context_window,
+        decision.backend_url.clone(),
+        decision.backend_type.clone(),
+        decision.model.clone(),
+    );
+
+    Ok(effect)
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1044,6 +1337,21 @@ pub async fn proxy_engram_by_id(
 ) -> Result<Response, OdinError> {
     let url = format!("{}/api/v1/engrams/{}", state.mimir_url, id);
     forward_get_to_mimir(&state.http_client, &url, "engram_by_id").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/embed  (transparent Mimir proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/embed`.
+///
+/// Returns raw ONNX embedding for text. Used by ygg-sentinel for SDR encoding.
+pub async fn proxy_embed(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/embed", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "embed").await
 }
 
 // ─────────────────────────────────────────────────────────────────

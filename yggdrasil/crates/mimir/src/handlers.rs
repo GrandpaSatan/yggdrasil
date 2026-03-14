@@ -558,6 +558,38 @@ pub async fn get_engram_by_id(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/embed
+// ---------------------------------------------------------------------------
+
+/// Return the raw ONNX embedding for a text string.
+///
+/// Used by ygg-sentinel for SDR anomaly detection. Returns a 384-dim
+/// L2-normalised float vector from all-MiniLM-L6-v2.
+pub async fn embed_text(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<EmbedRequest>,
+) -> Result<impl IntoResponse, MimirError> {
+    if body.text.trim().is_empty() {
+        return Err(MimirError::Validation("text must not be empty".into()));
+    }
+
+    let embedder = state.embedder.clone();
+    let text = body.text;
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&text))
+            .await
+            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "embedding": embedding }))))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmbedRequest {
+    pub text: String,
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/core
 // ---------------------------------------------------------------------------
 

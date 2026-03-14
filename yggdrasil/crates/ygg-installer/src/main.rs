@@ -27,7 +27,7 @@ enum Command {
     /// Install Yggdrasil services on this machine.
     Install {
         /// Services to install (comma-separated). Default: all.
-        #[arg(short, long, default_value = "odin,mimir,huginn,muninn,ygg-node,ygg-sentinel,ygg-voice,ygg-agent")]
+        #[arg(short, long, default_value = "odin,mimir,huginn,muninn,ygg-node,ygg-sentinel,ygg-voice")]
         services: String,
 
         /// Data directory for configs and state.

@@ -21,3 +21,4 @@ pub const TOOL_HA_LIST_ENTITIES: &str = "ha_list_entities";
 pub const TOOL_HA_GENERATE_AUTOMATION: &str = "ha_generate_automation";
 pub const TOOL_CONFIG_VERSION: &str = "config_version";
 pub const TOOL_CONFIG_SYNC: &str = "config_sync";
+pub const TOOL_DELEGATE: &str = "delegate";

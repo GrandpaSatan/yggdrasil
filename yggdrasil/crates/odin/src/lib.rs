@@ -20,3 +20,4 @@ pub mod rag;
 pub mod router;
 pub mod session;
 pub mod state;
+pub mod voice_ws;
