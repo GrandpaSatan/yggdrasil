@@ -3,13 +3,13 @@
     "name": "hugin",
     "role": "compute-agent",
     "services": ["huginn", "muninn", "ygg-node"],
-    "advertise_addr": "REDACTED_HUGIN_IP",
+    "advertise_addr": "${HUGIN_IP}",
     "mesh_port": 9100
   },
   "discovery": {
     "mode": "mdns",
     "seeds": [
-      { "name": "munin", "addr": "REDACTED_MUNIN_IP", "port": 9100 }
+      { "name": "munin", "addr": "${MUNIN_IP}", "port": 9100 }
     ],
     "mdns_service": "_yggdrasil._tcp.local"
   },

@@ -1,5 +1,5 @@
 {
-  "odin_url": "http://REDACTED_MUNIN_IP:8080",
+  "odin_url": "http://${MUNIN_IP}:8080",
   "whisper_model_dir": "/opt/yggdrasil/models/whisper-base",
   "kokoro_model_path": "/opt/yggdrasil/models/kokoro-v1.0.onnx",
   "kokoro_voices_path": "/opt/yggdrasil/models/voices-v1.0.bin",

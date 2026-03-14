@@ -13,7 +13,7 @@ pub struct ProxmoxClient {
 
 impl ProxmoxClient {
     /// Create a new Proxmox client.
-    /// - `base_url`: e.g. "https://REDACTED_THOR_IP:8006"
+    /// - `base_url`: e.g. "https://<proxmox-ip>:8006"
     /// - `token`: PVE API token in format "USER@REALM!TOKENID=SECRET"
     pub fn new(base_url: String, token: String) -> Self {
         let client = Client::builder()

@@ -39,7 +39,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ── Constants ─────────────────────────────────────────────────────────
-$REMOTE_MCP_URL = "http://REDACTED_MUNIN_IP:9093/mcp"
+$REMOTE_MCP_URL = "http://$env:MUNIN_IP:9093/mcp"
 $SCRIPT_DIR     = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $REPO_ROOT      = (Resolve-Path (Join-Path $SCRIPT_DIR "..\..")).Path
 $HOME_DIR       = $env:USERPROFILE
@@ -150,8 +150,8 @@ $configYaml = @"
 # Local MCP server config (ygg-mcp-server / yggdrasil-local)
 # Repo: $REPO_ROOT
 # Project: $ProjectDir
-odin_url: "http://REDACTED_MUNIN_IP:8080"
-muninn_url: "http://REDACTED_HUGIN_IP:9091"
+odin_url: "http://$env:MUNIN_IP:8080"
+muninn_url: "http://$env:HUGIN_IP:9091"
 timeout_secs: 300
 generate_tok_per_sec: 15.0
 prefetch_query: "active sprint $ProjectName"
@@ -319,7 +319,7 @@ try {
     }
 } catch {
     Warn "Remote server: not reachable (network tools will be unavailable)"
-    Warn "Ensure you are on the same network as Munin (REDACTED_MUNIN_IP)"
+    Warn "Ensure you are on the same network as Munin ($env:MUNIN_IP)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -182,7 +182,7 @@ mod tests {
                 name: "remote-node".to_string(),
                 role: "worker".to_string(),
                 services: vec![service_name.to_string()],
-                advertise_addr: "REDACTED_HUGIN_IP".to_string(),
+                advertise_addr: "127.0.0.2".to_string(),
                 mesh_port: 9100,
             },
             capabilities: NodeCapabilities {
@@ -219,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_denied_by_gate() {
-        let registry = test_registry_with_service("mimir", "http://REDACTED_MUNIN_IP:9090");
+        let registry = test_registry_with_service("mimir", "http://127.0.0.1:9090");
         let gate = Gate::new(GateConfig {
             default_policy: GatePolicy::Deny,
             rules: vec![],

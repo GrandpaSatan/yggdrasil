@@ -1,7 +1,7 @@
 {
   "listen_addr": "0.0.0.0:9090",
   "database_url": "${MIMIR_DATABASE_URL}",
-  "qdrant_url": "http://REDACTED_HADES_IP:6334",
+  "qdrant_url": "http://${HADES_IP}:6334",
   "sdr": {
     "dim_bits": 256,
     "model_dir": "/opt/yggdrasil/models/all-MiniLM-L6-v2",

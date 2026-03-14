@@ -158,7 +158,7 @@ mod tests {
                 name: name.to_string(),
                 role: "worker".to_string(),
                 services: vec!["odin".to_string()],
-                advertise_addr: "REDACTED_HUGIN_IP".to_string(),
+                advertise_addr: "127.0.0.2".to_string(),
                 mesh_port: 9100,
             },
             capabilities: NodeCapabilities {
@@ -167,7 +167,7 @@ mod tests {
                     m.insert(
                         "odin".to_string(),
                         ServiceEndpoint {
-                            url: "http://REDACTED_HUGIN_IP:8080".to_string(),
+                            url: "http://127.0.0.2:8080".to_string(),
                             health_path: "/health".to_string(),
                         },
                     );

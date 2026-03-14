@@ -1,6 +1,6 @@
 //! Home Assistant integration client for Yggdrasil.
 //!
-//! Provides a REST API client for the HA instance running on chirp (REDACTED_CHIRP_IP).
+//! Provides a REST API client for the HA instance running on chirp (<ha-ip>).
 //! Exposes entity queries, service calls, and automation YAML generation.
 
 pub mod automation;

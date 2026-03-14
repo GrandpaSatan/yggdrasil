@@ -12,7 +12,7 @@
     },
     {
       "name": "hugin",
-      "url": "http://REDACTED_HUGIN_IP:11434",
+      "url": "http://${HUGIN_IP}:11434",
       "backend_type": "ollama",
       "models": ["qwen3-coder:30b-a3b-q4_K_M"],
       "max_concurrent": 2,
@@ -41,7 +41,7 @@
     "store_on_completion": true
   },
   "muninn": {
-    "url": "http://REDACTED_HUGIN_IP:9091",
+    "url": "http://${HUGIN_IP}:9091",
     "max_context_chunks": 10
   },
   "session": {
@@ -51,7 +51,7 @@
     "generation_reserve": 2048
   },
   "ha": {
-    "url": "http://REDACTED_CHIRP_IP:8123",
+    "url": "http://${CHIRP_IP}:8123",
     "token": "${HA_TOKEN}",
     "timeout_secs": 10
   },

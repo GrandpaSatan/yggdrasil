@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # ── Constants ─────────────────────────────────────────────────────────
-REMOTE_MCP_URL="http://REDACTED_MUNIN_IP:9093/mcp"
+REMOTE_MCP_URL="http://${MUNIN_IP:-localhost}:9093/mcp"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLAUDE_DIR="$HOME/.claude"
@@ -174,14 +174,14 @@ cat > "$LOCAL_CONFIG" <<YAML
 # Local MCP server config (ygg-mcp-server / yggdrasil-local)
 # Repo: $REPO_ROOT
 # Project: $PROJECT_DIR
-odin_url: "http://REDACTED_MUNIN_IP:8080"
-muninn_url: "http://REDACTED_HUGIN_IP:9091"
+odin_url: "http://${MUNIN_IP:-localhost}:8080"
+muninn_url: "http://${HUGIN_IP:-localhost}:9091"
 timeout_secs: 300
 generate_tok_per_sec: 15.0
 prefetch_query: "active sprint $PROJECT_NAME"
 project: "$PROJECT_NAME"
 workspace_path: "$PROJECT_DIR"
-remote_url: "http://REDACTED_MUNIN_IP:9093"
+remote_url: "http://${MUNIN_IP:-localhost}:9093"
 YAML
 
 ok "Config: $LOCAL_CONFIG"

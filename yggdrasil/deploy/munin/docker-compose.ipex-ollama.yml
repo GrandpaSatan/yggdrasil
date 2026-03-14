@@ -1,4 +1,4 @@
-# IPEX-LLM Ollama for Munin (REDACTED_MUNIN_IP)
+# IPEX-LLM Ollama for Munin
 # Intel Arc iGPU (Meteor Lake-P) acceleration via oneAPI/SYCL
 #
 # Replaces native Ollama systemd service.

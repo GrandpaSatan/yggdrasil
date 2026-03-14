@@ -5,8 +5,8 @@ global:
 # Edit the targets below to match your deployment.
 # Replace the placeholder IPs with the actual addresses of each service.
 # Example layout:
-#   odin  + mimir  run on the same node (MUNIN_HOST, e.g. REDACTED_MUNIN_IP)
-#   muninn + huginn run on the same node (HUGIN_HOST,  e.g. REDACTED_HUGIN_IP)
+#   odin  + mimir  run on the same node (MUNIN_HOST, e.g. munin.local)
+#   muninn + huginn run on the same node (HUGIN_HOST,  e.g. hugin.local)
 #
 # Ports are the default Yggdrasil service metric ports:
 #   odin:   8080   mimir:  9090

@@ -28,7 +28,7 @@ pub struct NodeIdentity {
     /// Services hosted on this node (e.g. ["odin", "mimir"]).
     #[serde(default)]
     pub services: Vec<String>,
-    /// Address this node advertises to the mesh (e.g. "REDACTED_MUNIN_IP").
+    /// Address this node advertises to the mesh (e.g. "192.168.1.100").
     pub advertise_addr: String,
     /// Port for mesh API (default 9100).
     #[serde(default = "default_mesh_port")]
@@ -196,7 +196,7 @@ pub struct NodeCapabilities {
 /// A service endpoint within a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceEndpoint {
-    /// HTTP address (e.g. "http://REDACTED_MUNIN_IP:8080").
+    /// HTTP address (e.g. "http://192.168.1.100:8080").
     pub url: String,
     /// Health check path (default: "/health").
     #[serde(default = "default_health_path")]
