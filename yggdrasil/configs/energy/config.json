@@ -14,9 +14,9 @@
       "node_name": "thor",
       "policy": "on_demand",
       "wol_mac": "${THOR_WOL_MAC}",
-      "wol_broadcast": "REDACTED_THOR_IP55",
+      "wol_broadcast": "${WOL_BROADCAST}",
       "idle_timeout_mins": 30,
-      "proxmox_url": "https://REDACTED_THOR_IP:8006",
+      "proxmox_url": "https://${THOR_IP}:8006",
       "proxmox_node": "thor",
       "proxmox_vmid": 100
     },

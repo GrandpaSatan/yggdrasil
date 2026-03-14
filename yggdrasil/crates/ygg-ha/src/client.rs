@@ -179,12 +179,12 @@ mod tests {
     #[test]
     fn ha_client_applies_timeout_from_config() {
         let config = HaConfig {
-            url: "http://REDACTED_CHIRP_IP:8123".to_string(),
+            url: "http://127.0.0.1:8123".to_string(),
             token: "test-token".to_string(),
             timeout_secs: 5,
         };
         let client = HaClient::from_config(&config);
-        assert_eq!(client.base_url, "http://REDACTED_CHIRP_IP:8123");
+        assert_eq!(client.base_url, "http://127.0.0.1:8123");
         assert_eq!(client.token, "test-token");
         // Client is constructed via builder with timeout — not bare Client::new().
         let _ = client.http;

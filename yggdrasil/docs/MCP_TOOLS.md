@@ -8,7 +8,7 @@ Tools are split across two servers:
 
 | Server | Binary | Transport | Tools |
 |--------|--------|-----------|-------|
-| `ygg-mcp-remote` | Munin (REDACTED_MUNIN_IP:9093) | StreamableHTTP | 21 tools (all network tools) |
+| `ygg-mcp-remote` | Munin (<munin-ip>:9093) | StreamableHTTP | 21 tools (all network tools) |
 | `ygg-mcp-server` | Local (stdio) | stdio | 2 tools (filesystem-dependent) |
 
 ---
@@ -35,7 +35,7 @@ Tools are split across two servers:
 | 16 | `impact_analysis_tool` | Code | **Operational** | BM25 reference search across codebase |
 | 17 | `task_queue_tool` | Coordination | **Operational** | PostgreSQL-backed persistent task queue |
 | 18 | `memory_graph_tool` | Memory | **Operational** | Engram relationship graph (link/traverse) |
-| 19 | `ha_get_states_tool` | Home Assistant | **Operational** | Requires HA on Plume (REDACTED_CHIRP_IP) |
+| 19 | `ha_get_states_tool` | Home Assistant | **Operational** | Requires HA on Plume (<ha-ip>) |
 | 20 | `ha_list_entities_tool` | Home Assistant | **Operational** | Filter by domain |
 | 21 | `ha_call_service_tool` | Home Assistant | **Operational** | Real device control — use with care |
 | 22 | `ha_generate_automation_tool` | Home Assistant | **Operational** | LLM-generated automation YAML (10-60s) |

@@ -51,10 +51,10 @@ views:
             icon: mdi:shield-check
 
       # ══════════════════════════════════════════════
-      #  Munin Node (REDACTED_MUNIN_IP)
+      #  Munin Node (MUNIN_IP)
       # ══════════════════════════════════════════════
       - type: entities
-        title: "Munin  —  REDACTED_MUNIN_IP"
+        title: "Munin  —  MUNIN_IP"
         show_header_toggle: false
         entities:
           - entity: sensor.ygg_odin_status
@@ -79,10 +79,10 @@ views:
             }
 
       # ══════════════════════════════════════════════
-      #  Hugin Node (REDACTED_HUGIN_IP)
+      #  Hugin Node (HUGIN_IP)
       # ══════════════════════════════════════════════
       - type: entities
-        title: "Hugin  —  REDACTED_HUGIN_IP"
+        title: "Hugin  —  HUGIN_IP"
         show_header_toggle: false
         entities:
           - entity: sensor.ygg_huginn_status
@@ -104,10 +104,10 @@ views:
             }
 
       # ══════════════════════════════════════════════
-      #  Hades Node (REDACTED_HADES_IP)
+      #  Hades Node (HADES_IP)
       # ══════════════════════════════════════════════
       - type: entities
-        title: "Hades  —  REDACTED_HADES_IP"
+        title: "Hades  —  HADES_IP"
         show_header_toggle: false
         entities:
           - entity: sensor.ygg_qdrant_status
@@ -152,7 +152,7 @@ views:
       #  Sentinel Monitor
       # ══════════════════════════════════════════════
       - type: entities
-        title: "Sentinel  —  REDACTED_MUNIN_IP:9094"
+        title: "Sentinel  —  MUNIN_IP:9094"
         show_header_toggle: false
         entities:
           - entity: sensor.ygg_sentinel_status
@@ -172,9 +172,9 @@ views:
           ## Network Topology
           | Node | IP | Services |
           |:-----|:---|:---------|
-          | **Munin** | `REDACTED_MUNIN_IP` | Odin (:8080), Mimir (:9090), Node (:9100), Sentinel (:9094), Ollama (:11434) |
-          | **Hugin** | `REDACTED_HUGIN_IP` | Huginn (:9092), Muninn (:9091), Node (:9100), Ollama (:11434) |
-          | **Hades** | `REDACTED_HADES_IP` | Qdrant (:6333) |
+          | **Munin** | `MUNIN_IP` | Odin (:8080), Mimir (:9090), Node (:9100), Sentinel (:9094), Ollama (:11434) |
+          | **Hugin** | `HUGIN_IP` | Huginn (:9092), Muninn (:9091), Node (:9100), Ollama (:11434) |
+          | **Hades** | `HADES_IP` | Qdrant (:6333) |
         card_mod:
           style: |
             ha-card {

@@ -53,7 +53,7 @@ pub struct SentinelConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct MonitoredNode {
     pub name: String,
-    /// Health check URL (e.g. "http://REDACTED_MUNIN_IP:8080/health").
+    /// Health check URL (e.g. "http://<munin-ip>:8080/health").
     pub health_url: String,
     /// Services to monitor on this node.
     #[serde(default)]

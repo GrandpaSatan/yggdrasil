@@ -4,7 +4,7 @@
 #   bash deploy/nightjar/deploy-grafana.sh
 #
 # Required environment variables:
-#   NIGHTJAR_HOST  — IP or hostname of the Nightjar node (e.g. REDACTED_NIGHTJAR_IP)
+#   NIGHTJAR_HOST  — IP or hostname of the Nightjar node (e.g. nightjar.local)
 #
 # Optional environment variables:
 #   DEPLOY_USER    — SSH user on Nightjar (default: yggdrasil)

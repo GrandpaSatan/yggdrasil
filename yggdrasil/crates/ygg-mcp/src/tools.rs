@@ -1867,20 +1867,26 @@ pub async fn service_health(
         });
     }
 
-    // Ollama backends — probe /api/tags
+    // Ollama backends — derive hosts from config URLs, probe /api/tags on port 11434
+    let munin_ip = std::env::var("MUNIN_IP").unwrap_or_else(|_| "localhost".to_string());
     endpoints.push(ServiceEndpoint {
         name: "ollama_munin",
-        url: "http://REDACTED_MUNIN_IP:11434/api/tags".to_string(),
-    });
-    endpoints.push(ServiceEndpoint {
-        name: "ollama_hugin",
-        url: "http://REDACTED_HUGIN_IP:11434/api/tags".to_string(),
+        url: format!("http://{}:11434/api/tags", munin_ip),
     });
 
+    if config.muninn_url.is_some() {
+        let hugin_ip = std::env::var("HUGIN_IP").unwrap_or_else(|_| "localhost".to_string());
+        endpoints.push(ServiceEndpoint {
+            name: "ollama_hugin",
+            url: format!("http://{}:11434/api/tags", hugin_ip),
+        });
+    }
+
     // Qdrant
+    let hades_ip = std::env::var("HADES_IP").unwrap_or_else(|_| "localhost".to_string());
     endpoints.push(ServiceEndpoint {
         name: "qdrant",
-        url: "http://REDACTED_HADES_IP:6333/collections".to_string(),
+        url: format!("http://{}:6333/collections", hades_ip),
     });
 
     // Filter if specific services requested

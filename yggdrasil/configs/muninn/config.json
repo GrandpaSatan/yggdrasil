@@ -1,7 +1,7 @@
 {
   "listen_addr": "0.0.0.0:9091",
   "database_url": "${MUNINN_DATABASE_URL}",
-  "qdrant_url": "http://REDACTED_HADES_IP:6334",
+  "qdrant_url": "http://${HADES_IP}:6334",
   "embed": {
     "model_dir": "/opt/yggdrasil/models/all-MiniLM-L6-v2"
   },

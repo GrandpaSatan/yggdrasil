@@ -1,5 +1,5 @@
 {
-  "odin_url": "http://REDACTED_MUNIN_IP:8080",
+  "odin_url": "http://${MUNIN_IP}:8080",
   "gitea_url": "${GITEA_URL}",
   "gitea_token": "${GITEA_TOKEN}",
   "work_dir": "/tmp/ygg-agent",

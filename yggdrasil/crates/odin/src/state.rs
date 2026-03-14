@@ -97,7 +97,7 @@ pub struct AppState {
     pub backends: Vec<BackendState>,
     /// Mimir service base URL, e.g. `http://localhost:9090`.
     pub mimir_url: String,
-    /// Muninn service base URL, e.g. `http://REDACTED_HUGIN_IP:9091`.
+    /// Muninn service base URL, e.g. `http://<hugin-ip>:9091`.
     pub muninn_url: String,
     /// Full resolved configuration (kept for per-handler access to limits).
     pub config: OdinConfig,

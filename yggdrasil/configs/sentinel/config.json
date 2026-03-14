@@ -1,48 +1,48 @@
 {
   "listen_addr": "0.0.0.0:9094",
-  "odin_url": "http://REDACTED_MUNIN_IP:8080",
+  "odin_url": "http://${MUNIN_IP}:8080",
   "anomaly_threshold": 0.70,
   "window_secs": 60,
   "check_interval_secs": 30,
   "nodes": [
     {
       "name": "munin-odin",
-      "health_url": "http://REDACTED_MUNIN_IP:8080/health",
+      "health_url": "http://${MUNIN_IP}:8080/health",
       "services": ["odin"]
     },
     {
       "name": "munin-mimir",
-      "health_url": "http://REDACTED_MUNIN_IP:9090/health",
+      "health_url": "http://${MUNIN_IP}:9090/health",
       "services": ["mimir"]
     },
     {
       "name": "hugin-muninn",
-      "health_url": "http://REDACTED_HUGIN_IP:9091/health",
+      "health_url": "http://${HUGIN_IP}:9091/health",
       "services": ["muninn"]
     },
     {
       "name": "hugin-huginn",
-      "health_url": "http://REDACTED_HUGIN_IP:9092/health",
+      "health_url": "http://${HUGIN_IP}:9092/health",
       "services": ["huginn"]
     },
     {
       "name": "munin-node",
-      "health_url": "http://REDACTED_MUNIN_IP:9100/health",
+      "health_url": "http://${MUNIN_IP}:9100/health",
       "services": ["ygg-node"]
     },
     {
       "name": "hugin-node",
-      "health_url": "http://REDACTED_HUGIN_IP:9100/health",
+      "health_url": "http://${HUGIN_IP}:9100/health",
       "services": ["ygg-node"]
     },
     {
       "name": "hades-qdrant",
-      "health_url": "http://REDACTED_HADES_IP:6333/",
+      "health_url": "http://${HADES_IP}:6333/",
       "services": ["qdrant"]
     }
   ],
   "ha": {
-    "url": "http://REDACTED_CHIRP_IP:8123",
+    "url": "http://${CHIRP_IP}:8123",
     "token": "${HA_TOKEN}",
     "timeout_secs": 10
   },

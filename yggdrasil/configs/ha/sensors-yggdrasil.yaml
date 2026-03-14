@@ -4,9 +4,9 @@
 # Or merge into your existing rest: section.
 
 # ─────────────────────────────────────────────────────────
-#  Odin - LLM Gateway (Munin REDACTED_MUNIN_IP:8080)
+#  Odin - LLM Gateway (Munin MUNIN_IP:8080)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_MUNIN_IP:8080/health
+- resource: http://MUNIN_IP:8080/health
   scan_interval: 60
   timeout: 10
   sensor:
@@ -34,9 +34,9 @@
 # ─────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────
-#  Huginn - Task Orchestrator (Hugin REDACTED_HUGIN_IP:9092)
+#  Huginn - Task Orchestrator (Hugin HUGIN_IP:9092)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HUGIN_IP:9092/health
+- resource: http://HUGIN_IP:9092/health
   scan_interval: 60
   timeout: 10
   sensor:
@@ -56,10 +56,10 @@
       icon: mdi:head-cog-outline
 
 # ─────────────────────────────────────────────────────────
-#  Qdrant - Vector Database (Hades REDACTED_HADES_IP:6333)
+#  Qdrant - Vector Database (Hades HADES_IP:6333)
 #  /healthz returns plain text — use / which returns JSON.
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HADES_IP:6333/
+- resource: http://HADES_IP:6333/
   scan_interval: 60
   timeout: 10
   sensor:
@@ -78,9 +78,9 @@
       icon: mdi:vector-triangle
 
 # ─────────────────────────────────────────────────────────
-#  Mesh Node - Munin (REDACTED_MUNIN_IP:9100)
+#  Mesh Node - Munin (MUNIN_IP:9100)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_MUNIN_IP:9100/health
+- resource: http://MUNIN_IP:9100/health
   scan_interval: 60
   timeout: 10
   sensor:
@@ -95,9 +95,9 @@
       icon: mdi:server-network
 
 # ─────────────────────────────────────────────────────────
-#  Mesh Node - Hugin (REDACTED_HUGIN_IP:9100)
+#  Mesh Node - Hugin (HUGIN_IP:9100)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HUGIN_IP:9100/health
+- resource: http://HUGIN_IP:9100/health
   scan_interval: 60
   timeout: 10
   sensor:
@@ -112,9 +112,9 @@
       icon: mdi:server-network
 
 # ─────────────────────────────────────────────────────────
-#  Sentinel - Monitor (Munin REDACTED_MUNIN_IP:9094)
+#  Sentinel - Monitor (Munin MUNIN_IP:9094)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_MUNIN_IP:9094/health
+- resource: http://MUNIN_IP:9094/health
   scan_interval: 60
   timeout: 10
   sensor:
@@ -129,9 +129,9 @@
       icon: mdi:shield-check
 
 # ─────────────────────────────────────────────────────────
-#  Ollama - Munin Node (REDACTED_MUNIN_IP:11434)
+#  Ollama - Munin Node (MUNIN_IP:11434)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_MUNIN_IP:11434/api/tags
+- resource: http://MUNIN_IP:11434/api/tags
   scan_interval: 120
   timeout: 15
   sensor:
@@ -149,9 +149,9 @@
       icon: mdi:robot
 
 # ─────────────────────────────────────────────────────────
-#  Ollama - Hugin Node (REDACTED_HUGIN_IP:11434)
+#  Ollama - Hugin Node (HUGIN_IP:11434)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HUGIN_IP:11434/api/tags
+- resource: http://HUGIN_IP:11434/api/tags
   scan_interval: 120
   timeout: 15
   sensor:
@@ -169,9 +169,9 @@
       icon: mdi:robot
 
 # ─────────────────────────────────────────────────────────
-#  Qdrant Collection Stats (Hades REDACTED_HADES_IP:6333)
+#  Qdrant Collection Stats (Hades HADES_IP:6333)
 # ─────────────────────────────────────────────────────────
-- resource: http://REDACTED_HADES_IP:6333/collections
+- resource: http://HADES_IP:6333/collections
   scan_interval: 300
   timeout: 10
   sensor:

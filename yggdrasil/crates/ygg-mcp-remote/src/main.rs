@@ -2,7 +2,7 @@
 //!
 //! Serves the 12 network-only MCP tools (memory, generate, search, HA, sprint
 //! history) over Streamable HTTP transport. Designed to run as an always-on
-//! systemd service on Munin (REDACTED_MUNIN_IP:9093).
+//! systemd service on Munin (<munin-ip>:9093).
 //!
 //! Local file tools (sync_docs) are NOT included — those run in the local
 //! `ygg-mcp-server` binary on the developer workstation via stdio.

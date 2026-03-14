@@ -3,13 +3,13 @@
     "name": "munin",
     "role": "primary-orchestrator",
     "services": ["odin", "mimir", "ygg-voice", "ygg-node"],
-    "advertise_addr": "REDACTED_MUNIN_IP",
+    "advertise_addr": "${MUNIN_IP}",
     "mesh_port": 9100
   },
   "discovery": {
     "mode": "mdns",
     "seeds": [
-      { "name": "hugin", "addr": "REDACTED_HUGIN_IP", "port": 9100 }
+      { "name": "hugin", "addr": "${HUGIN_IP}", "port": 9100 }
     ],
     "mdns_service": "_yggdrasil._tcp.local"
   },

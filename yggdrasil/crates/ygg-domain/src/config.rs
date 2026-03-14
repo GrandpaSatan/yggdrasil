@@ -379,7 +379,7 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub workspace_path: Option<String>,
     /// URL of the remote MCP server for version check + config sync.
-    /// Only used by the local server binary. Example: "http://REDACTED_MUNIN_IP:9093"
+    /// Only used by the local server binary. Example: "http://<munin-ip>:9093"
     #[serde(default)]
     pub remote_url: Option<String>,
     /// PostgreSQL database URL for session persistence (optional).
@@ -419,8 +419,8 @@ mod tests {
     fn backend_type_deserializes_from_json() {
         let json = r#"[
             {"name":"munin","url":"http://localhost:11434","backend_type":"ollama","models":[]},
-            {"name":"hugin-vllm","url":"http://REDACTED_HUGIN_IP:8000","backend_type":"openai","models":["Qwen/QwQ-32B-AWQ"]},
-            {"name":"hugin","url":"http://REDACTED_HUGIN_IP:11434","models":["qwen3-embedding"]}
+            {"name":"hugin-vllm","url":"http://127.0.0.2:8000","backend_type":"openai","models":["Qwen/QwQ-32B-AWQ"]},
+            {"name":"hugin","url":"http://127.0.0.2:11434","models":["qwen3-embedding"]}
         ]"#;
         let backends: Vec<BackendConfig> = serde_json::from_str(json).unwrap();
         assert_eq!(backends[0].backend_type, BackendType::Ollama);

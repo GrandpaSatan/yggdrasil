@@ -3,7 +3,7 @@
 # pulls updates for existing ones. Runs on Hugin via systemd timer.
 set -euo pipefail
 
-GITEA_URL="${GITEA_URL:-http://REDACTED_GITEA_IP:3000}"
+GITEA_URL="${GITEA_URL:-http://${GITEA_IP:-localhost}:3000}"
 GITEA_TOKEN="${GITEA_TOKEN}"
 REPO_DIR="${REPO_DIR:-/home/${USER}/repos}"
 SSH_PORT="${GITEA_SSH_PORT:-22}"
