@@ -27,7 +27,10 @@ const _TRANSLATE_TOKEN: i64 = 50358; // <|translate|>
 const TRANSCRIBE_TOKEN: i64 = 50359; // <|transcribe|>
 const NO_TIMESTAMPS_TOKEN: i64 = 50363; // <|notimestamps|>
 const EN_TOKEN: i64 = 50259; // <|en|>
-const MAX_DECODE_TOKENS: usize = 448;
+/// Max decode tokens. For voice commands we cap at 100 tokens (~50 words)
+/// to limit CPU time. The decoder positional embedding limit is 448 total
+/// (444 after the 4 prefix tokens), but voice utterances are short.
+const MAX_DECODE_TOKENS: usize = 100;
 
 /// Whisper STT engine using ONNX Runtime with OpenVINO EP.
 pub struct WhisperStt {
@@ -93,14 +96,24 @@ impl WhisperStt {
     /// Input: f32 PCM at 16kHz.
     /// Output: transcribed text string.
     pub fn transcribe(&self, audio: &[f32]) -> Result<String, VoiceError> {
-        // Step 1: Compute mel spectrogram [80, 3000]
+        // Step 1: Compute mel spectrogram and pad to exactly [80, 3000] for Whisper
         let mel_spec = self.mel.compute(audio);
-        let (n_mels, n_frames) = (mel_spec.shape()[0], mel_spec.shape()[1]);
+        let n_mels = mel_spec.shape()[0];
+        let _n_frames = mel_spec.shape()[1];
+        const WHISPER_FRAMES: usize = 3000;
+
+        // Pad or truncate to exactly 3000 frames (Whisper's fixed input size)
+        let mut mel_flat = mel_spec.into_raw_vec_and_offset().0;
+        let target_len = n_mels * WHISPER_FRAMES;
+        if mel_flat.len() < target_len {
+            mel_flat.resize(target_len, 0.0);
+        } else if mel_flat.len() > target_len {
+            mel_flat.truncate(target_len);
+        }
 
         // Reshape to [1, 80, 3000] for the encoder
-        let mel_flat: Vec<f32> = mel_spec.into_raw_vec_and_offset().0;
         let mel_array =
-            ndarray::Array3::from_shape_vec((1, n_mels, n_frames), mel_flat)
+            ndarray::Array3::from_shape_vec((1, n_mels, WHISPER_FRAMES), mel_flat)
                 .map_err(|e| VoiceError::Stt(format!("mel reshape error: {e}")))?;
 
         // Step 2: Run encoder
@@ -135,6 +148,9 @@ impl WhisperStt {
             NO_TIMESTAMPS_TOKEN,
         ];
 
+        let decode_start = std::time::Instant::now();
+        let mut repeat_count: usize = 0;
+        let mut last_token: i64 = -1;
         for _step in 0..MAX_DECODE_TOKENS {
             let seq_len = token_ids.len();
 
@@ -204,10 +220,34 @@ impl WhisperStt {
                 break;
             }
 
+            // Detect repetition loops (e.g., "that that that...")
+            if next_token == last_token {
+                repeat_count += 1;
+                if repeat_count >= 3 {
+                    info!(
+                        token_id = next_token,
+                        repeats = repeat_count,
+                        "breaking decode loop — repetition detected"
+                    );
+                    break;
+                }
+            } else {
+                repeat_count = 0;
+            }
+            last_token = next_token;
+
             token_ids.push(next_token);
         }
 
         // Step 4: Decode token IDs to text
+        let decode_tokens = token_ids.len() - 4; // Exclude prefix tokens
+        let decode_elapsed = decode_start.elapsed();
+        info!(
+            tokens = decode_tokens,
+            elapsed_ms = decode_elapsed.as_millis() as u64,
+            ms_per_token = if decode_tokens > 0 { decode_elapsed.as_millis() as u64 / decode_tokens as u64 } else { 0 },
+            "STT decode complete"
+        );
         let text = self.decode_tokens(&token_ids[4..]); // Skip SOT, EN, TRANSCRIBE, NO_TIMESTAMPS
         Ok(text.trim().to_string())
     }

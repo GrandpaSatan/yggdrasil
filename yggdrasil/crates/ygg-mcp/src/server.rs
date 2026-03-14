@@ -35,7 +35,7 @@ use crate::{
         MemoryIntersectParams, MemoryTimelineParams, QueryMemoryParams, SearchCodeParams,
         ServiceHealthParams, StoreMemoryParams, TaskDelegateParams, TaskQueueParams,
         ast_analyze, build_check, config_sync, config_version, context_bridge,
-        context_offload, diff_review, generate, get_sprint_history, ha_call_service,
+        context_offload, delegate, diff_review, generate, get_sprint_history, ha_call_service,
         ha_generate_automation, ha_get_states, ha_list_entities, impact_analysis, list_models,
         memory_graph, memory_intersect, memory_timeline, query_memory, search_code,
         service_health, store_memory, task_delegate, task_queue,

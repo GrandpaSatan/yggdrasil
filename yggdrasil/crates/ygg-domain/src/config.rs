@@ -19,6 +19,11 @@ pub struct OdinConfig {
     /// When local backends are at capacity, Odin falls back to these cloud APIs.
     #[serde(default)]
     pub cloud: Option<CloudProvidersConfig>,
+    /// Optional voice streaming configuration. When present and enabled, Odin
+    /// exposes a WebSocket endpoint at `/v1/voice` that proxies STT/TTS through
+    /// ygg-voice's HTTP API.
+    #[serde(default)]
+    pub voice: Option<VoiceStreamConfig>,
 }
 
 /// Cloud provider configuration for fallback routing through ygg-cloud.
@@ -52,6 +57,21 @@ pub struct CloudProviderEntry {
 
 fn default_cloud_rpm() -> u32 {
     60
+}
+
+/// Voice streaming configuration for WebSocket-based STT/TTS proxying.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceStreamConfig {
+    /// Whether voice streaming is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Base URL for the ygg-voice HTTP API (e.g. "http://localhost:9095").
+    #[serde(default = "default_voice_api_url")]
+    pub voice_api_url: String,
+}
+
+fn default_voice_api_url() -> String {
+    "http://localhost:9095".to_string()
 }
 
 /// Session state configuration for Odin's in-memory conversation store.

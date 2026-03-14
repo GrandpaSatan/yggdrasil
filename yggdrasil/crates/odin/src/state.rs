@@ -114,4 +114,7 @@ pub struct AppState {
     pub session_store: SessionStore,
     /// Cloud provider pool for fallback routing when local backends are at capacity.
     pub cloud_pool: Option<CloudPool>,
+    /// ygg-voice HTTP API URL for STT/TTS proxying (e.g. "http://localhost:9095").
+    /// `None` when voice streaming is disabled.
+    pub voice_api_url: Option<String>,
 }

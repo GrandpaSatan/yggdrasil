@@ -4744,4 +4744,48 @@ mod tests {
         let result = ha_call_service(None, params).await;
         assert!(result.is_error.unwrap_or(false));
     }
+
+    #[test]
+    fn test_parse_file_blocks() {
+        let content = r#"Here are the changes:
+
+```src/main.rs
+fn main() {
+    println!("hello");
+}
+```
+
+Some explanation text.
+
+```src/lib.rs
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+```
+"#;
+
+        let blocks = parse_file_blocks(content);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].0, "src/main.rs");
+        assert!(blocks[0].1.contains("println"));
+        assert_eq!(blocks[1].0, "src/lib.rs");
+        assert!(blocks[1].1.contains("pub fn add"));
+    }
+
+    #[test]
+    fn test_parse_file_blocks_skips_generic_language() {
+        let content = r#"```rust
+fn example() {}
+```
+
+```src/real.rs
+fn real() {}
+```
+"#;
+
+        let blocks = parse_file_blocks(content);
+        // "rust" has no dot, so it's treated as a language tag and skipped
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].0, "src/real.rs");
+    }
 }

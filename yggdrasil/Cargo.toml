@@ -20,7 +20,6 @@ members = [
     "crates/ygg-sentinel",
     "crates/ygg-installer",
     "crates/ygg-voice",
-    "crates/ygg-agent",
 ]
 
 [workspace.package]

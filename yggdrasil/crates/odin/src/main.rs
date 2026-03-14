@@ -34,6 +34,7 @@ use odin::{
     router::SemanticRouter,
     session::{self, SessionStore},
     state::{AppState, BackendState, CloudPool},
+    voice_ws,
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -212,6 +213,19 @@ async fn main() -> anyhow::Result<()> {
         "session store initialised"
     );
 
+    // ── Voice streaming ─────────────────────────────────────────────
+    let voice_api_url = config
+        .voice
+        .as_ref()
+        .filter(|v| v.enabled)
+        .map(|v| v.voice_api_url.clone());
+
+    if let Some(ref url) = voice_api_url {
+        tracing::info!(voice_api_url = %url, "voice streaming enabled");
+    } else {
+        tracing::info!("voice streaming disabled (no voice config or not enabled)");
+    }
+
     // ── AppState ──────────────────────────────────────────────────
     let state = AppState {
         http_client,
@@ -223,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         ha_context_cache: Arc::new(tokio::sync::RwLock::new(None)),
         session_store: session_store.clone(),
         cloud_pool,
+        voice_api_url,
         config,
     };
 
@@ -244,6 +259,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/context", post(handlers::proxy_context_store))
         .route("/api/v1/context", get(handlers::proxy_context_list))
         .route("/api/v1/context/{handle}", get(handlers::proxy_context_retrieve))
+        // Embedding proxy (Mimir).
+        .route("/api/v1/embed", post(handlers::proxy_embed))
         // Engram by ID proxy (Mimir).
         .route("/api/v1/engrams/{id}", get(handlers::proxy_engram_by_id))
         // Task queue proxy endpoints (Mimir).
@@ -263,6 +280,9 @@ async fn main() -> anyhow::Result<()> {
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
         .route("/api/v1/webhook", post(ygg_ha::webhook::handle_webhook))
+        // Voice WebSocket endpoint (STT/TTS streaming via ygg-voice).
+        .route("/v1/voice", get(voice_ws::ws_voice_handler))
+        .route("/voice", get(voice_ws::voice_page))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

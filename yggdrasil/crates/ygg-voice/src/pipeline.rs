@@ -61,8 +61,8 @@ impl VoicePipeline {
     pub fn new(
         capture: AudioCapture,
         player: AudioPlayer,
-        stt: WhisperStt,
-        tts: KokoroTts,
+        stt: Arc<WhisperStt>,
+        tts: Arc<KokoroTts>,
         sdr_registry: SdrCommandRegistry,
         mel: MelSpectrogram,
         odin_url: String,
@@ -73,8 +73,8 @@ impl VoicePipeline {
         Self {
             capture,
             _player: player,
-            stt: Arc::new(stt),
-            tts: Arc::new(tts),
+            stt,
+            tts,
             sdr_registry,
             mel: Arc::new(mel),
             odin_url,
