@@ -1,0 +1,20 @@
+[Unit]
+Description=Yggdrasil IPEX-LLM vLLM Serving (Intel Arc iGPU)
+Documentation=https://github.com/intel/ipex-llm
+After=docker.service
+Requires=docker.service
+Before=yggdrasil-odin.service yggdrasil-mimir.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/yggdrasil/deploy/munin
+ExecStartPre=/usr/bin/docker compose -f docker-compose.ipex-vllm.yml pull
+ExecStart=/usr/bin/docker compose -f docker-compose.ipex-vllm.yml up --remove-orphans
+ExecStop=/usr/bin/docker compose -f docker-compose.ipex-vllm.yml down
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=600
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

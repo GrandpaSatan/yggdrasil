@@ -1,0 +1,89 @@
+# IPEX-LLM vLLM Serving for Munin
+# Intel Arc iGPU (Meteor Lake-P) acceleration via oneAPI/SYCL
+#
+# Serves Qwen3-Omni-30B-A3B-Instruct (AWQ-8bit) via OpenAI-compatible API on port 8000.
+# Replaces IPEX-Ollama container for unified voice + LLM inference.
+#
+# Usage:
+#   docker compose -f docker-compose.ipex-vllm.yml up -d
+#   docker compose -f docker-compose.ipex-vllm.yml logs -f ipex-vllm
+#
+# Prerequisites:
+#   python3 -c "from huggingface_hub import snapshot_download; snapshot_download('cyankiwi/Qwen3-Omni-30B-A3B-Instruct-AWQ-8bit', local_dir='/opt/models/Qwen3-Omni-30B-A3B')"
+
+services:
+  ipex-vllm:
+    image: intelanalytics/ipex-llm-serving-xpu:latest
+    container_name: ipex-vllm
+    restart: unless-stopped
+    network_mode: host
+
+    devices:
+      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri/renderD128:/dev/dri/renderD128
+
+    volumes:
+      # HuggingFace model weights
+      - /opt/models:/opt/models
+      # Persist SYCL kernel compilation cache across restarts
+      - vllm-sycl-cache:/root/.cache
+
+    shm_size: "16g"
+
+    environment:
+      # -- vLLM model config --
+      MODEL_PATH: "/opt/models/Qwen3-Omni-30B-A3B"
+      SERVED_MODEL_NAME: "Qwen3-Omni"
+      MAX_MODEL_LEN: "8192"
+      GPU_MEMORY_UTILIZATION: "0.85"
+      QUANTIZATION: "awq"
+      DTYPE: "float16"
+      PORT: "8000"
+      MAX_NUM_SEQS: "64"
+
+      # -- Intel oneAPI / SYCL config --
+      DEVICE: "iGPU"
+      ZES_ENABLE_SYSMAN: "1"
+      SYCL_CACHE_PERSISTENT: "1"
+      SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "1"
+      BIGDL_LLM_XMX_DISABLED: "1"
+      ONEAPI_DEVICE_SELECTOR: "level_zero:0"
+      USE_XETLA: "OFF"
+
+      # -- Proxy bypass for local connections --
+      no_proxy: "localhost,127.0.0.1"
+
+    # Override entrypoint: upgrade transformers for qwen3_omni_moe support,
+    # then launch vLLM with our model config via env vars.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cd /llm/scripts && source ipex-llm-init --gpu --device iGPU
+        pip install --upgrade "git+https://github.com/huggingface/transformers.git" --quiet
+        exec python -m ipex_llm.vllm.xpu.entrypoints.openai.api_server \
+          --model $${MODEL_PATH} \
+          --served-model-name $${SERVED_MODEL_NAME} \
+          --host 0.0.0.0 \
+          --port $${PORT} \
+          --max-model-len $${MAX_MODEL_LEN} \
+          --gpu-memory-utilization $${GPU_MEMORY_UTILIZATION} \
+          --trust-remote-code \
+          --dtype $${DTYPE} \
+          --quantization $${QUANTIZATION} \
+          --max-num-seqs $${MAX_NUM_SEQS}
+
+    deploy:
+      resources:
+        limits:
+          memory: 38G
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+volumes:
+  vllm-sycl-cache:
+    driver: local

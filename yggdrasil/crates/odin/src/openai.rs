@@ -265,6 +265,69 @@ pub struct OllamaStreamLine {
     pub prompt_eval_count: Option<u64>,
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Multimodal types (Qwen3-Omni / OpenAI audio input)
+// ─────────────────────────────────────────────────────────────────
+
+/// Base64-encoded audio data for OpenAI multimodal input.
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioInputData {
+    /// Base64-encoded audio bytes (WAV format).
+    pub data: String,
+    /// Audio format identifier, e.g. "wav".
+    pub format: String,
+}
+
+/// A content part in a multimodal message.
+///
+/// Serialises with a `type` discriminator tag matching the OpenAI spec:
+/// `{"type":"text","text":"..."}` or `{"type":"input_audio","input_audio":{...}}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum MultimodalContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "input_audio")]
+    InputAudio { input_audio: AudioInputData },
+}
+
+/// Content that can be either a plain string (for system/assistant messages)
+/// or an array of typed parts (for user messages with audio).
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum MultimodalContent {
+    Text(String),
+    Parts(Vec<MultimodalContentPart>),
+}
+
+/// A chat message that supports multimodal content (text + audio).
+///
+/// Used exclusively for the Qwen3-Omni voice pipeline. Existing text-only
+/// paths continue using `ChatMessage` to avoid any serialisation risk.
+#[derive(Debug, Clone, Serialize)]
+pub struct MultimodalChatMessage {
+    pub role: Role,
+    pub content: MultimodalContent,
+}
+
+/// Chat completion request with multimodal content support.
+///
+/// Sent to vLLM's OpenAI-compatible `/v1/chat/completions` endpoint.
+/// The response uses the standard `ChatCompletionResponse` type since
+/// vLLM returns text-only completions even for audio-input models.
+#[derive(Debug, Clone, Serialize)]
+pub struct MultimodalChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<MultimodalChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    pub stream: bool,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Ollama upstream types (internal — not exposed in HTTP responses)
+// ─────────────────────────────────────────────────────────────────
+
 /// Ollama `GET /api/tags` response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OllamaTagsResponse {

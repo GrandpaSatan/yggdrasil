@@ -65,9 +65,13 @@ pub struct VoiceStreamConfig {
     /// Whether voice streaming is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Base URL for the ygg-voice HTTP API (e.g. "http://localhost:9095").
+    /// Base URL for the TTS HTTP API (e.g. "http://localhost:9095").
     #[serde(default = "default_voice_api_url")]
     pub voice_api_url: String,
+    /// Base URL for a dedicated STT service (e.g. "http://localhost:9097").
+    /// When absent, STT calls go to `voice_api_url` (ygg-voice serves both).
+    #[serde(default)]
+    pub stt_url: Option<String>,
 }
 
 fn default_voice_api_url() -> String {

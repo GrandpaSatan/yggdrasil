@@ -55,6 +55,12 @@
     "token": "${HA_TOKEN}",
     "timeout_secs": 10
   },
+  "voice": {
+    "enabled": true,
+    "voice_api_url": "http://localhost:9095",
+    "omni_url": "http://localhost:8000",
+    "omni_model": "Qwen/Qwen3-Omni-30B-A3B"
+  },
   "cloud": {
     "fallback_enabled": true,
     "openai": {

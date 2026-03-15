@@ -1,0 +1,19 @@
+[Unit]
+Description=Yggdrasil Qwen3-Omni Server (IPEX-LLM 4-bit on iGPU)
+After=network.target
+Before=yggdrasil-odin.service
+
+[Service]
+Type=simple
+User=jhernandez
+WorkingDirectory=/opt/yggdrasil/deploy/munin/omni-server
+ExecStart=/usr/bin/python3 server.py --model /opt/models/Qwen3-Omni-30B-A3B-Instruct --low-bit-path /opt/models/qwen3-omni-4bit --served-model-name Qwen3-Omni --port 8000
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=600
+Environment=ONEAPI_DEVICE_SELECTOR=level_zero:0
+Environment=SYCL_CACHE_PERSISTENT=1
+Environment=ZES_ENABLE_SYSMAN=1
+
+[Install]
+WantedBy=multi-user.target
