@@ -251,7 +251,7 @@ impl KokoroTtsHandle {
 
         let outputs = session
             .run(ort::inputs![
-                "tokens" => tokens_tensor,
+                "input_ids" => tokens_tensor,
                 "style" => style_tensor,
                 "speed" => speed_tensor,
             ])

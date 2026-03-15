@@ -98,6 +98,15 @@ async fn stt_handler(
 
     info!(samples = audio_f32.len(), "STT API: received audio");
 
+    // Debug: save raw audio to /tmp for inspection
+    if let Ok(mut f) = std::fs::File::create("/tmp/ygg-voice-debug.raw") {
+        use std::io::Write;
+        for &s in &samples_i16 {
+            let _ = f.write_all(&s.to_le_bytes());
+        }
+        info!("debug audio saved to /tmp/ygg-voice-debug.raw");
+    }
+
     // ── Gate 1: RMS energy floor ─────────────────────────────────
     let energy = audio::rms_energy(&audio_f32);
     if energy < ENERGY_FLOOR {

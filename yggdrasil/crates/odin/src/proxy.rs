@@ -417,6 +417,45 @@ pub async fn generate_chat_openai(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Multimodal chat completion (Qwen3-Omni / audio input)
+// ─────────────────────────────────────────────────────────────────
+
+/// Generate a non-streaming chat completion from a multimodal-capable backend.
+///
+/// POSTs to `/v1/chat/completions` with `MultimodalChatCompletionRequest`
+/// which can include audio content parts. The response is standard OpenAI
+/// format (text-only output) since vLLM does not yet support audio output.
+pub async fn generate_chat_multimodal(
+    client: &reqwest::Client,
+    backend_url: &str,
+    request: crate::openai::MultimodalChatCompletionRequest,
+) -> Result<crate::openai::ChatCompletionResponse, OdinError> {
+    let url = format!("{backend_url}/v1/chat/completions");
+
+    tracing::debug!(url = %url, model = %request.model, "multimodal chat request to Omni backend");
+
+    let response = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("omni backend connection failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(OdinError::Upstream(format!(
+            "omni backend returned {status}: {body}"
+        )));
+    }
+
+    response
+        .json::<crate::openai::ChatCompletionResponse>()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("failed to parse omni response: {e}")))
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Model listing (OpenAI-compatible backend)
 // ─────────────────────────────────────────────────────────────────
 

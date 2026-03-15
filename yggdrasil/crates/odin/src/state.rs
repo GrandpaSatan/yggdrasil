@@ -117,4 +117,7 @@ pub struct AppState {
     /// ygg-voice HTTP API URL for STT/TTS proxying (e.g. "http://localhost:9095").
     /// `None` when voice streaming is disabled.
     pub voice_api_url: Option<String>,
+    /// Dedicated STT service URL (e.g. "http://localhost:9097" for Qwen3-ASR).
+    /// When `None`, STT calls go to `voice_api_url`.
+    pub stt_url: Option<String>,
 }

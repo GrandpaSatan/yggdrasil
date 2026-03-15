@@ -1,15 +1,15 @@
-/// WebSocket voice handler for real-time STT/TTS streaming.
+/// WebSocket voice handler for real-time voice interaction.
 ///
 /// Accepts streamed PCM audio (s16le, 16 kHz, mono) from browser clients,
-/// performs server-side VAD (energy-based), proxies STT/TTS to ygg-voice's
-/// HTTP API, runs transcribed text through the full Odin chat pipeline via
-/// `handlers::process_chat_text`, and streams TTS audio back to the client.
+/// performs server-side VAD (energy-based), transcribes via Qwen3-ASR,
+/// runs text through the Odin chat pipeline, and streams Kokoro TTS
+/// audio back to the client.
 ///
 /// Protocol (JSON text frames):
 ///   Server -> Client:
 ///     {"type":"ready","session_id":"..."}   — connection established
 ///     {"type":"listening"}                  — speech detected
-///     {"type":"processing"}                 — silence detected, STT in progress
+///     {"type":"processing"}                 — silence detected, pipeline running
 ///     {"type":"transcript","text":"..."}    — STT result
 ///     {"type":"response","text":"..."}      — LLM response
 ///     {"type":"audio_start","sample_rate":N} — TTS audio begins
@@ -38,7 +38,9 @@ pub async fn ws_voice_handler(
     let voice_url = state.voice_api_url.clone().ok_or_else(|| {
         OdinError::BadRequest("voice is not enabled".to_string())
     })?;
-    Ok(ws.on_upgrade(move |socket| handle_voice_session(socket, state, voice_url)))
+    // Use dedicated STT URL if configured, otherwise STT goes to the same voice_api_url.
+    let stt_url = state.stt_url.clone().unwrap_or_else(|| voice_url.clone());
+    Ok(ws.on_upgrade(move |socket| handle_voice_session(socket, state, voice_url, stt_url)))
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -52,7 +54,7 @@ enum VadState {
     Idle,
     /// Speech detected — accumulating audio.
     Listening,
-    /// Silence timeout reached — STT/LLM/TTS pipeline running.
+    /// Silence timeout reached — pipeline running.
     Processing,
 }
 
@@ -76,7 +78,7 @@ const VAD_WINDOW_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 // ─────────────────────────────────────────────────────────────────
 
 /// Drive a single voice WebSocket connection through the VAD -> STT -> LLM -> TTS loop.
-async fn handle_voice_session(mut socket: WebSocket, state: AppState, voice_api_url: String) {
+async fn handle_voice_session(mut socket: WebSocket, state: AppState, voice_api_url: String, stt_url: String) {
     let session_id = Uuid::new_v4().to_string();
     let http = state.http_client.clone();
 
@@ -144,6 +146,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState, voice_api_
                                     &mut socket,
                                     &state,
                                     &http,
+                                    &stt_url,
                                     &voice_api_url,
                                     &session_id,
                                     speech_audio,
@@ -178,6 +181,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState, voice_api_
                                     &mut socket,
                                     &state,
                                     &http,
+                                    &stt_url,
                                     &voice_api_url,
                                     &session_id,
                                     speech_audio,
@@ -214,7 +218,8 @@ async fn process_utterance(
     socket: &mut WebSocket,
     state: &AppState,
     http: &reqwest::Client,
-    voice_api_url: &str,
+    stt_url: &str,
+    tts_url: &str,
     session_id: &str,
     audio_buffer: &[i16],
 ) {
@@ -232,7 +237,7 @@ async fn process_utterance(
         .collect();
 
     // ── STT ──────────────────────────────────────────────────────
-    let transcript = match call_stt(http, voice_api_url, &pcm_bytes).await {
+    let transcript = match call_stt(http, stt_url, &pcm_bytes).await {
         Ok(t) if !t.is_empty() => t,
         Ok(_) => return, // Empty transcript — nothing to do.
         Err(e) => {
@@ -279,7 +284,7 @@ async fn process_utterance(
         .await;
 
     // ── TTS ──────────────────────────────────────────────────────
-    match call_tts(http, voice_api_url, &response_text).await {
+    match call_tts(http, tts_url, &response_text).await {
         Ok((audio_bytes, sample_rate)) => {
             let _ = socket
                 .send(Message::Text(
@@ -338,10 +343,10 @@ fn rms_energy_i16(samples: &[i16]) -> f32 {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// ygg-voice HTTP client helpers
+// STT / TTS HTTP client helpers
 // ─────────────────────────────────────────────────────────────────
 
-/// Call ygg-voice `POST /api/v1/stt` with raw PCM bytes.
+/// Call the STT endpoint (`POST /api/v1/stt`) with raw PCM bytes.
 ///
 /// Returns the transcribed text on success.
 async fn call_stt(

@@ -343,19 +343,43 @@ pub(crate) fn build_session(model_path: &Path, device: &str, fallback: &str) -> 
         builder
     };
 
-    let session = builder
+    let mut builder = builder
         .with_intra_threads(4)
         .unwrap_or_else(|e| {
             tracing::warn!("failed to set intra threads: {e}, using default");
             e.recover()
-        })
-        .commit_from_file(model_path)
-        .map_err(|e| {
-            VoiceError::ModelLoad(format!(
+        });
+
+    // Try to compile the model. If it fails on GPU/NPU (e.g., unsupported ops),
+    // fall back to a plain CPU session.
+    let session = match builder.commit_from_file(model_path) {
+        Ok(s) => s,
+        Err(e) if device != "CPU" => {
+            tracing::warn!(
+                model = %model_path.display(),
+                device,
+                error = %e,
+                "model compilation failed on accelerator — retrying on CPU"
+            );
+            Session::builder()
+                .map_err(|e| VoiceError::ModelLoad(format!("session builder error: {e}")))?
+                .with_intra_threads(4)
+                .unwrap_or_else(|e| { e.recover() })
+                .commit_from_file(model_path)
+                .map_err(|e| {
+                    VoiceError::ModelLoad(format!(
+                        "failed to load model {} on CPU fallback: {e}",
+                        model_path.display()
+                    ))
+                })?
+        }
+        Err(e) => {
+            return Err(VoiceError::ModelLoad(format!(
                 "failed to load model {}: {e}",
                 model_path.display()
-            ))
-        })?;
+            )));
+        }
+    };
 
     info!(
         model = %model_path.display(),

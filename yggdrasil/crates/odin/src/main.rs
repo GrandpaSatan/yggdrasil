@@ -214,16 +214,17 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Voice streaming ─────────────────────────────────────────────
-    let voice_api_url = config
-        .voice
-        .as_ref()
-        .filter(|v| v.enabled)
-        .map(|v| v.voice_api_url.clone());
+    let voice_cfg = config.voice.as_ref().filter(|v| v.enabled);
+    let voice_api_url = voice_cfg.map(|v| v.voice_api_url.clone());
+    let stt_url = voice_cfg.and_then(|v| v.stt_url.clone());
 
     if let Some(ref url) = voice_api_url {
         tracing::info!(voice_api_url = %url, "voice streaming enabled");
     } else {
         tracing::info!("voice streaming disabled (no voice config or not enabled)");
+    }
+    if let Some(ref url) = stt_url {
+        tracing::info!(stt_url = %url, "dedicated STT endpoint configured");
     }
 
     // ── AppState ──────────────────────────────────────────────────
@@ -238,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
         session_store: session_store.clone(),
         cloud_pool,
         voice_api_url,
+        stt_url,
         config,
     };
 

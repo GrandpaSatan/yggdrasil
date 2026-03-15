@@ -114,6 +114,9 @@ metrics-exporter-prometheus = "0.16"
 # Systemd notification
 sd-notify = "0.4"
 
+# Base64 encoding
+base64 = "0.22"
+
 # Audio capture/playback
 cpal = "0.15"
 hound = "3.5"
