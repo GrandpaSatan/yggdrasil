@@ -147,8 +147,8 @@ fn maybe_summarize_session(
                 let req = OllamaChatRequest {
                     model,
                     messages: vec![
-                        crate::openai::OllamaMessage { role: "system".to_string(), content: system },
-                        crate::openai::OllamaMessage { role: "user".to_string(), content: prompt },
+                        crate::openai::OllamaMessage::new("system", system),
+                        crate::openai::OllamaMessage::new("user", prompt),
                     ],
                     stream: false,
                     options: Some(OllamaOptions {
@@ -159,6 +159,7 @@ fn maybe_summarize_session(
                         stop: None,
                     }),
                     think: Some(false),
+                    tools: None,
                 };
                 proxy::generate_chat(&http_client, &backend_url, req, &completion_id)
                     .await
@@ -168,8 +169,8 @@ fn maybe_summarize_session(
                 let req = crate::openai::ChatCompletionRequest {
                     model: None,
                     messages: vec![
-                        ChatMessage { role: Role::System, content: system },
-                        ChatMessage { role: Role::User, content: prompt },
+                        ChatMessage::new(Role::System, system),
+                        ChatMessage::new(Role::User, prompt),
                     ],
                     stream: false,
                     temperature: Some(0.3),
@@ -178,6 +179,8 @@ fn maybe_summarize_session(
                     stop: None,
                     session_id: None,
                     project_id: None,
+                    tools: None,
+                    tool_choice: None,
                 };
                 proxy::generate_chat_openai(&http_client, &backend_url, req)
                     .await
@@ -345,14 +348,8 @@ pub async fn process_chat_text(
     } else {
         // Fallback: no session yet — construct a minimal message list.
         vec![
-            ChatMessage {
-                role: Role::System,
-                content: system_prompt,
-            },
-            ChatMessage {
-                role: Role::User,
-                content: user_text.clone(),
-            },
+            ChatMessage::new(Role::System, system_prompt),
+            ChatMessage::new(Role::User, user_text.clone()),
         ]
     };
 
@@ -371,6 +368,8 @@ pub async fn process_chat_text(
                 stop: None,
                 session_id: None,
                 project_id: None,
+                tools: None,
+                tool_choice: None,
             };
 
             let gen_start = std::time::Instant::now();
@@ -401,70 +400,64 @@ pub async fn process_chat_text(
             }
         }
         BackendType::Ollama => {
-            let ollama_messages: Vec<crate::openai::OllamaMessage> = packed_messages
+            // ── Voice agent loop (tool-use) ───────────────────────
+            // Build tool definitions from the registry so the voice LLM
+            // can call ha_call_service, gaming, query_memory, etc.
+            let agent_config = state
+                .config
+                .agent
+                .clone()
+                .unwrap_or_default();
+
+            let allowed_tiers: Vec<crate::tool_registry::ToolTier> = agent_config
+                .default_tiers
                 .iter()
-                .map(|m| crate::openai::OllamaMessage {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
+                .filter_map(|t| match t.as_str() {
+                    "safe" => Some(crate::tool_registry::ToolTier::Safe),
+                    "restricted" => Some(crate::tool_registry::ToolTier::Restricted),
+                    _ => None,
                 })
                 .collect();
 
-            let stop = Some(vec![
-                "\n\nWhat ".to_string(),
-                "\n\nHow ".to_string(),
-                "\n\nWhy ".to_string(),
-                "\n\nCan ".to_string(),
-                "\n\nIs ".to_string(),
-                "\nConclusion".to_string(),
-                "\nIn conclusion".to_string(),
-                "\nIn summary".to_string(),
-                "\n\nLet me ".to_string(),
-                "\n\nFeel free".to_string(),
-                "\n\nI hope".to_string(),
-            ]);
-
-            let options = Some(OllamaOptions {
-                temperature: Some(0.7),
-                num_predict: None,
-                num_ctx: Some(backend_context_window as u64),
-                top_p: None,
-                stop,
-            });
-
-            let ollama_request = OllamaChatRequest {
-                model: decision.model.clone(),
-                messages: ollama_messages,
-                stream: false,
-                options,
-                think: Some(false), // Voice pipeline: skip thinking for low latency
-            };
-
-            let gen_start = std::time::Instant::now();
-            let local_result = proxy::generate_chat(
-                &state.http_client,
-                &decision.backend_url,
-                ollama_request,
-                &completion_id,
-            )
-            .await;
-            crate::metrics::record_llm_generation(
-                &decision.model,
-                gen_start.elapsed().as_secs_f64(),
+            let tool_defs = crate::tool_registry::to_tool_definitions(
+                &state.tool_registry,
+                &allowed_tiers,
             );
 
-            match local_result {
-                Ok(resp) => resp
-                    .choices
-                    .first()
-                    .map(|c| c.message.content.clone())
-                    .unwrap_or_default(),
-                Err(local_err) => try_cloud_fallback(
-                    &state.cloud_pool,
+            if !tool_defs.is_empty() {
+                // Agent loop path: LLM can call tools autonomously.
+                let gen_start = std::time::Instant::now();
+                let response = crate::agent::run_agent_loop(
+                    state,
                     &packed_messages,
-                    &decision.model,
-                    local_err,
+                    &tool_defs,
+                    &state.tool_registry,
+                    &allowed_tiers,
+                    &decision,
+                    &completion_id,
+                    &agent_config,
                 )
-                .await?,
+                .await;
+                crate::metrics::record_llm_generation(
+                    &decision.model,
+                    gen_start.elapsed().as_secs_f64(),
+                );
+
+                match response {
+                    Ok(resp) => resp
+                        .choices
+                        .first()
+                        .map(|c| c.message.content.clone())
+                        .unwrap_or_default(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "voice agent loop failed — falling back to plain chat");
+                        // Fall through to plain chat below on error.
+                        voice_plain_chat(state, &packed_messages, &decision, backend_context_window, &completion_id).await?
+                    }
+                }
+            } else {
+                // No tools configured — plain single-shot chat.
+                voice_plain_chat(state, &packed_messages, &decision, backend_context_window, &completion_id).await?
             }
         }
     };
@@ -776,7 +769,7 @@ pub async fn chat_handler(
                 first.content.push_str("\n\n");
                 first.content.push_str(&system_prompt);
             } else {
-                msgs.insert(0, ChatMessage { role: Role::System, content: system_prompt });
+                msgs.insert(0, ChatMessage::new(Role::System, system_prompt));
             }
         }
         msgs
@@ -800,6 +793,8 @@ pub async fn chat_handler(
                 stop: request.stop.clone(),
                 session_id: None, // Don't forward session_id to backend
                 project_id: None, // Don't forward project_id to backend
+                tools: None,
+                tool_choice: None,
             };
 
             if request.stream {
@@ -877,10 +872,7 @@ pub async fn chat_handler(
                                         model: format!("cloud-fallback:{}", decision.model),
                                         choices: vec![crate::openai::Choice {
                                             index: 0,
-                                            message: ChatMessage {
-                                                role: Role::Assistant,
-                                                content: cloud_content,
-                                            },
+                                            message: ChatMessage::new(Role::Assistant, cloud_content),
                                             finish_reason: Some("stop".to_string()),
                                         }],
                                         usage: None,
@@ -937,12 +929,79 @@ pub async fn chat_handler(
             }
         }
         BackendType::Ollama => {
+            // ── 10a. Agent loop (tool-use mode) ──────────────────
+            // When the request includes tool definitions, enter the autonomous
+            // agent loop instead of the standard single-shot dispatch.
+            if let Some(ref tools) = request.tools {
+                let agent_config = state
+                    .config
+                    .agent
+                    .clone()
+                    .unwrap_or_default();
+
+                // Parse allowed tiers from config.
+                let allowed_tiers: Vec<crate::tool_registry::ToolTier> = agent_config
+                    .default_tiers
+                    .iter()
+                    .filter_map(|t| match t.as_str() {
+                        "safe" => Some(crate::tool_registry::ToolTier::Safe),
+                        "restricted" => Some(crate::tool_registry::ToolTier::Restricted),
+                        _ => None,
+                    })
+                    .collect();
+
+                let registry = &state.tool_registry;
+
+                if request.stream {
+                    tracing::warn!("agent loop does not support streaming — falling back to non-streaming");
+                }
+
+                let response = crate::agent::run_agent_loop(
+                    &state,
+                    &packed_messages,
+                    tools,
+                    registry,
+                    &allowed_tiers,
+                    &decision,
+                    &completion_id,
+                    &agent_config,
+                )
+                .await?;
+
+                // Store final response in session + engram (reuse step 11 logic).
+                let effect = response
+                    .choices
+                    .first()
+                    .map(|c| c.message.content.clone())
+                    .unwrap_or_default();
+
+                state.session_store.append_messages(
+                    &session_id,
+                    &[CompactMessage::new("assistant", &effect)],
+                );
+
+                if state.config.mimir.store_on_completion {
+                    spawn_engram_store(
+                        state.http_client.clone(),
+                        state.mimir_url.clone(),
+                        last_user_message,
+                        effect,
+                    );
+                }
+
+                let mut resp = Json(response).into_response();
+                resp.headers_mut().insert(
+                    "x-session-id",
+                    axum::http::HeaderValue::from_str(&session_header)
+                        .expect("session_id is valid ASCII"),
+                );
+                return Ok(resp);
+            }
+
+            // ── 10b. Standard Ollama dispatch (no tools) ─────────
             let ollama_messages: Vec<crate::openai::OllamaMessage> = packed_messages
                 .iter()
-                .map(|m| crate::openai::OllamaMessage {
-                    role: m.role.to_string(),
-                    content: m.content.clone(),
-                })
+                .map(|m| crate::openai::OllamaMessage::new(m.role.to_string(), m.content.clone()))
                 .collect();
 
             // Default stop sequences prevent Qwen3 MoE from self-prompting
@@ -977,6 +1036,7 @@ pub async fn chat_handler(
                 stream: request.stream,
                 options,
                 think: None,
+                tools: None,
             };
 
             if request.stream {
@@ -1055,10 +1115,7 @@ pub async fn chat_handler(
                                         model: format!("cloud-fallback:{}", decision.model),
                                         choices: vec![crate::openai::Choice {
                                             index: 0,
-                                            message: ChatMessage {
-                                                role: Role::Assistant,
-                                                content: cloud_content,
-                                            },
+                                            message: ChatMessage::new(Role::Assistant, cloud_content),
                                             finish_reason: Some("stop".to_string()),
                                         }],
                                         usage: None,
@@ -1654,6 +1711,176 @@ pub async fn notify_handler(
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "HA not configured"})))
             .into_response()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Voice plain chat fallback
+// ─────────────────────────────────────────────────────────────────
+
+/// Single-shot Ollama chat without tools — used as fallback for voice when
+/// the agent loop is unavailable or fails.
+async fn voice_plain_chat(
+    state: &AppState,
+    packed_messages: &[ChatMessage],
+    decision: &crate::router::RoutingDecision,
+    backend_context_window: usize,
+    completion_id: &str,
+) -> Result<String, OdinError> {
+    let ollama_messages: Vec<crate::openai::OllamaMessage> = packed_messages
+        .iter()
+        .map(|m| crate::openai::OllamaMessage::new(m.role.to_string(), m.content.clone()))
+        .collect();
+
+    let stop = Some(vec![
+        "\n\nWhat ".to_string(),
+        "\n\nHow ".to_string(),
+        "\n\nWhy ".to_string(),
+        "\n\nCan ".to_string(),
+        "\n\nIs ".to_string(),
+        "\nConclusion".to_string(),
+        "\nIn conclusion".to_string(),
+        "\nIn summary".to_string(),
+        "\n\nLet me ".to_string(),
+        "\n\nFeel free".to_string(),
+        "\n\nI hope".to_string(),
+    ]);
+
+    let options = Some(OllamaOptions {
+        temperature: Some(0.7),
+        num_predict: None,
+        num_ctx: Some(backend_context_window as u64),
+        top_p: None,
+        stop,
+    });
+
+    let ollama_request = OllamaChatRequest {
+        model: decision.model.clone(),
+        messages: ollama_messages,
+        stream: false,
+        options,
+        think: Some(false),
+        tools: None,
+    };
+
+    let gen_start = std::time::Instant::now();
+    let local_result = proxy::generate_chat(
+        &state.http_client,
+        &decision.backend_url,
+        ollama_request,
+        completion_id,
+    )
+    .await;
+    crate::metrics::record_llm_generation(
+        &decision.model,
+        gen_start.elapsed().as_secs_f64(),
+    );
+
+    match local_result {
+        Ok(resp) => Ok(resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default()),
+        Err(local_err) => try_cloud_fallback(
+            &state.cloud_pool,
+            packed_messages,
+            &decision.model,
+            local_err,
+        )
+        .await,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Gaming VM orchestration
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct GamingRequest {
+    action: String,
+    vm_name: Option<String>,
+}
+
+pub async fn gaming_handler(
+    State(state): State<AppState>,
+    Json(req): Json<GamingRequest>,
+) -> impl IntoResponse {
+    let config = match state.gaming_config.as_ref() {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "Gaming is not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    match req.action.as_str() {
+        "status" | "list-gpus" => {
+            match ygg_gaming::orchestrator::status_all(config).await {
+                Ok(status) => match serde_json::to_value(&status) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": e.to_string()})),
+                    )
+                        .into_response(),
+                },
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response(),
+            }
+        }
+        "launch" => {
+            let Some(vm_name) = req.vm_name.as_deref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "vm_name is required for launch"})),
+                )
+                    .into_response();
+            };
+            match ygg_gaming::orchestrator::launch(config, vm_name).await {
+                Ok(result) => match serde_json::to_value(&result) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": e.to_string()})),
+                    )
+                        .into_response(),
+                },
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response(),
+            }
+        }
+        "stop" => {
+            let Some(vm_name) = req.vm_name.as_deref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "vm_name is required for stop"})),
+                )
+                    .into_response();
+            };
+            match ygg_gaming::orchestrator::stop(config, vm_name).await {
+                Ok(()) => Json(json!({"status": "stopped", "vm_name": vm_name})).into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response(),
+            }
+        }
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("Unknown action: {other}")})),
+        )
+            .into_response(),
     }
 }
 

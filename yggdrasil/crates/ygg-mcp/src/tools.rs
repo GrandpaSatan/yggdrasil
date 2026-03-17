@@ -295,6 +295,14 @@ pub struct DelegateParams {
     /// Constraints list.
     #[serde(default)]
     pub constraints: Option<Vec<String>>,
+    /// Enable agentic tool-use mode. When true, the local LLM can call
+    /// MCP tools autonomously via Odin's agent loop.
+    #[serde(default)]
+    pub agentic: Option<bool>,
+    /// Tool allowlist for agentic mode (tool names). When absent, all
+    /// safe-tier tools are available. Only used when `agentic` is true.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Parameters for the `diff_review` tool.
@@ -2777,6 +2785,20 @@ pub async fn delegate(
     }
 
     #[derive(Serialize)]
+    struct ToolDef {
+        #[serde(rename = "type")]
+        tool_type: String,
+        function: FnDef,
+    }
+
+    #[derive(Serialize)]
+    struct FnDef {
+        name: String,
+        description: String,
+        parameters: serde_json::Value,
+    }
+
+    #[derive(Serialize)]
     struct Req {
         model: Option<String>,
         messages: Vec<Message>,
@@ -2786,6 +2808,8 @@ pub async fn delegate(
         session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         project_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<ToolDef>>,
     }
 
     let token_based_secs = if config.generate_tok_per_sec > 0.0 {
@@ -2800,6 +2824,35 @@ pub async fn delegate(
         "{}/v1/chat/completions",
         config.odin_url.trim_end_matches('/')
     );
+
+    // Build tool definitions for agentic mode if requested.
+    let tools = if params.agentic.unwrap_or(false) {
+        // Use Odin's tool registry format. When allowed_tools is specified,
+        // only include those tools; otherwise include all safe-tier tools.
+        let all_safe_tools: Vec<(&str, &str, serde_json::Value)> = vec![
+            ("search_code", "Search the codebase using semantic and keyword search", serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"languages":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer"}},"required":["query"]})),
+            ("query_memory", "Search engram memory for relevant past context", serde_json::json!({"type":"object","properties":{"text":{"type":"string"},"limit":{"type":"integer"}},"required":["text"]})),
+            ("ast_analyze", "Look up code symbols using AST analysis", serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"filters":{"type":"array","items":{"type":"string"}}},"required":["query"]})),
+            ("impact_analysis", "Find all references to a symbol across the codebase", serde_json::json!({"type":"object","properties":{"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["symbol"]})),
+        ];
+        let filtered: Vec<ToolDef> = all_safe_tools
+            .into_iter()
+            .filter(|(name, _, _)| {
+                params.allowed_tools.as_ref().map_or(true, |list| list.iter().any(|t| t == name))
+            })
+            .map(|(name, desc, schema)| ToolDef {
+                tool_type: "function".to_string(),
+                function: FnDef {
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    parameters: schema,
+                },
+            })
+            .collect();
+        if filtered.is_empty() { None } else { Some(filtered) }
+    } else {
+        None
+    };
 
     let body = Req {
         model: params.model.clone(),
@@ -2817,6 +2870,7 @@ pub async fn delegate(
         max_tokens,
         session_id: session_id.map(|s| s.to_string()),
         project_id: project_id.map(|s| s.to_string()),
+        tools,
     };
 
     let resp = match client.post(&url).json(&body).timeout(timeout).send().await {
@@ -4702,6 +4756,227 @@ pub async fn config_sync(
             "Unknown action '{}'. Expected: push, pull, status",
             params.action
         )),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// gaming_tool — Cloud gaming VM orchestration
+// ─────────────────────────────────────────────────────────────────
+
+/// Parameters for the `gaming` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GamingParams {
+    /// Action: "status", "launch", "stop", "list-gpus".
+    pub action: String,
+    /// VM name (required for launch/stop).
+    #[serde(default)]
+    pub vm_name: Option<String>,
+}
+
+/// Manage cloud gaming VMs on Thor (Proxmox).
+#[instrument(skip(client, config), fields(action = %params.action))]
+pub async fn gaming(
+    client: &Client,
+    config: &McpServerConfig,
+    params: GamingParams,
+) -> CallToolResult {
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/api/v1/gaming",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    let body = serde_json::json!({
+        "action": params.action,
+        "vm_name": params.vm_name
+    });
+
+    let resp = match client.post(&url).json(&body).timeout(timeout).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!("Gaming request timed out after {}s", config.timeout_secs));
+        }
+        Err(e) => {
+            return tool_error(format!("Gaming service unreachable: {e}"));
+        }
+    };
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        tool_ok(text)
+    } else {
+        tool_error(format!("Gaming HTTP {status}: {text}"))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// deploy_tool — Build and deploy binaries to nodes
+// ─────────────────────────────────────────────────────────────────
+
+/// Parameters for the `deploy` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeployParams {
+    /// Action: "build", "deploy", "status".
+    pub action: String,
+    /// Service binary name: "odin", "mimir", "muninn", "huginn", etc.
+    pub service: String,
+    /// Target node: "munin", "hugin". Omit to deploy to both.
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
+/// Build and deploy Yggdrasil service binaries.
+#[instrument(skip(_client, config), fields(action = %params.action, service = %params.service))]
+pub async fn deploy(
+    _client: &Client,
+    config: &McpServerConfig,
+    params: DeployParams,
+) -> CallToolResult {
+    let workspace = match &config.workspace_path {
+        Some(p) => p.clone(),
+        None => return tool_error("workspace_path not configured — cannot run deploy"),
+    };
+
+    match params.action.as_str() {
+        "build" => {
+            let output = tokio::time::timeout(
+                Duration::from_secs(300),
+                tokio::process::Command::new("cargo")
+                    .args(["build", "--release", "--bin", &params.service])
+                    .current_dir(&workspace)
+                    .output(),
+            )
+            .await;
+
+            match output {
+                Ok(Ok(o)) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    tool_ok(format!("Build successful for `{}`.\n{stdout}", params.service))
+                }
+                Ok(Ok(o)) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    tool_error(format!("Build failed:\n{stderr}"))
+                }
+                Ok(Err(e)) => tool_error(format!("Failed to run cargo: {e}")),
+                Err(_) => tool_error("Build timed out after 300 seconds"),
+            }
+        }
+        "deploy" => {
+            let nodes: Vec<&str> = match params.node.as_deref() {
+                Some("munin") => vec!["munin"],
+                Some("hugin") => vec!["hugin"],
+                _ => vec!["munin", "hugin"],
+            };
+
+            let bin_path = format!("{}/target/release/{}", workspace, params.service);
+            let mut results = Vec::new();
+
+            for node in &nodes {
+                let dest = format!("yggdrasil@{}:/opt/yggdrasil/bin/{}", node, params.service);
+                let output = tokio::process::Command::new("rsync")
+                    .args(["-az", "--progress", &bin_path, &dest])
+                    .output()
+                    .await;
+
+                match output {
+                    Ok(o) if o.status.success() => {
+                        results.push(format!("{node}: deployed successfully"));
+                    }
+                    Ok(o) => {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        results.push(format!("{node}: rsync failed — {stderr}"));
+                    }
+                    Err(e) => {
+                        results.push(format!("{node}: rsync error — {e}"));
+                    }
+                }
+            }
+
+            tool_ok(results.join("\n"))
+        }
+        "status" => {
+            let bin = format!("{}/target/release/{}", workspace, params.service);
+            let exists = std::path::Path::new(&bin).exists();
+            if exists {
+                let meta = std::fs::metadata(&bin);
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                tool_ok(format!(
+                    "Binary `{}` exists ({:.1} MB)",
+                    params.service,
+                    size as f64 / 1_048_576.0
+                ))
+            } else {
+                tool_ok(format!("Binary `{}` not found — run build first", params.service))
+            }
+        }
+        _ => tool_error(format!(
+            "Unknown deploy action '{}'. Expected: build, deploy, status",
+            params.action
+        )),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// network_topology_tool — Mesh node and service discovery
+// ─────────────────────────────────────────────────────────────────
+
+/// Parameters for the `network_topology` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NetworkTopologyParams {
+    /// Action: "nodes" (list mesh nodes), "services" (list services), "health" (check all).
+    #[serde(default = "default_topology_action")]
+    pub action: Option<String>,
+    /// Filter by node name.
+    #[serde(default)]
+    pub node_name: Option<String>,
+}
+
+fn default_topology_action() -> Option<String> {
+    Some("nodes".to_string())
+}
+
+/// Query the mesh network topology — nodes, services, and health.
+#[instrument(skip(client, config))]
+pub async fn network_topology(
+    client: &Client,
+    config: &McpServerConfig,
+    params: NetworkTopologyParams,
+) -> CallToolResult {
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let action = params.action.as_deref().unwrap_or("nodes");
+    let base = config.odin_url.trim_end_matches('/');
+
+    let url = match action {
+        "nodes" => format!("{base}/api/v1/mesh/nodes"),
+        "services" => format!("{base}/api/v1/mesh/services"),
+        "health" => {
+            // Aggregate health from service_health endpoint.
+            return service_health(client, config, ServiceHealthParams { services: None }).await;
+        }
+        _ => {
+            return tool_error(format!(
+                "Unknown topology action '{action}'. Expected: nodes, services, health"
+            ));
+        }
+    };
+
+    let resp = match client.get(&url).timeout(timeout).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!("Topology request timed out after {}s", config.timeout_secs));
+        }
+        Err(e) => {
+            return tool_error(format!("Mesh service unreachable: {e}"));
+        }
+    };
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        tool_ok(format!("## Mesh {action}\n\n{text}"))
+    } else {
+        tool_error(format!("Mesh HTTP {status}: {text}"))
     }
 }
 

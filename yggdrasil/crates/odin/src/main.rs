@@ -144,6 +144,20 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("HA integration disabled (no ha config)");
     }
 
+    // ── Gaming config ─────────────────────────────────────────────
+    let gaming_config = std::env::var("GAMING_CONFIG_PATH").ok().and_then(|path| {
+        match ygg_gaming::config::load_config(std::path::Path::new(&path)) {
+            Ok(cfg) => {
+                tracing::info!(path = %path, "gaming orchestration enabled");
+                Some(cfg)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path, "failed to load gaming config — gaming disabled");
+                None
+            }
+        }
+    });
+
     // ── Cloud fallback pool ────────────────────────────────────────
     let cloud_pool = config.cloud.as_ref().map(|cloud_cfg| {
         use ygg_cloud::adapter::CloudAdapter;
@@ -206,6 +220,15 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Session store ──────────────────────────────────────────────
     let session_store = SessionStore::new(config.session.clone());
+
+    // Try to restore sessions from previous run.
+    let sessions_file = std::path::PathBuf::from("/var/lib/yggdrasil/odin-sessions.json");
+    if sessions_file.exists() {
+        match session_store.load_from_file(&sessions_file) {
+            Ok(n) => tracing::info!(loaded = n, "restored sessions from disk"),
+            Err(e) => tracing::warn!(error = %e, "failed to load sessions — starting fresh"),
+        }
+    }
     tracing::info!(
         max_sessions = config.session.max_sessions,
         ttl_secs = config.session.session_ttl_secs,
@@ -228,6 +251,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── AppState ──────────────────────────────────────────────────
+    let tool_registry = Arc::new(odin::tool_registry::build_registry());
+    tracing::info!(tools = tool_registry.len(), "agent tool registry built");
+
     let state = AppState {
         http_client,
         router,
@@ -241,6 +267,8 @@ async fn main() -> anyhow::Result<()> {
         voice_api_url,
         stt_url,
         config,
+        tool_registry,
+        gaming_config,
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -279,6 +307,8 @@ async fn main() -> anyhow::Result<()> {
         // Muninn transparent proxy endpoints (AST analysis).
         .route("/api/v1/symbols", post(handlers::proxy_symbols))
         .route("/api/v1/references", post(handlers::proxy_references))
+        // Gaming VM orchestration endpoint.
+        .route("/api/v1/gaming", post(handlers::gaming_handler))
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
         .route("/api/v1/webhook", post(ygg_ha::webhook::handle_webhook))
@@ -318,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %listen_addr, "odin ready");
 
     // ── Session reaper ────────────────────────────────────────────
-    let _reaper_handle = session::spawn_reaper(session_store);
+    let _reaper_handle = session::spawn_reaper(session_store.clone());
 
     // ── systemd ready notification ────────────────────────────────
     // Signal systemd that the service is ready. This unblocks any unit that
@@ -351,6 +381,15 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server error")?;
+
+    // Save sessions to disk before exiting.
+    let sessions_file = std::path::PathBuf::from("/var/lib/yggdrasil/odin-sessions.json");
+    if let Err(e) = std::fs::create_dir_all(sessions_file.parent().unwrap_or(std::path::Path::new("/"))) {
+        tracing::warn!(error = %e, "failed to create sessions directory");
+    }
+    if let Err(e) = session_store.save_to_file(&sessions_file) {
+        tracing::warn!(error = %e, "failed to save sessions on shutdown");
+    }
 
     let _ = wd_tx.send(true);
     tracing::info!("odin shutdown complete");

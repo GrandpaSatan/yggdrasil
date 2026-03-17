@@ -3,6 +3,10 @@ name = "ygg-gaming"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "ygg_gaming"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ygg-gaming"
 path = "src/main.rs"

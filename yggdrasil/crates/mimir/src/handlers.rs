@@ -21,9 +21,34 @@ use crate::{error::MimirError, sdr, state::AppState};
 // GET /health
 // ---------------------------------------------------------------------------
 
-/// Health check endpoint.  No database call — must return 200 in < 2ms.
-pub async fn health() -> StatusCode {
-    StatusCode::OK
+/// Health check endpoint.  Probes PG pool and Qdrant to detect degradation.
+pub async fn health(State(state): State<Arc<AppState>>) -> (StatusCode, Json<serde_json::Value>) {
+    let pg_ok = sqlx::query("SELECT 1")
+        .fetch_one(state.store.pool())
+        .await
+        .is_ok();
+
+    let qdrant_ok = state
+        .vectors
+        .ensure_collection("engrams_sdr")
+        .await
+        .is_ok();
+
+    let status = if pg_ok && qdrant_ok { "healthy" } else { "degraded" };
+    let code = if pg_ok && qdrant_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        code,
+        Json(serde_json::json!({
+            "status": status,
+            "postgresql": pg_ok,
+            "qdrant": qdrant_ok,
+        })),
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -335,7 +335,7 @@ mod tests {
         let similarity = results[0].1;
         // 1 bit out of 256 different → similarity = 255/256 ≈ 0.996
         assert!(similarity > 0.99, "expected > 0.99, got {similarity}");
-        assert!(similarity > 0.90, "novelty gate (threshold 0.90) should catch this");
+        assert!(similarity > 0.85, "novelty gate (threshold 0.85) should catch this");
     }
 
     #[test]
@@ -350,6 +350,6 @@ mod tests {
         assert_eq!(results.len(), 1);
         let similarity = results[0].1;
         // 128 bits differ → similarity = 0.5
-        assert!(similarity < 0.90, "distinct content should pass novelty gate, got {similarity}");
+        assert!(similarity < 0.85, "distinct content should pass novelty gate, got {similarity}");
     }
 }

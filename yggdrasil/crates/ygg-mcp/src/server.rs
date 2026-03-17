@@ -29,16 +29,19 @@ use crate::{
     resources::{RESOURCE_MEMORY_STATS, RESOURCE_MODELS, RESOURCE_SESSION_CONTEXT},
     tools::{
         AstAnalyzeParams, BuildCheckParams, ConfigSyncParams, ConfigVersionParams,
-        ContextBridgeParams, ContextOffloadParams, DelegateParams, DiffReviewParams, GenerateParams,
-        GetSprintHistoryParams, HaCallServiceParams, HaGenerateAutomationParams,
-        HaGetStatesParams, HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
-        MemoryIntersectParams, MemoryTimelineParams, QueryMemoryParams, SearchCodeParams,
-        ServiceHealthParams, StoreMemoryParams, TaskDelegateParams, TaskQueueParams,
+        ContextBridgeParams, ContextOffloadParams, DelegateParams, DeployParams,
+        DiffReviewParams, GamingParams, GenerateParams, GetSprintHistoryParams,
+        HaCallServiceParams, HaGenerateAutomationParams, HaGetStatesParams,
+        HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
+        MemoryIntersectParams, MemoryTimelineParams, NetworkTopologyParams,
+        QueryMemoryParams, SearchCodeParams, ServiceHealthParams, StoreMemoryParams,
+        TaskDelegateParams, TaskQueueParams,
         ast_analyze, build_check, config_sync, config_version, context_bridge,
-        context_offload, delegate, diff_review, generate, get_sprint_history, ha_call_service,
-        ha_generate_automation, ha_get_states, ha_list_entities, impact_analysis, list_models,
-        memory_graph, memory_intersect, memory_timeline, query_memory, search_code,
-        service_health, store_memory, task_delegate, task_queue,
+        context_offload, delegate, deploy, diff_review, gaming, generate,
+        get_sprint_history, ha_call_service, ha_generate_automation, ha_get_states,
+        ha_list_entities, impact_analysis, list_models, memory_graph, memory_intersect,
+        memory_timeline, network_topology, query_memory, search_code, service_health,
+        store_memory, task_delegate, task_queue,
     },
 };
 
@@ -616,6 +619,70 @@ impl YggdrasilServer {
         Parameters(params): Parameters<ConfigSyncParams>,
     ) -> String {
         let result = config_sync(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Manage cloud gaming VMs on Thor (Proxmox).
+    ///
+    /// Actions: "status" (show all VMs + GPUs), "launch" (start VM with GPU),
+    /// "stop" (shutdown VM + release GPU), "list-gpus" (show GPU pool).
+    #[tool(description = "Manage cloud gaming VMs on Thor (Proxmox). \
+        Actions: 'status' (show all VMs and GPU allocation), \
+        'launch' (start a VM with automatic GPU assignment — requires vm_name), \
+        'stop' (gracefully shutdown a VM and release its GPU — requires vm_name), \
+        'list-gpus' (show available GPUs in the pool).")]
+    async fn gaming_tool(
+        &self,
+        Parameters(params): Parameters<GamingParams>,
+    ) -> String {
+        let result = gaming(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Build and deploy Yggdrasil service binaries to remote nodes.
+    ///
+    /// Actions: "build" (cargo build --release), "deploy" (rsync to nodes),
+    /// "status" (check binary existence).
+    #[tool(description = "Build and deploy Yggdrasil service binaries. \
+        Actions: 'build' (compile the specified service with cargo build --release), \
+        'deploy' (rsync binary to target node — path watchers auto-restart the service), \
+        'status' (check if the binary exists locally). \
+        Requires 'service' (e.g. 'odin', 'mimir'). \
+        Optional 'node' (e.g. 'munin', 'hugin' — omit to deploy to both).")]
+    async fn deploy_tool(
+        &self,
+        Parameters(params): Parameters<DeployParams>,
+    ) -> String {
+        let result = deploy(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Query the mesh network topology — nodes, services, and health.
+    #[tool(description = "Query Yggdrasil mesh network topology. \
+        Actions: 'nodes' (list all discovered mesh nodes with status), \
+        'services' (list services running on each node), \
+        'health' (aggregate health check across all services). \
+        Optional 'node_name' to filter by a specific node.")]
+    async fn network_topology_tool(
+        &self,
+        Parameters(params): Parameters<NetworkTopologyParams>,
+    ) -> String {
+        let result = network_topology(&self.client, &self.config, params).await;
         result
             .content
             .into_iter()

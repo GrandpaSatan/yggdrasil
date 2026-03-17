@@ -241,7 +241,7 @@ impl Chunker {
         };
 
         let ts_lang: tree_sitter::Language = tree_sitter_md::LANGUAGE.into();
-        let query_src = "(atx_heading (inline) @heading_text) @heading";
+        let query_src = "(atx_heading heading_content: (inline) @heading_text) @heading";
         let query = tree_sitter::Query::new(&ts_lang, query_src)
             .map_err(|e| HuginnError::Parse(format!("markdown query error: {e}")))?;
 

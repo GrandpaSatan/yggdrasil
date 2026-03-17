@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GamingConfig {
     pub proxmox: ProxmoxConfig,
     pub thor_wol: WolConfig,
@@ -15,14 +15,14 @@ pub struct GamingConfig {
     pub pairing_source: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ProxmoxConfig {
     pub url: String,
     pub token: String,
     pub node: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct WolConfig {
     pub mac: String,
     #[serde(default = "default_broadcast")]
@@ -45,7 +45,7 @@ pub struct GpuEntry {
     pub priority: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VmEntry {
     pub name: String,
     pub vmid: u32,
@@ -72,7 +72,7 @@ fn default_hostpci_slot() -> String {
     "hostpci0".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TimeoutConfig {
     #[serde(default = "default_30")]
     pub wol_poll_secs: u64,

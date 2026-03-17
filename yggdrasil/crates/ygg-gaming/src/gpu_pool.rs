@@ -148,10 +148,10 @@ fn extract_hostpci_values(config: &serde_json::Value) -> Vec<String> {
 fn gpu_matches(gpu: &GpuEntry, hostpci_value: &str) -> bool {
     // Check for mapping= format first
     for part in hostpci_value.split(',') {
-        if let Some(mapping_id) = part.strip_prefix("mapping=") {
-            if mapping_id == gpu.mapping_id {
-                return true;
-            }
+        if let Some(mapping_id) = part.strip_prefix("mapping=")
+            && mapping_id == gpu.mapping_id
+        {
+            return true;
         }
     }
     // Fall back to raw PCI address matching

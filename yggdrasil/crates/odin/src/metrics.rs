@@ -67,6 +67,36 @@ pub fn record_llm_generation(model: &str, duration_secs: f64) {
     .record(duration_secs);
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Agent loop metrics
+// ─────────────────────────────────────────────────────────────────
+
+/// Record a single tool call in the agent loop.
+///
+/// `status` should be "ok", "error", or "timeout".
+pub fn record_agent_tool_call(tool_name: &str, status: &str) {
+    counter!(
+        "ygg_agent_tool_calls_total",
+        "tool" => tool_name.to_string(),
+        "status" => status.to_string()
+    )
+    .increment(1);
+}
+
+/// Increment the agent loop iteration counter.
+pub fn record_agent_iteration() {
+    counter!("ygg_agent_iterations_total").increment(1);
+}
+
+/// Record the total duration of an agent loop run.
+pub fn record_agent_loop_duration(duration_secs: f64) {
+    histogram!("ygg_agent_loop_duration_seconds").record(duration_secs);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Backend metrics
+// ─────────────────────────────────────────────────────────────────
+
 /// Increment the active-requests gauge for a backend.
 ///
 /// Call with `delta = 1` before dispatching to a backend and `delta = -1`

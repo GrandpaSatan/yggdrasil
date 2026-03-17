@@ -9,6 +9,7 @@
 /// `proxy.rs` can convert between the two formats without depending on any
 /// other Odin module.
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 // ─────────────────────────────────────────────────────────────────
 // OpenAI request types
@@ -21,6 +22,7 @@ pub enum Role {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 impl std::fmt::Display for Role {
@@ -29,6 +31,7 @@ impl std::fmt::Display for Role {
             Self::System => f.write_str("system"),
             Self::User => f.write_str("user"),
             Self::Assistant => f.write_str("assistant"),
+            Self::Tool => f.write_str("tool"),
         }
     }
 }
@@ -43,6 +46,29 @@ pub struct ChatMessage {
     pub role: Role,
     #[serde(deserialize_with = "deserialize_content")]
     pub content: String,
+    /// Tool calls requested by the assistant (present when finish_reason is "tool_calls").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// ID of the tool call this message is a response to (role must be Tool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl ChatMessage {
+    /// Create a plain text message (no tool calls).
+    pub fn new(role: Role, content: impl Into<String>) -> Self {
+        Self { role, content: content.into(), tool_calls: None, tool_call_id: None }
+    }
+
+    /// Create a tool-result message.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
 }
 
 /// Deserialize `content` from either a plain string or an array of parts.
@@ -113,10 +139,75 @@ pub struct ChatCompletionRequest {
     /// for this project as low-priority context, enabling cross-window continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Tool definitions for agentic tool-use mode.
+    /// When present, Odin enters an agent loop where the LLM can call tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// Controls how the model selects tools: "auto", "none", or a specific tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<JsonValue>,
 }
 
 fn default_stream() -> bool {
     true
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Tool-use types (OpenAI-compatible function calling)
+// ─────────────────────────────────────────────────────────────────
+
+/// An OpenAI-compatible tool definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    /// Always "function".
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// The function schema.
+    pub function: FunctionDefinition,
+}
+
+/// Schema for a callable function exposed to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDefinition {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema describing the function parameters.
+    pub parameters: JsonValue,
+}
+
+/// A tool call emitted by the model in an assistant message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Unique ID for this tool call (used to match with tool result).
+    pub id: String,
+    /// Always "function".
+    #[serde(rename = "type")]
+    pub call_type: String,
+    /// The function invocation details.
+    pub function: FunctionCallData,
+}
+
+/// Function name and arguments in a tool call (OpenAI format: arguments is a JSON string).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallData {
+    pub name: String,
+    /// JSON-encoded arguments string.
+    pub arguments: String,
+}
+
+/// Ollama-native tool call where arguments is a JSON object (not a string).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaToolCall {
+    /// The function invocation details.
+    pub function: OllamaFunctionCallData,
+}
+
+/// Ollama function call data — arguments is a JSON value, not a string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaFunctionCallData {
+    pub name: String,
+    /// Arguments as a JSON object (Ollama does not stringify these).
+    pub arguments: JsonValue,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -220,6 +311,9 @@ pub struct OllamaChatRequest {
     /// Disable Qwen3/3.5 chain-of-thought thinking mode for faster responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub think: Option<bool>,
+    /// Tool definitions for agentic mode (Ollama function calling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDefinition>>,
 }
 
 /// A single message in the Ollama format.
@@ -230,6 +324,16 @@ pub struct OllamaChatRequest {
 pub struct OllamaMessage {
     pub role: String,
     pub content: String,
+    /// Tool calls returned by Ollama when the model invokes functions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+impl OllamaMessage {
+    /// Create a plain text Ollama message (no tool calls).
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { role: role.into(), content: content.into(), tool_calls: None }
+    }
 }
 
 /// Ollama model-level generation options.

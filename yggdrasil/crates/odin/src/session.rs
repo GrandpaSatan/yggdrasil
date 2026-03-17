@@ -11,17 +11,19 @@
 /// Axum handler tasks. The background reaper task uses `retain()` which
 /// holds shard locks briefly.
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use ygg_domain::config::SessionConfig;
 use ygg_domain::sdr as sdr_core;
 
 /// A single message stored in session history.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactMessage {
     pub role: String,
     pub content: String,
@@ -41,7 +43,7 @@ impl CompactMessage {
 }
 
 /// A compressed summary of a completed (or summarized) session, stored per project.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub session_id: String,
     /// Number of turns the session had when summarized.
@@ -329,6 +331,113 @@ impl SessionStore {
                 tracing::debug!(session_id = %key, "evicted oldest session (at capacity)");
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Session persistence (JSON file)
+// ─────────────────────────────────────────────────────────────────
+
+/// Serializable snapshot of a session for file persistence.
+#[derive(Serialize, Deserialize)]
+struct SessionSnapshot {
+    id: String,
+    messages: Vec<CompactMessage>,
+    summary: Option<String>,
+    project_id: Option<String>,
+    session_sdr: [u64; 4],
+    sdr_message_count: usize,
+    /// Seconds since this session was last accessed (relative to save time).
+    idle_secs: u64,
+}
+
+/// Serializable snapshot of the full store.
+#[derive(Serialize, Deserialize)]
+struct StoreSnapshot {
+    sessions: Vec<SessionSnapshot>,
+    project_summaries: Vec<(String, Vec<SessionSummary>)>,
+}
+
+impl SessionStore {
+    /// Save all sessions to a JSON file.  Called on graceful shutdown.
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        let now = Instant::now();
+        let sessions: Vec<SessionSnapshot> = self
+            .sessions
+            .iter()
+            .map(|entry| {
+                let s = entry.value();
+                SessionSnapshot {
+                    id: s.id.clone(),
+                    messages: s.messages.clone(),
+                    summary: s.summary.clone(),
+                    project_id: s.project_id.clone(),
+                    session_sdr: s.session_sdr,
+                    sdr_message_count: s.sdr_message_count,
+                    idle_secs: now.duration_since(s.last_accessed).as_secs(),
+                }
+            })
+            .collect();
+
+        let project_summaries: Vec<(String, Vec<SessionSummary>)> = self
+            .project_sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().iter().cloned().collect()))
+            .collect();
+
+        let snapshot = StoreSnapshot {
+            sessions,
+            project_summaries,
+        };
+
+        let json = serde_json::to_string_pretty(&snapshot)
+            .map_err(std::io::Error::other)?;
+        std::fs::write(path, json)?;
+        tracing::info!(
+            path = %path.display(),
+            sessions = snapshot.sessions.len(),
+            "sessions saved to disk"
+        );
+        Ok(())
+    }
+
+    /// Load sessions from a JSON file.  Called on startup.
+    pub fn load_from_file(&self, path: &Path) -> std::io::Result<usize> {
+        let json = std::fs::read_to_string(path)?;
+        let snapshot: StoreSnapshot = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let now = Instant::now();
+        let ttl = self.config.session_ttl_secs;
+        let mut loaded = 0;
+
+        for snap in snapshot.sessions {
+            // Skip sessions that would be expired.
+            if snap.idle_secs >= ttl {
+                continue;
+            }
+
+            let session = ConversationSession {
+                id: snap.id.clone(),
+                messages: snap.messages,
+                summary: snap.summary,
+                project_id: snap.project_id,
+                created_at: now,
+                last_accessed: now - std::time::Duration::from_secs(snap.idle_secs),
+                session_sdr: snap.session_sdr,
+                sdr_message_count: snap.sdr_message_count,
+            };
+            self.sessions.insert(snap.id, session);
+            loaded += 1;
+        }
+
+        for (project_id, summaries) in snapshot.project_summaries {
+            self.project_sessions
+                .insert(project_id, VecDeque::from(summaries));
+        }
+
+        tracing::info!(loaded, path = %path.display(), "sessions loaded from disk");
+        Ok(loaded)
     }
 }
 

@@ -183,6 +183,8 @@ mod tests {
             ha: None,
             session: SessionConfig::default(),
             cloud: None,
+            voice: None,
+            agent: None,
         }
     }
 
@@ -246,7 +248,7 @@ mod tests {
             sdr: SdrConfig {
                 dim_bits: 256,
                 model_dir: "/opt/models".to_string(),
-                dedup_threshold: 0.90,
+                dedup_threshold: 0.85,
             },
             tiers: TierConfig {
                 recall_capacity: 1000,

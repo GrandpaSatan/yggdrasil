@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tracing::{info, warn};
 use ygg_energy::proxmox::ProxmoxClient;
 use ygg_energy::wol;
@@ -9,7 +10,7 @@ use crate::gpu_pool;
 use crate::proxmox_ext;
 
 /// Result of a VM launch operation.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum LaunchResult {
     Started {
         vm_name: String,
@@ -27,13 +28,13 @@ pub enum LaunchResult {
 }
 
 /// Status of the entire system.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SystemStatus {
     pub thor_online: bool,
     pub vms: Vec<VmStatusEntry>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct VmStatusEntry {
     pub name: String,
     pub vmid: u32,
@@ -179,8 +180,8 @@ pub async fn launch(
         (&config.pairing_source, &vm.ip, &vm.ssh_user)
     {
         info!(vm = vm_name, "deploying Sunshine pairing data");
-        // Wait a bit for SSH to come up
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        // Wait for VM's network + SSH to come up after boot
+        tokio::time::sleep(Duration::from_secs(30)).await;
         if let Err(e) = deploy_pairing(pairing_src, ssh_user, ip).await {
             warn!(vm = vm_name, error = %e, "failed to deploy pairing (non-fatal)");
         }

@@ -24,6 +24,10 @@ pub struct OdinConfig {
     /// ygg-voice's HTTP API.
     #[serde(default)]
     pub voice: Option<VoiceStreamConfig>,
+    /// Agent loop configuration for autonomous LLM tool-use.
+    /// When present, Odin can run an agent loop where local LLMs call MCP tools.
+    #[serde(default)]
+    pub agent: Option<AgentLoopConfig>,
 }
 
 /// Cloud provider configuration for fallback routing through ygg-cloud.
@@ -77,6 +81,48 @@ pub struct VoiceStreamConfig {
 fn default_voice_api_url() -> String {
     "http://localhost:9095".to_string()
 }
+
+/// Configuration for Odin's autonomous agent loop.
+///
+/// When a `/v1/chat/completions` request includes a `tools` array, Odin enters
+/// an agent loop: send to Ollama with tool definitions, execute tool calls,
+/// feed results back, repeat until the model produces text or limits are hit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentLoopConfig {
+    /// Maximum reasoning iterations before forcing a text response.
+    #[serde(default = "default_agent_max_iterations")]
+    pub max_iterations: usize,
+    /// Absolute cap on tool calls across all iterations.
+    #[serde(default = "default_agent_max_tool_calls")]
+    pub max_tool_calls_total: usize,
+    /// Timeout in seconds for each individual tool HTTP call.
+    #[serde(default = "default_agent_tool_timeout")]
+    pub tool_timeout_secs: u64,
+    /// Total timeout in seconds for the entire agent loop.
+    #[serde(default = "default_agent_total_timeout")]
+    pub total_timeout_secs: u64,
+    /// Default tool tiers allowed: "safe", "restricted". Blocked is never allowed.
+    #[serde(default = "default_agent_tiers")]
+    pub default_tiers: Vec<String>,
+}
+
+impl Default for AgentLoopConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: default_agent_max_iterations(),
+            max_tool_calls_total: default_agent_max_tool_calls(),
+            tool_timeout_secs: default_agent_tool_timeout(),
+            total_timeout_secs: default_agent_total_timeout(),
+            default_tiers: default_agent_tiers(),
+        }
+    }
+}
+
+fn default_agent_max_iterations() -> usize { 10 }
+fn default_agent_max_tool_calls() -> usize { 30 }
+fn default_agent_tool_timeout() -> u64 { 30 }
+fn default_agent_total_timeout() -> u64 { 300 }
+fn default_agent_tiers() -> Vec<String> { vec!["safe".to_string()] }
 
 /// Session state configuration for Odin's in-memory conversation store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,14 +275,14 @@ pub struct SdrConfig {
     pub dim_bits: usize,
     /// Path to the ONNX model directory (contains model.onnx + tokenizer.json).
     pub model_dir: String,
-    /// Hamming similarity threshold for semantic dedup on store (default 0.90).
+    /// Hamming similarity threshold for semantic dedup on store (default 0.85).
     /// Set to 1.0 to disable (only exact SDR matches rejected).
     #[serde(default = "default_dedup_threshold")]
     pub dedup_threshold: f64,
 }
 
 fn default_dedup_threshold() -> f64 {
-    0.90
+    0.85
 }
 
 fn default_sdr_dim_bits() -> usize {

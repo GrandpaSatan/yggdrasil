@@ -13,6 +13,7 @@ use ygg_ha::HaClient;
 
 use crate::router::SemanticRouter;
 use crate::session::SessionStore;
+use crate::tool_registry::ToolSpec;
 
 /// Per-backend runtime state: URL, declared model list, and concurrency gate.
 #[derive(Clone)]
@@ -120,4 +121,8 @@ pub struct AppState {
     /// Dedicated STT service URL (e.g. "http://localhost:9097" for Qwen3-ASR).
     /// When `None`, STT calls go to `voice_api_url`.
     pub stt_url: Option<String>,
+    /// Static tool registry for the agent loop.  Built once at startup.
+    pub tool_registry: Arc<Vec<ToolSpec>>,
+    /// Optional gaming orchestration config.  Present when `GAMING_CONFIG_PATH` is set.
+    pub gaming_config: Option<ygg_gaming::config::GamingConfig>,
 }

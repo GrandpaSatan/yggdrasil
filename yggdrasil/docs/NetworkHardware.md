@@ -2,14 +2,15 @@
 
 ## Munin (Primary Deployment Target for Mimir, Odin)
 
-- **IP:** `<munin-ip>`
+- **IP:** `<munin-ip>` (VLAN 65 — compute)
 - **OS:** Ubuntu Server 25.10
 - **CPU:** Intel Core Ultra 185H (6P + 8E + 2LP cores, 16 threads)
-- **GPU:** Intel ARC iGPU (used by Ollama)
+- **iGPU:** Intel ARC Graphics (Xe-LPG, NO XMX — not suitable for LLM inference)
+- **eGPU:** AMD Radeon RX 9060 XT 16GB (USB4/Thunderbolt, RDNA 4)
 - **RAM:** 48GB DDR5
 - **Network:** 2x 5Gb Ethernet
-- **Runs:** Ollama IPEX-LLM (qwen3-coder:30b-a3b-q4_K_M), Mimir (port 9090), Odin (port 8080)
-- **SSH:** key-based authentication required (`your-user@munin`)
+- **Runs:** Odin (port 8080), Mimir (port 9090), MCP Remote (port 9093), Sentinel, ygg-node
+- **SSH:** key-based authentication required (`yggdrasil@munin`)
 
 ## Hades (Database Host)
 

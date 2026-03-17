@@ -55,20 +55,14 @@ impl ContextBudget {
         // ── 1. System prompt (always) ────────────────────────────────
         let system_tokens = system_prompt.len() / 4;
         used += system_tokens;
-        output.push(ChatMessage {
-            role: Role::System,
-            content: system_prompt.to_string(),
-        });
+        output.push(ChatMessage::new(Role::System, system_prompt));
 
         // ── 2. Session summary (if exists) ───────────────────────────
         if let Some(ref summary) = session.summary {
             let summary_tokens = summary.len() / 4;
             if used + summary_tokens < budget {
                 used += summary_tokens;
-                output.push(ChatMessage {
-                    role: Role::System,
-                    content: format!("Summary of earlier conversation:\n{summary}"),
-                });
+                output.push(ChatMessage::new(Role::System, format!("Summary of earlier conversation:\n{summary}")));
             }
         }
 
@@ -82,10 +76,7 @@ impl ContextBudget {
         let mut recent_msgs: Vec<ChatMessage> = Vec::new();
         for msg in recent {
             recent_tokens += msg.tokens_estimate;
-            recent_msgs.push(ChatMessage {
-                role: parse_role(&msg.role),
-                content: msg.content.clone(),
-            });
+            recent_msgs.push(ChatMessage::new(parse_role(&msg.role), &msg.content));
         }
 
         // ── 4. RAG code context ──────────────────────────────────────
@@ -94,10 +85,7 @@ impl ContextBudget {
             let rag_tokens = rag.len() / 4;
             if used + rag_tokens + recent_tokens < budget {
                 used += rag_tokens;
-                output.push(ChatMessage {
-                    role: Role::System,
-                    content: rag.to_string(),
-                });
+                output.push(ChatMessage::new(Role::System, rag));
             }
             // If RAG doesn't fit, skip it — recent history is more important.
         }
@@ -118,10 +106,7 @@ impl ContextBudget {
                 } else {
                     prev
                 };
-                output.push(ChatMessage {
-                    role: Role::System,
-                    content: content.to_string(),
-                });
+                output.push(ChatMessage::new(Role::System, content));
             }
         }
 
@@ -132,10 +117,7 @@ impl ContextBudget {
                 break;
             }
             used += msg.tokens_estimate;
-            output.push(ChatMessage {
-                role: parse_role(&msg.role),
-                content: msg.content.clone(),
-            });
+            output.push(ChatMessage::new(parse_role(&msg.role), &msg.content));
         }
 
         // ── 6. Append recent history ─────────────────────────────────

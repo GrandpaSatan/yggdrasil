@@ -9,6 +9,9 @@
 ///   proxy         — Ollama HTTP client: streaming and non-streaming chat, model listing
 ///   rag           — Parallel context fetch from Muninn + Mimir, system prompt assembly
 ///   handlers      — Axum route handlers for all public endpoints
+///   tool_registry — Static registry of MCP tools for agent loop
+///   agent         — Autonomous agent loop for local LLM tool-use
+pub mod agent;
 pub mod context;
 pub mod error;
 pub mod handlers;
@@ -20,4 +23,5 @@ pub mod rag;
 pub mod router;
 pub mod session;
 pub mod state;
+pub mod tool_registry;
 pub mod voice_ws;

@@ -2480,6 +2480,7 @@ dependencies = [
  "ygg-cloud",
  "ygg-config",
  "ygg-domain",
+ "ygg-gaming",
  "ygg-ha",
 ]
 

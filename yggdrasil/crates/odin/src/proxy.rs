@@ -38,7 +38,7 @@ pub struct StreamHandle<S> {
 // ─────────────────────────────────────────────────────────────────
 
 /// Current Unix timestamp in seconds.
-fn unix_now() -> u64 {
+pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -257,12 +257,73 @@ pub async fn generate_chat(
         model: stream_line.model,
         choices: vec![Choice {
             index: 0,
-            message: crate::openai::ChatMessage {
-                role: Role::Assistant,
-                content: stream_line.message.content,
-            },
+            message: crate::openai::ChatMessage::new(Role::Assistant, stream_line.message.content),
             finish_reason: Some("stop".to_string()),
         }],
+        usage,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Non-streaming chat with tool-call support (agent loop)
+// ─────────────────────────────────────────────────────────────────
+
+/// Response from Ollama that preserves tool_calls for the agent loop.
+pub struct OllamaAgentResponse {
+    /// The raw Ollama message (may contain tool_calls).
+    pub message: crate::openai::OllamaMessage,
+    pub model: String,
+    pub done: bool,
+    pub usage: Option<Usage>,
+}
+
+/// Non-streaming chat that preserves tool_calls from the Ollama response.
+///
+/// Unlike `generate_chat`, this does NOT flatten the response into
+/// `ChatCompletionResponse`.  The agent loop needs the raw `OllamaMessage`
+/// to detect tool calls and feed results back.
+pub async fn generate_chat_with_tools(
+    client: &reqwest::Client,
+    backend_url: &str,
+    request: OllamaChatRequest,
+) -> Result<OllamaAgentResponse, OdinError> {
+    let url = format!("{backend_url}/api/chat");
+
+    tracing::debug!(url = %url, model = %request.model, "agent chat request to Ollama (with tools)");
+
+    let response = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("ollama connection failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(OdinError::Upstream(format!(
+            "ollama returned {status}: {body}"
+        )));
+    }
+
+    let stream_line: OllamaStreamLine = response
+        .json()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("failed to parse Ollama response: {e}")))?;
+
+    let usage = match (stream_line.prompt_eval_count, stream_line.eval_count) {
+        (Some(prompt), Some(completion)) => Some(Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+        }),
+        _ => None,
+    };
+
+    Ok(OllamaAgentResponse {
+        message: stream_line.message,
+        model: stream_line.model,
+        done: stream_line.done,
         usage,
     })
 }

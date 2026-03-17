@@ -118,7 +118,7 @@ async fn main() {
                 if status.vms.is_empty() {
                     println!("  (no VM data — Thor may be offline)");
                 } else {
-                    println!("{:<12} {:>6} {:<10} {:<20} {}", "VM", "VMID", "Status", "GPU", "IP");
+                    println!("{:<12} {:>6} {:<10} {:<20} IP", "VM", "VMID", "Status", "GPU");
                     println!("{}", "-".repeat(65));
                     for vm in &status.vms {
                         println!(
@@ -192,7 +192,7 @@ async fn main() {
             );
             match gpu_pool::gpu_status_all(&cfg.gpus, &client, &cfg.proxmox.node).await {
                 Ok(statuses) => {
-                    println!("{:<20} {:<16} {:>5} {:<8} {}", "GPU", "PCI Address", "IOMMU", "Vendor", "Status");
+                    println!("{:<20} {:<16} {:>5} {:<8} Status", "GPU", "PCI Address", "IOMMU", "Vendor");
                     println!("{}", "-".repeat(70));
                     for s in &statuses {
                         let status = match &s.assigned_to {
