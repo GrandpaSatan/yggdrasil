@@ -29,6 +29,21 @@ impl ProxmoxClient {
         }
     }
 
+    /// Access the base URL (e.g. "https://<thor-ip>:8006").
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Access the PVE API token string.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Access the underlying HTTP client.
+    pub fn http_client(&self) -> &Client {
+        &self.client
+    }
+
     /// Start a QEMU VM on the specified Proxmox node.
     pub async fn start_vm(&self, node: &str, vmid: u32) -> Result<(), ProxmoxError> {
         let url = format!(
