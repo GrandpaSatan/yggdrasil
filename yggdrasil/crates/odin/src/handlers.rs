@@ -158,6 +158,7 @@ fn maybe_summarize_session(
                         top_p: None,
                         stop: None,
                     }),
+                    think: Some(false),
                 };
                 proxy::generate_chat(&http_client, &backend_url, req, &completion_id)
                     .await
@@ -435,6 +436,7 @@ pub async fn process_chat_text(
                 messages: ollama_messages,
                 stream: false,
                 options,
+                think: Some(false), // Voice pipeline: skip thinking for low latency
             };
 
             let gen_start = std::time::Instant::now();
@@ -974,6 +976,7 @@ pub async fn chat_handler(
                 messages: ollama_messages,
                 stream: request.stream,
                 options,
+                think: None,
             };
 
             if request.stream {

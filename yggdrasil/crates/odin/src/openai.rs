@@ -217,6 +217,9 @@ pub struct OllamaChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<OllamaOptions>,
+    /// Disable Qwen3/3.5 chain-of-thought thinking mode for faster responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub think: Option<bool>,
 }
 
 /// A single message in the Ollama format.
