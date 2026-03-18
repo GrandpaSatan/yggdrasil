@@ -47,6 +47,7 @@
   let audioCtx = null;
   let scriptNode = null;
   let active = false;
+  let sessionId = null;
   let playbackCtx = null;
   let audioChunks = [];
   let audioSampleRate = 24000;
@@ -71,7 +72,10 @@
     ws = new WebSocket(proto + '//' + location.host + '/v1/voice');
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = function() { setStatus('connected', 'connected'); micBtn.disabled = false; };
+    ws.onopen = function() {
+      setStatus('connected', 'connected'); micBtn.disabled = false;
+      if (sessionId) { ws.send(JSON.stringify({type: 'resume', session_id: sessionId})); }
+    };
     ws.onclose = function() { setStatus('disconnected', ''); micBtn.disabled = true; stopMic(); setTimeout(connect, 3000); };
     ws.onerror = function() { setStatus('error', ''); };
 
@@ -84,7 +88,8 @@
       try {
         const msg = JSON.parse(ev.data);
         switch (msg.type) {
-          case 'ready': addLog('session', msg.session_id); break;
+          case 'ready': sessionId = msg.session_id; addLog('session', msg.session_id); break;
+          case 'resumed': sessionId = msg.session_id; addLog('session', 'resumed ' + msg.session_id); break;
           case 'listening': setStatus('listening...', 'listening'); break;
           case 'processing': setStatus('processing...', 'processing'); break;
           case 'transcript': addLog('you', msg.text, 'transcript'); break;

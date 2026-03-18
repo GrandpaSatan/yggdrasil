@@ -154,7 +154,7 @@ fn maybe_summarize_session(
                     options: Some(OllamaOptions {
                         temperature: Some(0.3),
                         num_predict: Some(512),
-                        num_ctx: None,
+                        num_ctx: Some(context_budget as u64),
                         top_p: None,
                         stop: None,
                     }),
@@ -330,13 +330,13 @@ pub async fn process_chat_text(
 
     // ── 6. Pack context with session history ──────────────────────
     let backend_context_window = backend_state.context_window;
-    let system_prompt = rag::build_system_prompt(&rag_context, &decision.intent);
+    // Voice pipeline uses the "voice" persona (Alfred) regardless of routed intent.
+    let system_prompt = rag::build_system_prompt(&rag_context, "voice");
     let session_snapshot = state.session_store.get_session(session_id);
 
     let packed_messages = if let Some(ref session) = session_snapshot {
         let budget = ContextBudget {
-            total_budget: backend_context_window
-                .saturating_sub(state.config.session.generation_reserve),
+            total_budget: backend_context_window,
             generation_reserve: state.config.session.generation_reserve,
         };
         budget.pack(
@@ -348,7 +348,7 @@ pub async fn process_chat_text(
     } else {
         // Fallback: no session yet — construct a minimal message list.
         vec![
-            ChatMessage::new(Role::System, system_prompt),
+            ChatMessage::new(Role::System, &system_prompt),
             ChatMessage::new(Role::User, user_text.clone()),
         ]
     };
@@ -419,12 +419,35 @@ pub async fn process_chat_text(
                 })
                 .collect();
 
-            let tool_defs = crate::tool_registry::to_tool_definitions(
+            // All tools available — Odin is the single gateway for all LLM traffic.
+            let tool_defs: Vec<_> = crate::tool_registry::to_tool_definitions(
                 &state.tool_registry,
                 &allowed_tiers,
             );
 
             if !tool_defs.is_empty() {
+                // Repack with tool token reserve — tool schemas consume context
+                // window space in Ollama but aren't tracked by ContextBudget.
+                // Estimate dynamically from the actual tool definitions.
+                let tool_token_reserve = serde_json::to_string(&tool_defs)
+                    .map(|s| s.len() / 4)
+                    .unwrap_or(2000);
+                let packed_messages = if let Some(ref session) = session_snapshot {
+                    let budget = ContextBudget {
+                        total_budget: backend_context_window
+                            .saturating_sub(tool_token_reserve),
+                        generation_reserve: state.config.session.generation_reserve,
+                    };
+                    budget.pack(
+                        session,
+                        rag_context.code_context.as_deref(),
+                        &system_prompt,
+                        None,
+                    )
+                } else {
+                    packed_messages.clone()
+                };
+
                 // Agent loop path: LLM can call tools autonomously.
                 let gen_start = std::time::Instant::now();
                 let response = crate::agent::run_agent_loop(
@@ -436,6 +459,7 @@ pub async fn process_chat_text(
                     &decision,
                     &completion_id,
                     &agent_config,
+                    backend_context_window,
                 )
                 .await;
                 crate::metrics::record_llm_generation(
@@ -757,7 +781,7 @@ pub async fn chat_handler(
 
     let packed_messages = if let Some(ref session) = session_snapshot {
         let budget = ContextBudget {
-            total_budget: backend_context_window.saturating_sub(state.config.session.generation_reserve),
+            total_budget: backend_context_window,
             generation_reserve: state.config.session.generation_reserve,
         };
         budget.pack(session, rag_context.code_context.as_deref(), &system_prompt, previous_sessions_text.as_deref())
@@ -965,6 +989,7 @@ pub async fn chat_handler(
                     &decision,
                     &completion_id,
                     &agent_config,
+                    backend_context_window,
                 )
                 .await?;
 

@@ -35,6 +35,7 @@ pub async fn run_agent_loop(
     decision: &RoutingDecision,
     completion_id: &str,
     config: &AgentLoopConfig,
+    backend_context_window: usize,
 ) -> Result<ChatCompletionResponse, OdinError> {
     // Convert input ChatMessages → OllamaMessages for the conversation.
     let mut conversation: Vec<OllamaMessage> = messages
@@ -81,6 +82,7 @@ pub async fn run_agent_loop(
             &decision.model,
             &conversation,
             Some(&filtered_tools),
+            Some(backend_context_window as u64),
         );
 
         let resp = proxy::generate_chat_with_tools(
@@ -203,7 +205,7 @@ pub async fn run_agent_loop(
         "max iterations reached, forcing final text response"
     );
 
-    let final_request = build_ollama_request(&decision.model, &conversation, None);
+    let final_request = build_ollama_request(&decision.model, &conversation, None, Some(backend_context_window as u64));
     let final_resp = proxy::generate_chat_with_tools(
         &state.http_client,
         &decision.backend_url,
@@ -230,6 +232,7 @@ fn build_ollama_request(
     model: &str,
     messages: &[OllamaMessage],
     tools: Option<&[ToolDefinition]>,
+    num_ctx: Option<u64>,
 ) -> OllamaChatRequest {
     OllamaChatRequest {
         model: model.to_string(),
@@ -238,11 +241,11 @@ fn build_ollama_request(
         options: Some(OllamaOptions {
             temperature: Some(0.3), // Lower temp for tool-use precision
             num_predict: None,
-            num_ctx: None,
+            num_ctx,
             top_p: None,
             stop: None,
         }),
-        think: None,
+        think: Some(false),
         tools: tools.map(|t| t.to_vec()),
     }
 }

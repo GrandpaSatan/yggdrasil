@@ -240,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
     let voice_cfg = config.voice.as_ref().filter(|v| v.enabled);
     let voice_api_url = voice_cfg.map(|v| v.voice_api_url.clone());
     let stt_url = voice_cfg.and_then(|v| v.stt_url.clone());
+    let omni_url = voice_cfg.and_then(|v| v.omni_url.clone());
 
     if let Some(ref url) = voice_api_url {
         tracing::info!(voice_api_url = %url, "voice streaming enabled");
@@ -248,6 +249,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(ref url) = stt_url {
         tracing::info!(stt_url = %url, "dedicated STT endpoint configured");
+    }
+    if let Some(ref url) = omni_url {
+        tracing::info!(omni_url = %url, "MiniCPM-o omni endpoint configured");
     }
 
     // ── AppState ──────────────────────────────────────────────────
@@ -266,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
         cloud_pool,
         voice_api_url,
         stt_url,
+        omni_url,
         config,
         tool_registry,
         gaming_config,

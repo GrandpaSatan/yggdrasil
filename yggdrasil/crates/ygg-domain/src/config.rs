@@ -76,6 +76,11 @@ pub struct VoiceStreamConfig {
     /// When absent, STT calls go to `voice_api_url` (ygg-voice serves both).
     #[serde(default)]
     pub stt_url: Option<String>,
+    /// Base URL for the MiniCPM-o omni server (e.g. "http://localhost:9098").
+    /// When set, voice pipeline uses this for STT + LLM reasoning instead of
+    /// the separate STT → Ollama agent loop chain. TTS still uses voice_api_url.
+    #[serde(default)]
+    pub omni_url: Option<String>,
 }
 
 fn default_voice_api_url() -> String {

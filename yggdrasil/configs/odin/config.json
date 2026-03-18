@@ -6,7 +6,7 @@
       "name": "munin",
       "url": "http://localhost:11434",
       "backend_type": "ollama",
-      "models": ["qwen3-coder:30b-a3b-q4_K_M"],
+      "models": ["qwen3.5:9b", "qwen3.5:4b"],
       "max_concurrent": 2,
       "context_window": 16384
     },
@@ -20,20 +20,27 @@
     }
   ],
   "routing": {
-    "default_model": "qwen3-coder:30b-a3b-q4_K_M",
-    "default_backend": "hugin",
+    "default_model": "qwen3.5:9b",
+    "default_backend": "munin",
     "rules": [
       {
         "intent": "coding",
         "model": "qwen3-coder:30b-a3b-q4_K_M",
-        "backend": "munin"
+        "backend": "hugin"
       },
       {
         "intent": "home_automation",
-        "model": "qwen3-coder:30b-a3b-q4_K_M",
-        "backend": "hugin"
+        "model": "qwen3.5:9b",
+        "backend": "munin"
       }
     ]
+  },
+  "agent": {
+    "max_iterations": 5,
+    "max_tool_calls_total": 10,
+    "tool_timeout_secs": 15,
+    "total_timeout_secs": 60,
+    "default_tiers": ["safe", "restricted"]
   },
   "mimir": {
     "url": "http://localhost:9090",
