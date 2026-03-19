@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::audio::{self, AudioCapture, AudioPlayer};
@@ -53,6 +54,9 @@ pub struct VoicePipeline {
     busy: Arc<AtomicBool>,
     wake_word: String,
     sample_rate: u32,
+    /// Receiver for voice alerts from external services (e.g. Sentinel anomalies).
+    /// Wrapped in Mutex because `run()` takes `&self`.
+    alert_rx: Mutex<tokio::sync::mpsc::Receiver<String>>,
 }
 
 impl VoicePipeline {
@@ -69,6 +73,7 @@ impl VoicePipeline {
         busy_sound: Option<PathBuf>,
         wake_word: String,
         sample_rate: u32,
+        alert_rx: tokio::sync::mpsc::Receiver<String>,
     ) -> Self {
         Self {
             capture,
@@ -83,6 +88,7 @@ impl VoicePipeline {
             busy: Arc::new(AtomicBool::new(false)),
             wake_word,
             sample_rate,
+            alert_rx: Mutex::new(alert_rx),
         }
     }
 
@@ -105,6 +111,19 @@ impl VoicePipeline {
 
             match state {
                 PipelineState::Idle => {
+                    // Drain any queued voice alerts before checking for speech.
+                    if let Ok(mut rx) = self.alert_rx.try_lock() {
+                        if let Ok(text) = rx.try_recv() {
+                            info!(text = %text, "speaking queued voice alert");
+                            self.busy.store(true, Ordering::Relaxed);
+                            if let Err(e) = self.speak(&text).await {
+                                error!(error = %e, "alert TTS failed");
+                            }
+                            self.busy.store(false, Ordering::Relaxed);
+                            continue;
+                        }
+                    }
+
                     let window = self
                         .capture
                         .read_last_seconds(VAD_WINDOW_SECONDS, self.sample_rate);

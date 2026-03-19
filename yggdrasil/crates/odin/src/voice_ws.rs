@@ -23,9 +23,12 @@
 ///     {"type":"vad_end"}    — client-side VAD triggered end-of-speech
 ///     {"type":"config"}     — configuration (reserved, currently no-op)
 use axum::{
+    Json,
     extract::{State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::OdinError;
@@ -82,6 +85,9 @@ const VAD_WINDOW_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     let mut session_id = Uuid::new_v4().to_string();
 
+    // Subscribe to voice alert broadcast channel.
+    let mut alert_rx = state.voice_alert_tx.subscribe();
+
     // Send ready message.
     let ready = serde_json::json!({"type": "ready", "session_id": &session_id});
     if socket
@@ -104,7 +110,26 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     let mut seen_resume = false;
 
     loop {
-        match socket.recv().await {
+        // Select between WebSocket messages and broadcast alerts.
+        let ws_msg = tokio::select! {
+            msg = socket.recv() => msg,
+            alert = alert_rx.recv() => {
+                // Voice alert from Sentinel — send as alert message + TTS.
+                if let Ok(text) = alert {
+                    let _ = socket
+                        .send(Message::Text(
+                            serde_json::json!({"type": "alert", "text": &text})
+                                .to_string().into(),
+                        ))
+                        .await;
+                    let voice_api_url = state.voice_api_url.as_deref().unwrap_or_default();
+                    send_tts(&mut socket, &state.http_client, voice_api_url, &text).await;
+                }
+                continue;
+            }
+        };
+
+        match ws_msg {
             // ── Binary: raw PCM s16le audio ──────────────────────
             Some(Ok(Message::Binary(data))) => {
                 // Decode little-endian i16 samples.
@@ -243,6 +268,72 @@ async fn process_utterance(
     let _ = socket
         .send(Message::Text(
             serde_json::json!({"type": "processing"}).to_string().into(),
+        ))
+        .await;
+
+    // ── Wake word gate ─────────────────────────────────────────────
+    // Run STT first to check for "fergus". If not found, silently discard.
+    // This prevents TV/music/background noise from triggering the full pipeline.
+    // The transcript is reused by the legacy path to avoid a double STT call.
+    let pcm_bytes_precheck = pcm_to_bytes(audio_buffer);
+    tracing::info!(
+        samples = audio_buffer.len(),
+        stt_url = %stt_url,
+        "voice: running STT for wake word check"
+    );
+    let wake_transcript = match call_stt(http, stt_url, &pcm_bytes_precheck).await {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => return, // empty transcript — silence, no error needed
+        Err(e) => {
+            tracing::warn!(error = %e, "STT failed in wake word check");
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({"type": "error", "message": format!("STT unavailable: {e}")})
+                        .to_string().into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    tracing::info!(transcript = %wake_transcript, "voice: STT result");
+    let transcript_lower = wake_transcript.to_lowercase();
+    // Match "fergus" and common STT mishearings
+    let wake_words = ["fergus", "vergus", "furgus", "for gus", "fur gus", "fairgus"];
+    let matched_wake = wake_words.iter().find(|w| transcript_lower.contains(*w));
+    if matched_wake.is_none() {
+        tracing::info!(transcript = %wake_transcript, "voice: no wake word — ignoring");
+        return;
+    }
+    let wake_str = matched_wake.unwrap();
+    tracing::info!(wake_word = %wake_str, "voice: wake word detected — processing command");
+
+    // Strip the matched wake word variant to get the command.
+    let command_text = transcript_lower.replace(wake_str, "").trim().to_string();
+
+    // Just the wake word alone — acknowledge.
+    if command_text.is_empty() {
+        let _ = socket
+            .send(Message::Text(
+                serde_json::json!({"type": "transcript", "text": &wake_transcript})
+                    .to_string().into(),
+            ))
+            .await;
+        let _ = socket
+            .send(Message::Text(
+                serde_json::json!({"type": "response", "text": "I'm listening, sir."})
+                    .to_string().into(),
+            ))
+            .await;
+        send_tts(socket, http, tts_url, "I'm listening, sir.").await;
+        return;
+    }
+
+    // Send transcript to client.
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({"type": "transcript", "text": &wake_transcript})
+                .to_string().into(),
         ))
         .await;
 
@@ -411,18 +502,34 @@ async fn process_utterance(
             Ok(_) => return, // Empty response — silence
             Err(e) => {
                 tracing::warn!(error = %e, "omni chat failed, falling back to legacy pipeline");
-                match legacy_stt_chat(http, state, stt_url, socket, &pcm_bytes, session_id).await {
-                    Some(text) => text,
-                    None => return,
+                // Reuse the transcript from the wake word pre-check (no double STT).
+                match handlers::process_chat_text(state, &command_text, session_id).await {
+                    Ok(text) => strip_think_tags(&text),
+                    Err(e) => {
+                        let _ = socket
+                            .send(Message::Text(
+                                serde_json::json!({"type": "error", "message": format!("chat failed: {e}")})
+                                    .to_string().into(),
+                            ))
+                            .await;
+                        return;
+                    }
                 }
             }
         }
     } else {
-        // Legacy path: separate STT → agent loop.
-        let pcm_bytes = pcm_to_bytes(audio_buffer);
-        match legacy_stt_chat(http, state, stt_url, socket, &pcm_bytes, session_id).await {
-            Some(text) => text,
-            None => return,
+        // Legacy path: reuse transcript from wake word pre-check (no double STT).
+        match handlers::process_chat_text(state, &command_text, session_id).await {
+            Ok(text) => strip_think_tags(&text),
+            Err(e) => {
+                let _ = socket
+                    .send(Message::Text(
+                        serde_json::json!({"type": "error", "message": format!("chat failed: {e}")})
+                            .to_string().into(),
+                    ))
+                    .await;
+                return;
+            }
         }
     };
 
@@ -659,55 +766,6 @@ fn pcm_to_wav(pcm: &[u8], sample_rate: u32) -> Vec<u8> {
     wav
 }
 
-/// Legacy STT → agent loop path. Sends STT result and transcript to the client,
-/// then runs through `process_chat_text` (Ollama agent loop with tools).
-/// Returns `Some(response_text)` on success, `None` if pipeline should abort.
-async fn legacy_stt_chat(
-    http: &reqwest::Client,
-    state: &AppState,
-    stt_url: &str,
-    socket: &mut WebSocket,
-    pcm_bytes: &[u8],
-    session_id: &str,
-) -> Option<String> {
-    let transcript = match call_stt(http, stt_url, pcm_bytes).await {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) => return None,
-        Err(e) => {
-            let _ = socket
-                .send(Message::Text(
-                    serde_json::json!({"type": "error", "message": format!("STT failed: {e}")})
-                        .to_string()
-                        .into(),
-                ))
-                .await;
-            return None;
-        }
-    };
-
-    let _ = socket
-        .send(Message::Text(
-            serde_json::json!({"type": "transcript", "text": &transcript})
-                .to_string()
-                .into(),
-        ))
-        .await;
-
-    match handlers::process_chat_text(state, &transcript, session_id).await {
-        Ok(text) => Some(strip_think_tags(&text)),
-        Err(e) => {
-            let _ = socket
-                .send(Message::Text(
-                    serde_json::json!({"type": "error", "message": format!("chat failed: {e}")})
-                        .to_string()
-                        .into(),
-                ))
-                .await;
-            None
-        }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────
 // STT / TTS HTTP client helpers
 // ─────────────────────────────────────────────────────────────────
@@ -773,6 +831,38 @@ async fn call_tts(
         .map_err(|e| format!("TTS body failed: {e}"))?;
 
     Ok((bytes.to_vec(), sample_rate))
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/voice/alert — inject alert to all voice clients
+// ─────────────────────────────────────────────────────────────────
+
+/// Request body for voice alert injection.
+#[derive(Debug, Deserialize)]
+pub struct VoiceAlertRequest {
+    pub text: String,
+}
+
+/// Accept an alert from Sentinel (or any service) and broadcast it to all
+/// connected voice WebSocket sessions. Each session will speak it via TTS.
+pub async fn voice_alert_handler(
+    State(state): State<AppState>,
+    Json(req): Json<VoiceAlertRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
+    if req.text.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "text field must not be empty".to_string(),
+        ));
+    }
+
+    let receivers = state.voice_alert_tx.receiver_count();
+    tracing::info!(text = %req.text, receivers, "broadcasting voice alert to WebSocket clients");
+
+    // broadcast::send returns Err if there are no active receivers — that's OK.
+    let _ = state.voice_alert_tx.send(req.text);
+
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"status": "broadcast", "receivers": receivers}))))
 }
 
 // ─────────────────────────────────────────────────────────────────

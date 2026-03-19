@@ -258,6 +258,9 @@ async fn main() -> anyhow::Result<()> {
     let tool_registry = Arc::new(odin::tool_registry::build_registry());
     tracing::info!(tools = tool_registry.len(), "agent tool registry built");
 
+    // Broadcast channel for voice alerts (Sentinel → all connected WebSocket voice clients).
+    let (voice_alert_tx, _) = tokio::sync::broadcast::channel::<String>(16);
+
     let state = AppState {
         http_client,
         router,
@@ -275,6 +278,7 @@ async fn main() -> anyhow::Result<()> {
         tool_registry,
         gaming_config,
         skill_cache: Arc::new(odin::skill_cache::SkillCache::new()),
+        voice_alert_tx,
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -321,6 +325,8 @@ async fn main() -> anyhow::Result<()> {
         // Voice WebSocket endpoint (STT/TTS streaming via ygg-voice).
         .route("/v1/voice", get(voice_ws::ws_voice_handler))
         .route("/voice", get(voice_ws::voice_page))
+        // Voice alert injection (Sentinel pushes anomaly alerts to browser clients).
+        .route("/api/v1/voice/alert", post(voice_ws::voice_alert_handler))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

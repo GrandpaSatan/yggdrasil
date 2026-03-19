@@ -55,11 +55,19 @@ pub(crate) struct ApiState {
     pub silence_sdr: ygg_domain::sdr::Sdr,
     /// LRU-ish cache of audio SDR → transcript for repeat queries.
     pub sdr_cache: Arc<RwLock<Vec<SdrCacheEntry>>>,
+    /// Channel for injecting voice alerts from external services (e.g. Sentinel).
+    pub alert_tx: tokio::sync::mpsc::Sender<String>,
 }
 
 /// TTS request body.
 #[derive(Debug, Deserialize)]
 struct TtsRequest {
+    text: String,
+}
+
+/// Alert request body (from Sentinel or other services).
+#[derive(Debug, Deserialize)]
+struct AlertRequest {
     text: String,
 }
 
@@ -211,9 +219,35 @@ async fn tts_handler(
     Ok((StatusCode::OK, headers, pcm_bytes))
 }
 
-/// Build the API router with STT and TTS endpoints.
+/// POST /api/v1/alert
+///
+/// Accepts JSON `{"text": "..."}` and queues it for spoken playback.
+/// Used by Sentinel to push anomaly alerts for Fergus to speak aloud.
+async fn alert_handler(
+    State(state): State<ApiState>,
+    Json(req): Json<AlertRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
+    if req.text.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "text field must not be empty".to_string(),
+        ));
+    }
+
+    info!(text = %req.text, "Alert API: queuing voice alert");
+
+    state.alert_tx.try_send(req.text).map_err(|e| {
+        error!(error = %e, "Alert API: failed to queue alert");
+        (StatusCode::SERVICE_UNAVAILABLE, format!("alert queue full: {e}"))
+    })?;
+
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"status": "queued"}))))
+}
+
+/// Build the API router with STT, TTS, and alert endpoints.
 pub fn api_routes() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/stt", post(stt_handler))
         .route("/api/v1/tts", post(tts_handler))
+        .route("/api/v1/alert", post(alert_handler))
 }

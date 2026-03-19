@@ -10,7 +10,9 @@
 mod collector;
 mod detector;
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -48,6 +50,10 @@ pub struct SentinelConfig {
     /// HA notification target (e.g. "mobile_app_pixel_8").
     #[serde(default)]
     pub notify_target: Option<String>,
+    /// ygg-voice URL for spoken alerts (e.g. "http://127.0.0.1:9095").
+    /// When set, anomaly alerts are also spoken aloud via Fergus.
+    #[serde(default)]
+    pub voice_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -118,6 +124,113 @@ async fn get_fix_suggestion(
         .map(|s| s.to_string())
 }
 
+/// Ask Odin to rephrase a raw alert in Fergus's persona for spoken delivery.
+/// Falls back to the raw alert text if Odin is unavailable.
+async fn format_voice_alert(
+    client: &reqwest::Client,
+    odin_url: &str,
+    raw_alert: &str,
+) -> String {
+    let payload = serde_json::json!({
+        "model": "default",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are Fergus, a household AI with dry British wit. \
+                            Rephrase this system alert as a brief spoken notification \
+                            (1-2 sentences). Address the user as 'sir'."
+            },
+            {
+                "role": "user",
+                "content": raw_alert
+            }
+        ]
+    });
+
+    let resp = match client
+        .post(format!("{}/v1/chat/completions", odin_url))
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "failed to format voice alert via Odin — using raw text");
+            return raw_alert.to_string();
+        }
+    };
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(b) => b,
+        Err(_) => return raw_alert.to_string(),
+    };
+
+    body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or(raw_alert)
+        .to_string()
+}
+
+/// POST an alert to ygg-voice (local speaker) and Odin (browser WebSocket clients).
+async fn send_voice_alert(
+    client: &reqwest::Client,
+    voice_url: &str,
+    odin_url: &str,
+    text: &str,
+) {
+    let payload = serde_json::json!({"text": text});
+    let timeout = std::time::Duration::from_secs(5);
+
+    // Push to ygg-voice for local speaker playback.
+    let voice_fut = client
+        .post(format!("{voice_url}/api/v1/alert"))
+        .json(&payload)
+        .timeout(timeout)
+        .send();
+
+    // Push to Odin for browser WebSocket clients.
+    let odin_fut = client
+        .post(format!("{odin_url}/api/v1/voice/alert"))
+        .json(&payload)
+        .timeout(timeout)
+        .send();
+
+    // Fire both in parallel — neither blocks the other.
+    let (voice_res, odin_res) = tokio::join!(voice_fut, odin_fut);
+
+    match voice_res {
+        Ok(r) if r.status().is_success() || r.status().as_u16() == 202 => {
+            info!("voice alert queued (local speaker)");
+        }
+        Ok(r) => warn!(status = %r.status(), "ygg-voice alert returned unexpected status"),
+        Err(e) => warn!(error = %e, "failed to send voice alert to ygg-voice"),
+    }
+
+    match odin_res {
+        Ok(r) if r.status().is_success() || r.status().as_u16() == 202 => {
+            info!("voice alert broadcast (browser clients)");
+        }
+        Ok(r) => warn!(status = %r.status(), "Odin voice alert returned unexpected status"),
+        Err(e) => warn!(error = %e, "failed to send voice alert to Odin"),
+    }
+}
+
+/// Voice alert cooldown — 60 seconds per node/key.
+const VOICE_ALERT_COOLDOWN_SECS: u64 = 60;
+
+/// Check if a voice alert is allowed (cooldown elapsed) and update the map.
+fn should_voice_alert(cooldowns: &mut HashMap<String, Instant>, key: &str) -> bool {
+    let now = Instant::now();
+    if let Some(last) = cooldowns.get(key) {
+        if now.duration_since(*last).as_secs() < VOICE_ALERT_COOLDOWN_SECS {
+            return false;
+        }
+    }
+    cooldowns.insert(key.to_string(), now);
+    true
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     fmt()
@@ -148,9 +261,13 @@ async fn main() -> Result<()> {
         config.anomaly_threshold,
     ));
 
-    // HTTP client for Odin fix suggestions
+    // HTTP client for Odin fix suggestions + voice alerts
     let odin_http = reqwest::Client::new();
     let odin_url = config.odin_url.clone();
+    let voice_url = config.voice_url.clone();
+
+    // Per-node cooldown map for voice alerts (prevents repeating every 30s).
+    let mut voice_cooldowns: HashMap<String, Instant> = HashMap::new();
 
     // Health/metrics endpoint
     let prom = prometheus_handle.clone();
@@ -234,6 +351,19 @@ async fn main() -> Result<()> {
                         warn!(error = %e, "failed to send HA notification");
                     }
                 }
+
+                // Send voice alert via Fergus (with 60s cooldown per node)
+                if let Some(vurl) = &voice_url {
+                    if should_voice_alert(&mut voice_cooldowns, &result.node) {
+                        let raw = format!(
+                            "Node {} is unhealthy: {}",
+                            result.node,
+                            result.error.as_deref().unwrap_or("check failed")
+                        );
+                        let spoken = format_voice_alert(&odin_http, &odin_url, &raw).await;
+                        send_voice_alert(&odin_http, vurl, &odin_url, &spoken).await;
+                    }
+                }
             }
         }
 
@@ -273,6 +403,20 @@ async fn main() -> Result<()> {
                         .await
                     {
                         warn!(error = %e, "failed to send SDR anomaly HA notification");
+                    }
+                }
+
+                // Send voice alert for SDR anomaly (cooldown key: "sdr_anomaly")
+                if let Some(vurl) = &voice_url {
+                    if should_voice_alert(&mut voice_cooldowns, "sdr_anomaly") {
+                        let raw = match &fix_suggestion {
+                            Some(fix) => format!(
+                                "SDR anomaly detected in cluster health. Suggested fix: {fix}"
+                            ),
+                            None => "SDR anomaly detected in cluster health window.".to_string(),
+                        };
+                        let spoken = format_voice_alert(&odin_http, &odin_url, &raw).await;
+                        send_voice_alert(&odin_http, vurl, &odin_url, &spoken).await;
                     }
                 }
             }

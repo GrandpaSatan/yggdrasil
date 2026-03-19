@@ -130,6 +130,10 @@ pub struct AppState {
     pub gaming_config: Option<ygg_gaming::config::GamingConfig>,
     /// SDR-based skill cache for instant tool dispatch on repeat voice commands.
     pub skill_cache: Arc<crate::skill_cache::SkillCache>,
+    /// Broadcast channel for pushing voice alerts to all connected WebSocket sessions.
+    /// Sentinel (or any service) POSTs to `/api/v1/voice/alert`, Odin broadcasts to all
+    /// active voice clients so they hear the alert via TTS.
+    pub voice_alert_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl AppState {

@@ -46,5 +46,6 @@
     "token": "${HA_TOKEN}",
     "timeout_secs": 10
   },
-  "notify_target": "mobile_app_pixel"
+  "notify_target": "mobile_app_pixel",
+  "voice_url": "http://${MUNIN_IP}:9095"
 }

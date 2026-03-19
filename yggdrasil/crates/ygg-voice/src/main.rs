@@ -190,6 +190,9 @@ async fn main() -> Result<()> {
     let stt_arc = Arc::new(stt_engine);
     let tts_arc = Arc::new(tts_engine);
 
+    // Alert channel: external services (Sentinel) push alert text, pipeline speaks them.
+    let (alert_tx, alert_rx) = tokio::sync::mpsc::channel::<String>(16);
+
     // Try to initialize local mic pipeline (optional — may fail on headless servers)
     let pipeline_handle = match audio::AudioCapture::new(&config.audio_device, config.sample_rate, 30) {
         Ok(capture) => {
@@ -208,6 +211,7 @@ async fn main() -> Result<()> {
                 busy_sound,
                 config.wake_word.clone(),
                 config.sample_rate,
+                alert_rx,
             );
             Some(tokio::spawn(async move {
                 voice_pipeline.run().await;
@@ -218,6 +222,7 @@ async fn main() -> Result<()> {
                 error = %e,
                 "no audio device available — local mic pipeline disabled, HTTP API only"
             );
+            drop(alert_rx); // alerts will silently drop (alert_tx.try_send still succeeds)
             None
         }
     };
@@ -255,6 +260,7 @@ async fn main() -> Result<()> {
         mel: Arc::clone(&mel_arc),
         silence_sdr,
         sdr_cache: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+        alert_tx,
     };
     tokio::spawn(async move {
         use axum::{routing::get, Json, Router};

@@ -3,193 +3,674 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Odin Voice</title>
+<title>Fergus</title>
 <style>
-  :root { --bg: #09090b; --surface: #18181b; --border: #27272a; --text: #fafafa; --muted: #a1a1aa; --accent: #3b82f6; --red: #ef4444; --green: #22c55e; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem; }
-  .container { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 1.5rem; }
-  h1 { font-size: 1.25rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-  .status { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
-  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
-  .status .dot.connected { background: var(--green); }
-  .status .dot.listening { background: var(--accent); animation: pulse 1s infinite; }
-  .status .dot.processing { background: #f59e0b; animation: pulse 0.5s infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .mic-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); color: var(--text); font-size: 2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; align-self: center; transition: all 0.2s; }
-  .mic-btn:hover { border-color: var(--accent); }
-  .mic-btn.active { border-color: var(--red); background: rgba(239,68,68,0.15); }
-  .mic-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .log { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-height: 200px; max-height: 400px; overflow-y: auto; font-size: 0.85rem; line-height: 1.6; }
-  .log .entry { margin-bottom: 0.5rem; }
-  .log .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .log .transcript { color: var(--accent); }
-  .log .response { color: var(--green); }
-  .log .error { color: var(--red); }
+  :root {
+    --bg:      #09090b;
+    --surface: #18181b;
+    --border:  #27272a;
+    --text:    #fafafa;
+    --muted:   #a1a1aa;
+    --accent:  #3b82f6;
+    --amber:   #f59e0b;
+    --red:     #ef4444;
+    --green:   #22c55e;
+  }
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, ui-monospace, monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1.5rem 1rem 2rem;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ───────────────────────────────────────────────── */
+  .header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 1.25rem 1.25rem 1rem;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    background: var(--surface);
+  }
+
+  .header-title { display: flex; flex-direction: column; gap: 0.2rem; }
+
+  .header-name {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .header-subtitle {
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+  }
+
+  .conn-status {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+    padding-top: 0.15rem;
+  }
+
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+
+  .conn-dot.connected   { background: var(--green); }
+  .conn-dot.listening    { background: var(--accent); animation: blink 1s ease-in-out infinite; }
+  .conn-dot.processing   { background: var(--amber);  animation: blink 0.5s ease-in-out infinite; }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.35; }
+  }
+
+  /* ── Alert Banner ─────────────────────────────────────────── */
+  .alert-banner {
+    display: none;
+    align-items: center;
+    gap: 0.75rem;
+    background: rgba(245, 158, 11, 0.12);
+    border-left: 3px solid var(--amber);
+    border-right: 1px solid var(--border);
+    padding: 0.65rem 1rem;
+    font-size: 0.82rem;
+    color: var(--amber);
+    overflow: hidden;
+    animation: slideDown 0.25s ease-out forwards;
+  }
+
+  .alert-banner.visible { display: flex; }
+  .alert-banner.fading  { animation: fadeOut 0.4s ease-in forwards; }
+
+  .alert-icon   { flex-shrink: 0; font-size: 0.9rem; }
+  .alert-text   { flex: 1; line-height: 1.4; }
+  .alert-dismiss {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--amber);
+    opacity: 0.7;
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.1rem;
+  }
+  .alert-dismiss:hover { opacity: 1; }
+
+  @keyframes slideDown {
+    from { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
+    to   { max-height: 80px; opacity: 1; padding-top: 0.65rem; padding-bottom: 0.65rem; }
+  }
+  @keyframes fadeOut {
+    from { opacity: 1; max-height: 80px; }
+    to   { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; }
+  }
+
+  /* ── Orb Section ────────────────────────────────────────────── */
+  .orb-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 2.5rem 1.25rem 2rem;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .orb-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 120px;
+    height: 120px;
+  }
+
+  .orb {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 35%, #27272a 0%, #18181b 100%);
+    border: 1px solid var(--border);
+    transition: border-color 0.4s, box-shadow 0.4s, background 0.6s;
+  }
+
+  .orb.idle {
+    animation: orbBreath 4s ease-in-out infinite;
+  }
+
+  .orb.listening {
+    border-color: var(--accent);
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.25), 0 0 60px rgba(59, 130, 246, 0.1);
+    background: radial-gradient(circle at 40% 35%, #1e3a5f 0%, #0f1d32 100%);
+  }
+
+  .orb.processing {
+    border-color: var(--amber);
+    box-shadow: 0 0 30px rgba(245, 158, 11, 0.25), 0 0 60px rgba(245, 158, 11, 0.1);
+    background: radial-gradient(circle at 40% 35%, #3d2e0f 0%, #1f1708 100%);
+    animation: orbPulse 0.8s ease-in-out infinite;
+  }
+
+  .orb.speaking {
+    border-color: var(--green);
+    box-shadow: 0 0 30px rgba(34, 197, 94, 0.25), 0 0 60px rgba(34, 197, 94, 0.1);
+    background: radial-gradient(circle at 40% 35%, #0f3d1f 0%, #081f0e 100%);
+    animation: orbPulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes orbBreath {
+    0%, 100% { transform: scale(1);    opacity: 0.7; }
+    50%      { transform: scale(1.03); opacity: 0.85; }
+  }
+
+  @keyframes orbPulse {
+    0%, 100% { transform: scale(1);    }
+    50%      { transform: scale(1.06); }
+  }
+
+  /* Ring animation behind orb */
+  .orb-ring {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  .orb-ring.listening {
+    border: 2px solid var(--accent);
+    opacity: 1;
+    animation: ringPulse 1.5s ease-out infinite;
+  }
+
+  .orb-ring.processing {
+    border: 2px solid var(--amber);
+    opacity: 1;
+    animation: ringPulse 0.8s ease-out infinite;
+  }
+
+  .orb-ring.speaking {
+    border: 2px solid var(--green);
+    opacity: 1;
+    animation: ringPulse 1.5s ease-out infinite;
+  }
+
+  @keyframes ringPulse {
+    0%   { transform: scale(1);    opacity: 0.6; }
+    100% { transform: scale(1.8);  opacity: 0; }
+  }
+
+  .orb-state-text {
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: color 0.3s;
+    min-height: 1rem;
+  }
+
+  .orb-state-text.listening  { color: var(--accent); }
+  .orb-state-text.processing { color: var(--amber); }
+  .orb-state-text.speaking   { color: var(--green); }
+
+  /* ── Log Section ────────────────────────────────────────────── */
+  .log-section {
+    border: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 10px 10px;
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  .log-header {
+    padding: 0.6rem 1rem;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .log {
+    padding: 0.75rem 1rem;
+    min-height: 180px;
+    max-height: 360px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .log::-webkit-scrollbar { width: 4px; }
+  .log::-webkit-scrollbar-track { background: transparent; }
+  .log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-entry { display: flex; flex-direction: column; gap: 0.15rem; }
+
+  .log-entry-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    line-height: 1;
+  }
+
+  .log-entry-text {
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  .log-entry.you    .log-entry-text { color: var(--accent); }
+  .log-entry.fergus .log-entry-text { color: var(--green);  }
+  .log-entry.alert  .log-entry-text { color: var(--amber);  }
+  .log-entry.error  .log-entry-text { color: var(--red);    }
+  .log-entry.session .log-entry-text { color: var(--muted); font-size: 0.75rem; }
+  .log-entry.alert .log-entry-label  { color: var(--amber); }
+
+  /* ── Responsive ──────────────────────────────────────────────── */
+  @media (max-width: 360px) {
+    .header-name { font-size: 0.95rem; }
+    .orb { width: 70px; height: 70px; }
+    .orb-ring { width: 70px; height: 70px; }
+  }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>Odin Voice</h1>
-  <div class="status"><span class="dot" id="dot"></span><span id="statusText">disconnected</span></div>
-  <button class="mic-btn" id="micBtn" disabled>&#x1f3a4;</button>
-  <div class="log" id="log"></div>
+
+  <header class="header">
+    <div class="header-title">
+      <span class="header-name">Fergus</span>
+      <span class="header-subtitle">Yggdrasil Voice Assistant</span>
+    </div>
+    <div class="conn-status">
+      <span class="conn-dot" id="connDot"></span>
+      <span id="connText">disconnected</span>
+    </div>
+  </header>
+
+  <div class="alert-banner" id="alertBanner" role="alert" aria-live="assertive">
+    <span class="alert-icon" aria-hidden="true">&#9888;</span>
+    <span class="alert-text" id="alertText"></span>
+    <button class="alert-dismiss" id="alertDismiss" aria-label="Dismiss alert">&#x2715;</button>
+  </div>
+
+  <section class="orb-section" aria-label="Voice status">
+    <div class="orb-wrap" id="orbWrap" style="cursor:pointer" title="Click to activate mic">
+      <div class="orb-ring" id="orbRing" aria-hidden="true"></div>
+      <div class="orb idle" id="orb"></div>
+    </div>
+    <div class="orb-state-text" id="stateText">click to start</div>
+  </section>
+
+  <section class="log-section" aria-label="Conversation log">
+    <div class="log-header">Log</div>
+    <div class="log" id="log" role="log" aria-live="polite"></div>
+  </section>
+
 </div>
+
 <script>
-(function() {
-  const dot = document.getElementById('dot');
-  const statusText = document.getElementById('statusText');
-  const micBtn = document.getElementById('micBtn');
-  const log = document.getElementById('log');
+(function () {
+  'use strict';
 
-  let ws = null;
-  let mediaStream = null;
-  let audioCtx = null;
-  let scriptNode = null;
-  let active = false;
-  let sessionId = null;
-  let playbackCtx = null;
-  let audioChunks = [];
-  let audioSampleRate = 24000;
+  var connDot      = document.getElementById('connDot');
+  var connText     = document.getElementById('connText');
+  var alertBanner  = document.getElementById('alertBanner');
+  var alertTextEl  = document.getElementById('alertText');
+  var alertDismiss = document.getElementById('alertDismiss');
+  var orb          = document.getElementById('orb');
+  var orbRing      = document.getElementById('orbRing');
+  var stateText    = document.getElementById('stateText');
+  var logEl        = document.getElementById('log');
 
-  function addLog(label, text, cls) {
-    const d = document.createElement('div');
-    d.className = 'entry';
-    d.innerHTML = '<span class="label">' + label + '</span> <span class="' + (cls || '') + '">' + escHtml(text) + '</span>';
-    log.appendChild(d);
-    log.scrollTop = log.scrollHeight;
+  // ── State ─────────────────────────────────────────────────────
+  var orbWrap         = document.getElementById('orbWrap');
+  var ws              = null;
+  var sessionId       = localStorage.getItem('fergus_session_id') || null;
+  var micPermission   = false;  // true after first user-gesture mic activation
+  var mediaStream     = null;
+  var audioCtx        = null;
+  var scriptNode      = null;
+  var playbackCtx     = null;
+  var audioChunks     = [];
+  var audioSampleRate = 24000;
+  var alertTimer      = null;
+  var wsRetryTimer    = null;
+  var micActive       = false;
+  var isSpeaking      = false;
+
+  // ── Client-side noise gate ────────────────────────────────────
+  // Tracks ambient noise floor and only streams audio when energy
+  // exceeds it by a margin. This prevents streaming silence/noise
+  // to the server, saving bandwidth. The server SDR pipeline does
+  // the real speech-vs-noise classification.
+  var NOISE_FLOOR_ALPHA   = 0.01;  // slow smoothing — adapts over seconds, not frames
+  var NOISE_GATE_MARGIN   = 1.5;   // speech must be 1.5x above ambient to start
+  var NOISE_FLOOR_MIN     = 0.002; // minimum noise floor (prevents 0)
+  var NOISE_FLOOR_MAX     = 0.05;  // cap noise floor so speech always has a chance
+  var noiseFloor          = 0.008; // initial estimate
+  var clientSpeechActive  = false;
+  var clientSilenceFrames = 0;
+  var CLIENT_SILENCE_MAX  = 8;     // ~8 frames back at ambient → end of speech
+  var speechPeakEnergy    = 0;     // tracks peak energy during current utterance
+  var SPEECH_DROP_RATIO   = 0.3;   // end speech when energy drops to 30% of peak
+
+  function rmsEnergy(samples) {
+    var sum = 0;
+    for (var i = 0; i < samples.length; i++) {
+      sum += samples[i] * samples[i];
+    }
+    return Math.sqrt(sum / samples.length);
   }
 
-  function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  // ── Helpers ───────────────────────────────────────────────────
+  function addLog(type, text) {
+    var labels = { you: 'You', fergus: 'Fergus', alert: '&#9888; Alert', error: 'Error', session: 'Session' };
+    var entry = document.createElement('div');
+    entry.className = 'log-entry ' + (labels[type] ? type : 'session');
 
-  function setStatus(text, cls) {
-    statusText.textContent = text;
-    dot.className = 'dot' + (cls ? ' ' + cls : '');
+    var labelEl = document.createElement('div');
+    labelEl.className = 'log-entry-label';
+    labelEl.innerHTML = labels[type] || type;
+
+    var textEl = document.createElement('div');
+    textEl.className = 'log-entry-text';
+    textEl.textContent = text;
+
+    entry.appendChild(labelEl);
+    entry.appendChild(textEl);
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
   }
 
+  function setConnStatus(text, cls) {
+    connText.textContent = text;
+    connDot.className = 'conn-dot' + (cls ? ' ' + cls : '');
+  }
+
+  function setOrbState(state) {
+    orb.className = 'orb ' + state;
+    orbRing.className = 'orb-ring ' + state;
+    stateText.className = 'orb-state-text ' + state;
+
+    var labels = {
+      idle:       'listening',
+      listening:  'hearing you',
+      processing: 'thinking',
+      speaking:   'speaking',
+    };
+    stateText.textContent = labels[state] || state;
+  }
+
+  // ── Alert banner ──────────────────────────────────────────────
+  function showAlert(text) {
+    if (alertTimer) { clearTimeout(alertTimer); alertTimer = null; }
+    alertBanner.classList.remove('fading');
+    alertBanner.classList.add('visible');
+    alertTextEl.textContent = text;
+    alertTimer = setTimeout(dismissAlert, 15000);
+  }
+
+  function dismissAlert() {
+    if (alertTimer) { clearTimeout(alertTimer); alertTimer = null; }
+    alertBanner.classList.add('fading');
+    setTimeout(function () { alertBanner.classList.remove('visible', 'fading'); }, 420);
+  }
+
+  alertDismiss.addEventListener('click', dismissAlert);
+
+  // ── WebSocket ─────────────────────────────────────────────────
   function connect() {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host + '/v1/voice');
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = function() {
-      setStatus('connected', 'connected'); micBtn.disabled = false;
-      if (sessionId) { ws.send(JSON.stringify({type: 'resume', session_id: sessionId})); }
+    ws.onopen = function () {
+      setConnStatus('connected', 'connected');
+      if (sessionId) {
+        ws.send(JSON.stringify({ type: 'resume', session_id: sessionId }));
+      }
+      // Auto-start mic only if user already granted permission (via prior click)
+      if (micPermission && !micActive) startMic();
     };
-    ws.onclose = function() { setStatus('disconnected', ''); micBtn.disabled = true; stopMic(); setTimeout(connect, 3000); };
-    ws.onerror = function() { setStatus('error', ''); };
 
-    ws.onmessage = function(ev) {
+    ws.onclose = function () {
+      setConnStatus('disconnected', '');
+      stopMic();
+      setOrbState('idle');
+      stateText.textContent = 'reconnecting';
+      wsRetryTimer = setTimeout(connect, 3000);
+    };
+
+    ws.onerror = function () { setConnStatus('error', ''); };
+
+    ws.onmessage = function (ev) {
       if (ev.data instanceof ArrayBuffer) {
-        // TTS audio chunk
         audioChunks.push(new Uint8Array(ev.data));
         return;
       }
-      try {
-        const msg = JSON.parse(ev.data);
-        switch (msg.type) {
-          case 'ready': sessionId = msg.session_id; addLog('session', msg.session_id); break;
-          case 'resumed': sessionId = msg.session_id; addLog('session', 'resumed ' + msg.session_id); break;
-          case 'listening': setStatus('listening...', 'listening'); break;
-          case 'processing': setStatus('processing...', 'processing'); break;
-          case 'transcript': addLog('you', msg.text, 'transcript'); break;
-          case 'response': addLog('odin', msg.text, 'response'); setStatus('connected', 'connected'); break;
-          case 'audio_start': audioChunks = []; audioSampleRate = msg.sample_rate || 24000; break;
-          case 'audio_end': playAudio(); break;
-          case 'error': addLog('error', msg.message, 'error'); setStatus('connected', 'connected'); break;
-        }
-      } catch(_) {}
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+
+      switch (msg.type) {
+        case 'ready':
+          sessionId = msg.session_id;
+          localStorage.setItem('fergus_session_id', sessionId);
+          break;
+
+        case 'resumed':
+          sessionId = msg.session_id;
+          localStorage.setItem('fergus_session_id', sessionId);
+          addLog('session', 'resumed');
+          break;
+
+        case 'listening':
+          setConnStatus('listening', 'listening');
+          setOrbState('listening');
+          break;
+
+        case 'processing':
+          setConnStatus('processing', 'processing');
+          setOrbState('processing');
+          break;
+
+        case 'transcript':
+          addLog('you', msg.text);
+          break;
+
+        case 'response':
+          addLog('fergus', msg.text);
+          break;
+
+        case 'audio_start':
+          audioChunks = [];
+          audioSampleRate = msg.sample_rate || 24000;
+          isSpeaking = true;
+          setOrbState('speaking');
+          setConnStatus('speaking', 'connected');
+          break;
+
+        case 'audio_end':
+          playAudio();
+          isSpeaking = false;
+          setOrbState('idle');
+          setConnStatus('connected', 'connected');
+          break;
+
+        case 'alert':
+          addLog('alert', msg.text);
+          showAlert(msg.text);
+          break;
+
+        case 'error':
+          addLog('error', msg.message || 'Unknown error');
+          setOrbState('idle');
+          setConnStatus('connected', 'connected');
+          break;
+      }
     };
   }
 
+  // ── Audio playback ────────────────────────────────────────────
   function playAudio() {
     if (audioChunks.length === 0) return;
-    // Merge chunks
-    let total = 0;
-    audioChunks.forEach(function(c) { total += c.length; });
-    const merged = new Uint8Array(total);
-    let off = 0;
-    audioChunks.forEach(function(c) { merged.set(c, off); off += c.length; });
+
+    var total = 0;
+    audioChunks.forEach(function (c) { total += c.length; });
+    var merged = new Uint8Array(total);
+    var off = 0;
+    audioChunks.forEach(function (c) { merged.set(c, off); off += c.length; });
     audioChunks = [];
 
-    // Decode s16le PCM
-    const i16 = new Int16Array(merged.buffer, merged.byteOffset, merged.byteLength / 2);
-    const f32 = new Float32Array(i16.length);
-    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+    var i16 = new Int16Array(merged.buffer, merged.byteOffset, Math.floor(merged.byteLength / 2));
+    var f32 = new Float32Array(i16.length);
+    for (var i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
 
-    if (!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioSampleRate });
-    const buf = playbackCtx.createBuffer(1, f32.length, audioSampleRate);
+    if (!playbackCtx || playbackCtx.state === 'closed') {
+      playbackCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioSampleRate });
+    }
+
+    var buf = playbackCtx.createBuffer(1, f32.length, audioSampleRate);
     buf.getChannelData(0).set(f32);
-    const src = playbackCtx.createBufferSource();
+    var src = playbackCtx.createBufferSource();
     src.buffer = buf;
     src.connect(playbackCtx.destination);
     src.start();
   }
 
-  micBtn.addEventListener('click', function() {
-    if (active) { stopMic(); } else { startMic(); }
-  });
-
+  // ── Mic capture with adaptive noise gate ──────────────────────
   async function startMic() {
+    if (micActive) return;
+
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-    } catch(e) { addLog('error', 'mic access denied: ' + e.message, 'error'); return; }
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+    } catch (e) {
+      addLog('error', 'Mic: ' + e.message);
+      // Retry in 5 seconds
+      setTimeout(function () { if (!micActive) startMic(); }, 5000);
+      return;
+    }
 
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    const source = audioCtx.createMediaStreamSource(mediaStream);
+    var source = audioCtx.createMediaStreamSource(mediaStream);
 
-    // ScriptProcessor fallback (AudioWorklet requires HTTPS + module)
     scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-    scriptNode.onaudioprocess = function(ev) {
-      if (!active || !ws || ws.readyState !== 1) return;
-      const input = ev.inputBuffer.getChannelData(0);
-      // Resample if needed (browser may not honour 16kHz constraint)
-      const targetLen = Math.round(input.length * 16000 / audioCtx.sampleRate);
-      let samples;
-      if (Math.abs(audioCtx.sampleRate - 16000) < 100) {
+    scriptNode.onaudioprocess = function (ev) {
+      if (!micActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+      // Don't stream while Fergus is speaking (prevents echo feedback)
+      if (isSpeaking) return;
+
+      var input = ev.inputBuffer.getChannelData(0);
+      var actualRate = audioCtx.sampleRate;
+
+      // Resample to 16kHz if needed
+      var samples;
+      if (Math.abs(actualRate - 16000) < 50) {
         samples = input;
       } else {
+        var targetLen = Math.round(input.length * 16000 / actualRate);
         samples = new Float32Array(targetLen);
-        const ratio = audioCtx.sampleRate / 16000;
-        for (let i = 0; i < targetLen; i++) {
-          const srcIdx = i * ratio;
-          const idx = Math.floor(srcIdx);
-          const frac = srcIdx - idx;
-          const a = input[idx] || 0;
-          const b = input[Math.min(idx + 1, input.length - 1)] || 0;
-          samples[i] = a + frac * (b - a);
+        var ratio = actualRate / 16000;
+        for (var i = 0; i < targetLen; i++) {
+          var srcIdx = i * ratio;
+          var idx    = Math.floor(srcIdx);
+          var frac   = srcIdx - idx;
+          samples[i] = (input[idx] || 0) + frac * ((input[Math.min(idx + 1, input.length - 1)] || 0) - (input[idx] || 0));
         }
       }
-      // Convert float32 -> s16le
-      const buf = new ArrayBuffer(samples.length * 2);
-      const view = new DataView(buf);
-      for (let i = 0; i < samples.length; i++) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+
+      // Stream all audio to server — server VAD + SDR handles speech detection.
+      // Only skip frames that are pure digital silence (mic muted / no signal).
+      var energy = rmsEnergy(samples);
+      if (energy > 0.001) {
+        sendPcm(samples);
       }
-      ws.send(buf);
     };
 
     source.connect(scriptNode);
     scriptNode.connect(audioCtx.destination);
+    micActive = true;
+    orbWrap.style.cursor = 'default';
+    orbWrap.title = '';
+    setOrbState('idle');
+    stateText.textContent = 'listening';
+  }
 
-    active = true;
-    micBtn.classList.add('active');
-    setStatus('mic active', 'listening');
+  function sendPcm(samples) {
+    var pcm = new ArrayBuffer(samples.length * 2);
+    var view = new DataView(pcm);
+    for (var j = 0; j < samples.length; j++) {
+      var s = Math.max(-1, Math.min(1, samples[j]));
+      view.setInt16(j * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    ws.send(pcm);
   }
 
   function stopMic() {
-    active = false;
-    micBtn.classList.remove('active');
-    if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({type: 'vad_end'}));
-    }
-    setStatus('connected', 'connected');
+    micActive = false;
+    clientSpeechActive = false;
+    clientSilenceFrames = 0;
+    if (scriptNode)  { scriptNode.disconnect(); scriptNode = null; }
+    if (audioCtx)    { audioCtx.close().catch(function () {}); audioCtx = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
   }
 
+  // ── Orb click: activate mic (user gesture required for getUserMedia) ──
+  orbWrap.addEventListener('click', function () {
+    if (micActive) return; // already running
+    micPermission = true;
+    localStorage.setItem('fergus_mic_ok', 'true');
+    stateText.textContent = 'activating mic...';
+    startMic();
+  });
+
+  // Restore mic permission from prior session
+  if (localStorage.getItem('fergus_mic_ok') === 'true') {
+    micPermission = true;
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────
   connect();
 })();
 </script>
