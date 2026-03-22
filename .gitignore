@@ -21,6 +21,7 @@ Thumbs.db
 
 # Real config files (use *.example as templates)
 yggdrasil/configs/*/config.json
+yggdrasil/configs/*/config.local.json
 yggdrasil/configs/*/config.yaml
 yggdrasil/configs/*/node.yaml
 yggdrasil/configs/ha/*.yaml
