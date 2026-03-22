@@ -315,8 +315,8 @@ fi
 # Step 8: Config sync bootstrap (if central config exists on Munin)
 # ═══════════════════════════════════════════════════════════════════════
 SYNC_SCRIPT="$SCRIPT_DIR/claude-config-sync.sh"
-REMOTE_HOST="${MUNIN_IP:-<munin-ip>}"
-REMOTE_USER_SSH="${DEPLOY_USER:-yggdrasil}"
+REMOTE_HOST="${MUNIN_IP:-localhost}"
+REMOTE_USER_SSH="${DEPLOY_USER:-$(whoami)}"
 
 if [[ -x "$SYNC_SCRIPT" ]]; then
     log "Checking for centralized config on Munin..."

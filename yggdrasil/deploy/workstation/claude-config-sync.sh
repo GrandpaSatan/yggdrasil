@@ -27,8 +27,8 @@
 #   ./claude-config-sync.sh rollback [TIMESTAMP]
 #
 # Environment:
-#   MUNIN_IP       Remote host IP (default: <munin-ip>)
-#   DEPLOY_USER    SSH user (default: yggdrasil)
+#   MUNIN_IP       Remote host IP (required — set in your env or .env)
+#   DEPLOY_USER    SSH user (required — set in your env or .env)
 #   WORKSTATION_ID Override hostname-based ID
 #
 # Idempotent — safe to re-run.
@@ -36,8 +36,8 @@
 set -euo pipefail
 
 # ── Constants ───────────────────────────────────────────────────────────
-REMOTE_HOST="${MUNIN_IP:-<munin-ip>}"
-REMOTE_USER="${DEPLOY_USER:-yggdrasil}"
+REMOTE_HOST="${MUNIN_IP:?Set MUNIN_IP to the remote server IP}"
+REMOTE_USER="${DEPLOY_USER:?Set DEPLOY_USER to the SSH username}"
 REMOTE_BASE="/opt/yggdrasil/claude-config"
 CLAUDE_DIR="$HOME/.claude"
 SYNC_CACHE="$CLAUDE_DIR/.sync-cache"

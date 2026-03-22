@@ -64,8 +64,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ── Constants ───────────────────────────────────────────────────────────
-$REMOTE_HOST    = if ($env:MUNIN_IP) { $env:MUNIN_IP } else { "<munin-ip>" }
-$REMOTE_USER    = if ($env:DEPLOY_USER) { $env:DEPLOY_USER } else { "yggdrasil" }
+if (-not $env:MUNIN_IP) { Write-Host "  x MUNIN_IP not set. Export it or add to .env" -ForegroundColor Red; exit 1 }
+if (-not $env:DEPLOY_USER) { Write-Host "  x DEPLOY_USER not set. Export it or add to .env" -ForegroundColor Red; exit 1 }
+$REMOTE_HOST    = $env:MUNIN_IP
+$REMOTE_USER    = $env:DEPLOY_USER
 $REMOTE_BASE    = "/opt/yggdrasil/claude-config"
 $HOME_DIR       = $env:USERPROFILE
 $CLAUDE_DIR     = Join-Path $HOME_DIR ".claude"

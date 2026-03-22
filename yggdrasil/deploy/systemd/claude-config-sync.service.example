@@ -5,11 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=jesushernandez
-# Uses the user's SSH key for auth to Munin
-Environment=HOME=/home/jesushernandez
+User=your-user
+# Uses the user's SSH key for auth to the remote server
+Environment=HOME=/home/your-user
 EnvironmentFile=-/opt/yggdrasil/.env
-ExecStart=/home/jesushernandez/Documents/Code/Yggdrasil/yggdrasil/deploy/workstation/claude-config-sync.sh sync
+ExecStart=/path/to/yggdrasil/deploy/workstation/claude-config-sync.sh sync
 TimeoutStartSec=60
 
 [Install]

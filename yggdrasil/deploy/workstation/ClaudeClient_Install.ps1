@@ -342,8 +342,8 @@ Write-Host ""
 # Step 8: Config sync bootstrap (if central config exists on Munin)
 # ═══════════════════════════════════════════════════════════════════════
 $syncScript = Join-Path $SCRIPT_DIR "claude-config-sync.ps1"
-$remoteHostIP = if ($env:MUNIN_IP) { $env:MUNIN_IP } else { "<munin-ip>" }
-$remoteUserSSH = if ($env:DEPLOY_USER) { $env:DEPLOY_USER } else { "yggdrasil" }
+$remoteHostIP = if ($env:MUNIN_IP) { $env:MUNIN_IP } else { "localhost" }
+$remoteUserSSH = if ($env:DEPLOY_USER) { $env:DEPLOY_USER } else { $env:USERNAME }
 
 if (Test-Path $syncScript) {
     Log "Checking for centralized config on Munin..."
