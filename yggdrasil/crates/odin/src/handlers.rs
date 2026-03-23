@@ -36,7 +36,7 @@ use crate::openai::{
 use crate::proxy;
 use crate::rag;
 use crate::session::CompactMessage;
-use crate::state::{AppState, CloudPool};
+use crate::state::{AppState, BackendState, CloudPool};
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -58,6 +58,61 @@ impl Drop for BackendActiveGuard {
     fn drop(&mut self) {
         crate::metrics::adjust_backend_active(&self.backend, -1.0);
     }
+}
+
+/// Acquire a backend semaphore, rerouting to a fallback if the primary is at capacity.
+///
+/// Returns a reference to the chosen backend and its semaphore permit.
+/// Mutates `decision` in place if a fallback is selected so downstream
+/// dispatch uses the correct URL/model.
+fn acquire_with_fallback<'a>(
+    state: &'a AppState,
+    decision: &mut crate::router::RoutingDecision,
+) -> Result<(&'a BackendState, tokio::sync::SemaphorePermit<'a>), OdinError> {
+    let backend = state
+        .backends
+        .iter()
+        .find(|b| b.name == decision.backend_name)
+        .ok_or_else(|| {
+            OdinError::Internal(format!(
+                "backend '{}' not found in state",
+                decision.backend_name
+            ))
+        })?;
+
+    // Happy path: primary backend has capacity.
+    if let Ok(permit) = backend.semaphore.try_acquire() {
+        return Ok((backend, permit));
+    }
+
+    // Primary at capacity — try fallback.
+    tracing::warn!(
+        primary = %decision.backend_name,
+        model = %decision.model,
+        "backend at capacity — attempting fallback reroute"
+    );
+
+    if let Some(fb) = state.find_fallback_backend(&decision.backend_name, &decision.model) {
+        if let Ok(permit) = fb.semaphore.try_acquire() {
+            tracing::info!(
+                from = %decision.backend_name,
+                to = %fb.name,
+                "rerouted to fallback backend"
+            );
+            decision.backend_name = fb.name.clone();
+            decision.backend_url = fb.url.clone();
+            if let Some(m) = fb.models.first() {
+                decision.model = m.clone();
+            }
+            decision.backend_type = fb.backend_type.clone();
+            return Ok((fb, permit));
+        }
+    }
+
+    Err(OdinError::BackendUnavailable(format!(
+        "backend '{}' is at capacity and no fallback available",
+        decision.backend_name
+    )))
 }
 
 fn unix_now() -> u64 {
@@ -334,28 +389,8 @@ pub async fn process_chat_text(
 
     crate::metrics::record_routing_intent(&decision.intent);
 
-    // ── 4. Acquire semaphore ──────────────────────────────────────
-    let backend_state = state
-        .backends
-        .iter()
-        .find(|b| b.name == decision.backend_name)
-        .ok_or_else(|| {
-            OdinError::Internal(format!(
-                "backend '{}' not found in state",
-                decision.backend_name
-            ))
-        })?;
-
-    let _permit = backend_state
-        .semaphore
-        .try_acquire()
-        .map_err(|_| {
-            OdinError::BackendUnavailable(format!(
-                "backend '{}' is at capacity — try again later",
-                decision.backend_name
-            ))
-        })?;
-
+    // ── 4. Acquire semaphore (with fallback reroute) ──────────────
+    let (backend_state, _permit) = acquire_with_fallback(state, &mut decision)?;
     let _backend_guard = BackendActiveGuard::new(&decision.backend_name);
 
     // ── 5. Fetch RAG context ──────────────────────────────────────
@@ -782,29 +817,8 @@ pub async fn chat_handler(
 
     crate::metrics::record_routing_intent(&decision.intent);
 
-    // ── 7. Acquire semaphore ─────────────────────────────────────
-    let backend_state = state
-        .backends
-        .iter()
-        .find(|b| b.name == decision.backend_name)
-        .ok_or_else(|| {
-            OdinError::Internal(format!(
-                "backend '{}' not found in state",
-                decision.backend_name
-            ))
-        })?;
-
-    let _permit = backend_state
-        .semaphore
-        .try_acquire()
-        .map_err(|_| {
-            OdinError::BackendUnavailable(format!(
-                "backend '{}' is at capacity — try again later",
-                decision.backend_name
-            ))
-        })?;
-
-    // RAII guard: +1 on creation, -1 on drop (covers all return paths)
+    // ── 7. Acquire semaphore (with fallback reroute) ─────────────
+    let (backend_state, _permit) = acquire_with_fallback(&state, &mut decision)?;
     let _backend_guard = BackendActiveGuard::new(&decision.backend_name);
 
     // ── 8. Fetch RAG context ─────────────────────────────────────

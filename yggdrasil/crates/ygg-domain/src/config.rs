@@ -286,6 +286,63 @@ fn default_max_context_chunks() -> usize {
     10
 }
 
+/// Autonomous memory ingest configuration for Mimir (Sprint 044).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutoIngestConfig {
+    /// Whether the auto-ingest endpoint is enabled (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Minimum cosine similarity against a template embedding to store an engram (default: 0.35).
+    /// Uses dense 384-dim dot product (L2-normalized → cosine). Range: [-1.0, 1.0] where
+    /// 0.0 = unrelated, 1.0 = identical. 0.35 is selective — random texts score near 0.0.
+    #[serde(default = "default_template_threshold")]
+    pub template_threshold: f64,
+    /// Maximum content length in chars before truncation (default: 4096).
+    #[serde(default = "default_max_content_length")]
+    pub max_content_length: usize,
+    /// Per-workstation cooldown in seconds — suppress duplicate bursts (default: 5).
+    #[serde(default = "default_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// Content-hash dedup window in seconds (default: 300).
+    #[serde(default = "default_dedup_window_secs")]
+    pub dedup_window_secs: u64,
+    /// Saga async enrichment configuration. When present and enabled, auto-ingest
+    /// spawns a background task to verify/correct classification and extract
+    /// structured cause/effect via the local Saga LLM.
+    #[serde(default)]
+    pub saga: Option<SagaEnrichConfig>,
+}
+
+/// Configuration for Saga async enrichment of auto-ingested engrams.
+///
+/// Saga (Qwen3 0.6B fine-tuned for memory classification) runs in Ollama.
+/// After the fast cosine gate stores an engram, a fire-and-forget task calls
+/// Saga to verify should_store and distill structured cause/effect/tags.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SagaEnrichConfig {
+    /// Whether Saga enrichment is enabled (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Ollama base URL (default: "http://localhost:11434").
+    #[serde(default = "default_saga_url")]
+    pub ollama_url: String,
+    /// Saga model name in Ollama (default: "saga:0.6b").
+    #[serde(default = "default_saga_model")]
+    pub model: String,
+    /// Timeout per Saga inference call in seconds (default: 10).
+    #[serde(default = "default_saga_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_saga_url() -> String { "http://localhost:11434".to_string() }
+fn default_saga_model() -> String { "saga:0.6b".to_string() }
+fn default_saga_timeout() -> u64 { 10 }
+
+fn default_template_threshold() -> f64 { 0.35 }
+fn default_max_content_length() -> usize { 4096 }
+fn default_cooldown_secs() -> u64 { 5 }
+fn default_dedup_window_secs() -> u64 { 300 }
+
 /// Mimir memory service configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MimirConfig {
@@ -294,6 +351,9 @@ pub struct MimirConfig {
     pub qdrant_url: String,
     pub sdr: SdrConfig,
     pub tiers: TierConfig,
+    /// Auto-ingest pipeline configuration. Uses defaults when absent.
+    #[serde(default)]
+    pub auto_ingest: Option<AutoIngestConfig>,
 }
 
 /// Embedding configuration — ONNX in-process model directory.

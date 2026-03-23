@@ -148,9 +148,42 @@ pub fn jaccard(a: &Sdr, b: &Sdr) -> f64 {
     }
 }
 
+/// Dot-product similarity between two L2-normalized embeddings.
+///
+/// Since the ONNX embedder (all-MiniLM-L6-v2) produces L2-normalized output,
+/// dot product equals cosine similarity. Returns a value in `[-1.0, 1.0]`
+/// where 1.0 means identical, 0.0 means unrelated, -1.0 means opposite.
+pub fn dot_similarity(a: &[f32], b: &[f32]) -> f64 {
+    debug_assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dot_similarity_identical() {
+        let a = vec![0.5, 0.5, 0.5, 0.5];
+        assert!((dot_similarity(&a, &a) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dot_similarity_orthogonal() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0];
+        assert!(dot_similarity(&a, &b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dot_similarity_opposite() {
+        let a = vec![1.0, 0.0];
+        let b = vec![-1.0, 0.0];
+        assert!((dot_similarity(&a, &b) + 1.0).abs() < 1e-6);
+    }
 
     #[test]
     fn binarize_sign_threshold() {

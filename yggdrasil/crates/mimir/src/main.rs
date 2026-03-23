@@ -14,10 +14,11 @@ use tracing_subscriber::EnvFilter;
 
 use mimir::{
     handlers::{
-        context_list, context_retrieve, context_store, embed_text, get_core_engrams_handler, get_engram_by_id, get_stats,
-        graph_link, graph_neighbors, graph_traverse, graph_unlink, health, promote_engram,
-        list_sprints, query_engrams, recall_engrams, sdr_operations, store_engram,
-        task_cancel, task_complete, task_list, task_pop, task_push, timeline,
+        auto_ingest, context_list, context_retrieve, context_store, embed_text,
+        get_core_engrams_handler, get_engram_by_id, get_stats, graph_link, graph_neighbors,
+        graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
+        recall_engrams, sdr_operations, store_engram, task_cancel, task_complete, task_list,
+        task_pop, task_push, timeline,
     },
     metrics::metrics_middleware,
     state::{AppState, load_sdr_rows},
@@ -99,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/promote", post(promote_engram))
         .route("/api/v1/core", get(get_core_engrams_handler))
         .route("/api/v1/recall", post(recall_engrams))
+        .route("/api/v1/auto-ingest", post(auto_ingest))
         .route("/api/v1/sdr/operations", post(sdr_operations))
         .route("/api/v1/timeline", post(timeline))
         .route("/api/v1/context", post(context_store))
@@ -191,6 +193,25 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- Background insight template loading (Sprint 044) ---
+    // Query PG for engrams tagged "insight_template", embed each cause text,
+    // binarize to SDR, and store in AppState.template_sdrs for fast in-memory
+    // Hamming matching on the auto-ingest path. Non-fatal: if this fails,
+    // auto-ingest will always return below_threshold until templates are seeded.
+    {
+        let state = shared_state.clone();
+        tokio::spawn(async move {
+            match load_template_sdrs(&state).await {
+                Ok(count) => {
+                    tracing::info!(templates = count, "insight template SDRs loaded");
+                }
+                Err(e) => {
+                    tracing::warn!("insight template loading failed (non-fatal): {e}");
+                }
+            }
+        });
+    }
+
     // --- systemd ready notification ---
     // Signal systemd that the service is ready. No-ops when NOTIFY_SOCKET is
     // not set (non-systemd environments).
@@ -227,6 +248,76 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("mimir shut down gracefully");
     Ok(())
+}
+
+/// Load insight templates from PostgreSQL into AppState (both SDR and dense embeddings).
+///
+/// Queries for engrams with tag "insight_template", embeds each cause text via ONNX,
+/// and stores both:
+///   - `(category_name, sdr)` pairs in `template_sdrs` (for legacy/dedup paths)
+///   - `(category_name, Vec<f32>)` pairs in `template_embeddings` (for cosine classification)
+///
+/// The category name is extracted from the second tag (e.g. "bug_fix" from
+/// tags ["insight_template", "bug_fix"]).
+///
+/// Called once at startup after the SDR backfill. Non-fatal: if no templates are seeded,
+/// auto-ingest will return "below_threshold" for all requests until templates are added
+/// via `deploy/workstation/seed-insight-templates.sh`.
+async fn load_template_sdrs(state: &std::sync::Arc<AppState>) -> anyhow::Result<usize> {
+    use sqlx::Row as _;
+
+    let rows = sqlx::query(
+        r#"
+        SELECT cause, tags
+        FROM yggdrasil.engrams
+        WHERE 'insight_template' = ANY(tags)
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(state.store.pool())
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to fetch insight templates: {e}"))?;
+
+    let mut sdr_templates: Vec<(String, mimir::sdr::Sdr)> = Vec::with_capacity(rows.len());
+    let mut dense_templates: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
+
+    for row in &rows {
+        let cause: String = row.get("cause");
+        let tags: Vec<String> = row.get("tags");
+
+        // Extract category: second tag after "insight_template"
+        let category = tags
+            .iter()
+            .find(|t| t.as_str() != "insight_template")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Embed cause text — produces L2-normalized 384-dim vector
+        let embedder = state.embedder.clone();
+        let cause_clone = cause.clone();
+        let embedding: Vec<f32> =
+            tokio::task::spawn_blocking(move || embedder.embed(&cause_clone))
+                .await
+                .map_err(|e| anyhow::anyhow!("embed task panicked: {e}"))??;
+
+        let sdr = mimir::sdr::binarize(&embedding[..mimir::sdr::SDR_BITS]);
+        dense_templates.push((category.clone(), embedding));
+        sdr_templates.push((category, sdr));
+    }
+
+    let count = sdr_templates.len();
+
+    // Write both template sets into their RwLocks.
+    *state
+        .template_sdrs
+        .write()
+        .map_err(|e| anyhow::anyhow!("template_sdrs lock poisoned: {e}"))? = sdr_templates;
+    *state
+        .template_embeddings
+        .write()
+        .map_err(|e| anyhow::anyhow!("template_embeddings lock poisoned: {e}"))? = dense_templates;
+
+    Ok(count)
 }
 
 /// Wait for SIGTERM or SIGINT and return so that `axum::serve` can finish in-flight requests.

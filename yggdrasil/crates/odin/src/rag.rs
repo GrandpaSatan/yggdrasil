@@ -302,6 +302,7 @@ pub async fn fetch_memory_events(
     let body = RecallQuery {
         text: query.to_string(),
         limit,
+        include_text: None,
     };
 
     let result = tokio::time::timeout(

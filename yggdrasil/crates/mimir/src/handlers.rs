@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use ygg_domain::engram::{
-    EngramEvent, EngramQuery, EngramTrigger, MemoryTier, NewEngram, RecallQuery, RecallResponse,
+    AutoIngestRequest, AutoIngestResponse, EngramEvent, EngramQuery, EngramTrigger, MemoryTier,
+    NewEngram, RecallQuery, RecallResponse,
 };
 use ygg_store::postgres::engrams;
 
@@ -507,9 +508,37 @@ pub async fn recall_engrams(
                 trigger: build_trigger(&trigger_type, trigger_label, &tags),
                 created_at,
                 access_count,
+                cause: None,
+                effect: None,
             }
         })
         .collect();
+
+    // Step 7b: Optionally fetch cause/effect text for each event.
+    // Backward-compatible: callers that omit include_text get the same metadata-only response.
+    let events = if body.include_text.unwrap_or(false) {
+        let fetch_ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
+        let sim_map_text: HashMap<Uuid, f64> =
+            events.iter().map(|e| (e.id, e.similarity)).collect();
+        let full =
+            engrams::fetch_engrams_by_ids(state.store.pool(), &fetch_ids, &sim_map_text).await?;
+        let text_map: HashMap<Uuid, (String, String)> = full
+            .into_iter()
+            .map(|e| (e.id, (e.cause, e.effect)))
+            .collect();
+        events
+            .into_iter()
+            .map(|mut ev| {
+                if let Some((cause, effect)) = text_map.get(&ev.id) {
+                    ev.cause = Some(cause.clone());
+                    ev.effect = Some(effect.clone());
+                }
+                ev
+            })
+            .collect()
+    } else {
+        events
+    };
 
     // Step 8: Fetch core engrams as events
     let core_rows = engrams::get_core_engram_events(state.store.pool()).await?;
@@ -524,6 +553,8 @@ pub async fn recall_engrams(
             trigger: build_trigger(&trigger_type, trigger_label, &tags),
             created_at,
             access_count,
+            cause: None,
+            effect: None,
         })
         .collect();
 
@@ -771,6 +802,8 @@ pub async fn sdr_operations(
                 trigger: build_trigger(&trigger_type, trigger_label, &tags),
                 created_at,
                 access_count,
+                cause: None,
+                effect: None,
             }
         })
         .collect();
@@ -1475,6 +1508,256 @@ pub async fn graph_traverse(
     Ok(Json(GraphTraverseResponse {
         edges: edges.into_iter().map(Into::into).collect(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/auto-ingest  (Sprint 044)
+// ---------------------------------------------------------------------------
+
+/// Autonomous memory ingest endpoint.
+///
+/// SDR-encodes incoming content, compares against pre-loaded insight template SDRs
+/// via Hamming similarity, and auto-generates a cause/effect engram when the best
+/// match meets the configured threshold. Designed to be called by PostToolUse hook
+/// scripts with near-zero blocking time (fire-and-forget from the hook side).
+///
+/// Pipeline:
+/// 1. Validate content non-empty
+/// 2. Check auto_ingest enabled flag
+/// 3. Per-workstation cooldown gate
+/// 4. SHA-256 content dedup gate
+/// 5. Truncate to max_content_length
+/// 6. ONNX embed → binarize → 256-bit SDR
+/// 7. Scan template_sdrs: compute Hamming similarity against each template
+/// 8. If best match >= threshold: store engram (PG + SDR index + Qdrant), update maps
+/// 9. Return AutoIngestResponse
+pub async fn auto_ingest(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<AutoIngestRequest>,
+) -> Result<(StatusCode, Json<AutoIngestResponse>), MimirError> {
+    // Step 1: Validate content non-empty
+    if body.content.trim().is_empty() {
+        return Ok((
+            StatusCode::OK,
+            Json(AutoIngestResponse {
+                stored: false,
+                engram_id: None,
+                matched_template: None,
+                similarity: None,
+                skipped_reason: Some("empty_content".into()),
+            }),
+        ));
+    }
+
+    // Step 2: Check enabled flag (default: true when config absent)
+    let cfg = state.config.auto_ingest.as_ref();
+    let enabled = cfg.map(|c| c.enabled).unwrap_or(true);
+    let threshold = cfg.map(|c| c.template_threshold).unwrap_or(0.3);
+    let max_content = cfg.map(|c| c.max_content_length).unwrap_or(4096);
+    let cooldown_secs = cfg.map(|c| c.cooldown_secs).unwrap_or(5);
+    let dedup_window_secs = cfg.map(|c| c.dedup_window_secs).unwrap_or(300);
+
+    if !enabled {
+        return Ok((
+            StatusCode::OK,
+            Json(AutoIngestResponse {
+                stored: false,
+                engram_id: None,
+                matched_template: None,
+                similarity: None,
+                skipped_reason: Some("disabled".into()),
+            }),
+        ));
+    }
+
+    // Step 3: Per-workstation cooldown check
+    if let Some(entry) = state.cooldown_map.get(&body.workstation) {
+        if entry.value().elapsed().as_secs() < cooldown_secs {
+            return Ok((
+                StatusCode::OK,
+                Json(AutoIngestResponse {
+                    stored: false,
+                    engram_id: None,
+                    matched_template: None,
+                    similarity: None,
+                    skipped_reason: Some("cooldown".into()),
+                }),
+            ));
+        }
+    }
+
+    // Step 4: SHA-256 hash content, check dedup window
+    let content_hash_hex = {
+        use std::fmt::Write;
+        let mut hasher = Sha256::new();
+        hasher.update(body.content.as_bytes());
+        let result = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for b in result.iter() {
+            let _ = write!(hex, "{b:02x}");
+        }
+        hex
+    };
+    if let Some(entry) = state.content_hashes.get(&content_hash_hex) {
+        if entry.value().elapsed().as_secs() < dedup_window_secs {
+            return Ok((
+                StatusCode::OK,
+                Json(AutoIngestResponse {
+                    stored: false,
+                    engram_id: None,
+                    matched_template: None,
+                    similarity: None,
+                    skipped_reason: Some("duplicate".into()),
+                }),
+            ));
+        }
+    }
+
+    // Step 5: Truncate content to max_content_length chars
+    let content: String = body.content.chars().take(max_content).collect();
+
+    // Step 6: ONNX embed via spawn_blocking (same pattern as store_engram)
+    let embedder = state.embedder.clone();
+    let content_for_embed = content.clone();
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&content_for_embed))
+            .await
+            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+
+    // Step 7: Dense cosine template matching (replaces lossy SDR Hamming).
+    // Compare full 384-dim embedding against dense template embeddings.
+    // Since both are L2-normalized (all-MiniLM-L6-v2), dot product == cosine similarity.
+    // Preserves all magnitude information that SDR binarization discards.
+    // Still O(N_templates), sub-microsecond for 6 templates × 384 dims.
+    let mut best_sim: f64 = 0.0;
+    let mut best_name: Option<String> = None;
+    {
+        let dense = state
+            .template_embeddings
+            .read()
+            .map_err(|_| MimirError::Internal("template_embeddings lock poisoned".into()))?;
+        for (name, template_emb) in dense.iter() {
+            let sim = sdr::dot_similarity(&embedding, template_emb);
+            if sim > best_sim {
+                best_sim = sim;
+                best_name = Some(name.clone());
+            }
+        }
+    } // RwLock guard dropped here
+
+    // Step 7b: Binarize → 256-bit SDR (still needed for engram storage path)
+    let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
+
+    // Step 9: Store engram if best match meets threshold
+    if best_sim >= threshold {
+        if let Some(matched_name) = best_name {
+            let cause = format!("{}: {}", matched_name, &content[..content.len().min(200)]);
+            let effect = format!(
+                "[auto:{}@{}] {}",
+                body.source,
+                body.workstation,
+                &content[..content.len().min(500)]
+            );
+            let sdr_bytes = sdr::to_bytes(&sdr_val);
+            let pg_content_hash: Vec<u8> = {
+                let mut hasher = Sha256::new();
+                hasher.update(cause.as_bytes());
+                hasher.update(b"\n");
+                hasher.update(effect.as_bytes());
+                hasher.finalize().to_vec()
+            };
+            let trigger_label = truncate_to_word_boundary(&cause, 80);
+            let tags = vec![
+                "auto_ingest".to_string(),
+                matched_name.clone(),
+                format!("workstation:{}", body.workstation),
+            ];
+            let id = engrams::insert_engram_sdr(
+                state.store.pool(),
+                &engrams::EngramSdrParams {
+                    cause: &cause,
+                    effect: &effect,
+                    sdr_bits: &sdr_bytes,
+                    content_hash: &pg_content_hash,
+                    tags: &tags,
+                    trigger_type: "pattern",
+                    trigger_label: &trigger_label,
+                },
+                MemoryTier::Recall,
+            )
+            .await?;
+
+            state.sdr_index.insert(id, sdr_val);
+            let sdr_f32 = sdr::to_f32_vec(&sdr_val);
+            state
+                .vectors
+                .upsert("engrams_sdr", id, sdr_f32, HashMap::new())
+                .await?;
+
+            // Update cooldown and dedup maps
+            state
+                .cooldown_map
+                .insert(body.workstation.clone(), std::time::Instant::now());
+            state
+                .content_hashes
+                .insert(content_hash_hex, std::time::Instant::now());
+
+            tracing::info!(
+                engram_id = %id,
+                template = %matched_name,
+                similarity = %best_sim,
+                workstation = %body.workstation,
+                "auto_ingest stored"
+            );
+
+            // Spawn Saga async enrichment (fire-and-forget).
+            // Saga verifies should_store, corrects category, and distills
+            // structured cause/effect. If Saga is down, the engram keeps
+            // its cosine-classified data.
+            {
+                let state_clone = state.clone();
+                let content_clone = content.clone();
+                let source_clone = body.source.clone();
+                let file_path_clone = body.file_path.clone();
+                let category_clone = matched_name.clone();
+                tokio::spawn(async move {
+                    crate::saga::enrich_engram(
+                        state_clone,
+                        id,
+                        content_clone,
+                        source_clone,
+                        file_path_clone,
+                        category_clone,
+                    )
+                    .await;
+                });
+            }
+
+            return Ok((
+                StatusCode::CREATED,
+                Json(AutoIngestResponse {
+                    stored: true,
+                    engram_id: Some(id),
+                    matched_template: Some(matched_name),
+                    similarity: Some(best_sim),
+                    skipped_reason: None,
+                }),
+            ));
+        }
+    }
+
+    // Step 10: Below threshold — return without storing
+    Ok((
+        StatusCode::OK,
+        Json(AutoIngestResponse {
+            stored: false,
+            engram_id: None,
+            matched_template: best_name,
+            similarity: if best_sim > 0.0 { Some(best_sim) } else { None },
+            skipped_reason: Some("below_threshold".into()),
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------

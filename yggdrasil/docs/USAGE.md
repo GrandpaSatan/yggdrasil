@@ -49,7 +49,8 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/store` | Store new engram. Body: `{cause, effect, tags?: [string]}` |
-| `POST` | `/api/v1/recall` | SDR dual-system recall. Body: `{text, limit?}` → returns `{engrams: [EngramEvent]}` |
+| `POST` | `/api/v1/recall` | SDR dual-system recall. Body: `{text, limit?, include_text?: bool}` → returns `{events: [EngramEvent]}`. When `include_text: true`, each event includes `cause` and `effect` fields. |
+| `POST` | `/api/v1/auto-ingest` | Autonomous SDR-classified ingest. Body: `{content, source, event_type, workstation, file_path?, project?}` → returns `{stored, engram_id?, matched_template?, similarity?, skipped_reason?}` |
 | `POST` | `/api/v1/query` | Legacy semantic query (uses SDR). Body: `{text, limit?}` → returns `{results: [{cause, effect, similarity}]}` |
 | `POST` | `/api/v1/sdr/operations` | SDR set operations (and, or, xor, jaccard) on N input texts. Body: `{texts: [string], operation: "and"|"or"|"xor"|"jaccard"}` → returns `{sdr_hex: string, popcount: int, matched_engrams: [EngramEvent], jaccard_matrix?: [[float]]}` |
 | `GET`  | `/api/v1/stats` | Engram statistics (count, tier breakdown, recall capacity) |
@@ -436,6 +437,146 @@ cd ~/yggdrasil
 ```
 get_sprint_history_tool(project: "yggdrasil", limit: 5)
 ```
+
+---
+
+## Autonomous Memory Pipeline (Sprint 044)
+
+Memory recall and ingestion are handled automatically via Claude Code hook scripts. No explicit `query_memory_tool` or `store_memory_tool` calls are needed for routine file-context operations. Those tools remain available for topology queries, sprint history, and deliberate knowledge storage.
+
+### Environment Variable
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MIMIR_URL` | `http://<munin-ip>:9090` | Base URL for Mimir. Set this if Mimir runs on a different host or port. Used by all hook scripts. |
+
+### `POST /api/v1/auto-ingest`
+
+SDR-classified autonomous ingest. Content is embedded, fingerprinted into a 256-bit SDR, and matched against 6 pre-seeded insight templates. If the best template match exceeds the configured threshold (default 0.3 Hamming similarity), a cause/effect engram is auto-generated and stored.
+
+**Request:**
+
+```json
+{
+  "content": "Edited crates/mimir/src/handlers.rs: replaced old error path with proper Result",
+  "source": "Edit",
+  "event_type": "post_tool",
+  "workstation": "homelab-pc",
+  "file_path": "crates/mimir/src/handlers.rs",
+  "project": "yggdrasil"
+}
+```
+
+**Response (stored):**
+
+```json
+{
+  "stored": true,
+  "engram_id": "a1b2c3d4-...",
+  "matched_template": "bug_fix",
+  "similarity": 0.42,
+  "skipped_reason": null
+}
+```
+
+**Response (skipped):**
+
+```json
+{
+  "stored": false,
+  "engram_id": null,
+  "matched_template": null,
+  "similarity": 0.15,
+  "skipped_reason": "below_threshold"
+}
+```
+
+Other `skipped_reason` values: `"cooldown"`, `"duplicate"`, `"empty_content"`.
+
+**curl example:**
+
+```bash
+curl -s -X POST http://<munin-ip>:9090/api/v1/auto-ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Fixed DashMap clone bug: use Arc<DashMap> for shared Axum state",
+    "source": "Edit",
+    "event_type": "post_tool",
+    "workstation": "homelab-pc"
+  }'
+```
+
+### `POST /api/v1/recall` — `include_text` Parameter
+
+The existing recall endpoint accepts an optional `include_text: true` parameter. When set, each returned event includes the full `cause` and `effect` text fields (normally omitted per Sprint 015 zero-injection policy).
+
+```bash
+curl -s -X POST http://<munin-ip>:9090/api/v1/recall \
+  -H "Content-Type: application/json" \
+  -d '{"text": "DashMap shared state Axum", "limit": 3, "include_text": true}'
+```
+
+### Hook Scripts
+
+Hook scripts live at `deploy/workstation/` in the repository. They are wired into Claude Code via `~/.claude/settings.json`.
+
+| Script | Hook Type | Trigger | Behavior |
+|--------|-----------|---------|----------|
+| `ygg-hooks-init.sh` | SessionStart | Every new Claude Code session | Creates `/tmp/ygg-hooks/` directory and initializes timing log |
+| `ygg-memory-recall.sh` | PreToolUse | `Edit\|Write` | Queries Mimir `/api/v1/recall` with file context, returns `additionalContext` with relevant memories. Hard timeout 500ms. |
+| `ygg-memory-ingest.sh` | PostToolUse | `Edit\|Write\|Bash` | Sends tool I/O to Mimir `/api/v1/auto-ingest` in the background (fire-and-forget). Never blocks. |
+
+**Visual indicators** (printed to stderr, visible in terminal):
+- `[mem] <- recalled N engrams` -- recall hook found relevant memories
+- `[mem] -> stored: {template}` -- ingest hook matched a template
+- `[mem] -> skipped` -- ingest hook content was below threshold or deduplicated
+- No output on failure (graceful degradation, silent no-op)
+
+### Hook Installation
+
+The hook scripts are configured in `~/.claude/settings.json` under the `hooks` key. The `deploy/workstation/ClaudeClient_Install` script handles this automatically. For manual setup:
+
+1. Ensure scripts are executable:
+   ```bash
+   chmod +x deploy/workstation/ygg-hooks-init.sh
+   chmod +x deploy/workstation/ygg-memory-recall.sh
+   chmod +x deploy/workstation/ygg-memory-ingest.sh
+   ```
+
+2. Add to `~/.claude/settings.json` (abbreviated -- see sprint-044 Phase 3 for full config):
+   ```json
+   {
+     "hooks": {
+       "SessionStart": [{"hooks": [{"type": "command", "command": "/absolute/path/to/ygg-hooks-init.sh"}]}],
+       "PreToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "/absolute/path/to/ygg-memory-recall.sh"}]}],
+       "PostToolUse": [
+         {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "/absolute/path/to/ygg-memory-ingest.sh"}]},
+         {"matcher": "Bash", "hooks": [{"type": "command", "command": "/absolute/path/to/ygg-memory-ingest.sh"}]}
+       ]
+     }
+   }
+   ```
+
+3. Optionally set `MIMIR_URL` if Mimir is not at the default address:
+   ```bash
+   export MIMIR_URL="http://<munin-ip>:9090"
+   ```
+
+**Prerequisites:** `curl` and `jq` must be installed on the workstation.
+
+### Seed Insight Templates
+
+The `seed-insight-templates.sh` script populates Mimir with the 6 insight template engrams used for SDR template matching. Run once after deploying the auto-ingest endpoint, or re-run to update templates.
+
+```bash
+# Seed all 6 templates (idempotent)
+MIMIR_URL=http://<munin-ip>:9090 deploy/workstation/seed-insight-templates.sh
+
+# Templates seeded: bug_fix, architecture_decision, sprint_lifecycle,
+# user_feedback, deployment_change, gotcha
+```
+
+Mimir loads template SDRs at startup from engrams tagged `insight_template`. After seeding, restart Mimir or wait for the next restart for templates to take effect.
 
 ---
 

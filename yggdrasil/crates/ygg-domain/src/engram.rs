@@ -114,7 +114,10 @@ pub enum EngramTrigger {
     Pattern { label: String, intent_hint: String },
 }
 
-/// An event returned by the recall endpoint — no full cause/effect text.
+/// An event returned by the recall endpoint — no full cause/effect text by default.
+///
+/// When `include_text: true` is set in the RecallQuery, the `cause` and `effect` fields
+/// are populated from PostgreSQL. Otherwise they remain None (metadata-only response).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngramEvent {
     pub id: Uuid,
@@ -124,6 +127,12 @@ pub struct EngramEvent {
     pub trigger: EngramTrigger,
     pub created_at: DateTime<Utc>,
     pub access_count: i64,
+    /// Full cause text — populated only when `include_text: true` in the recall request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// Full effect text — populated only when `include_text: true` in the recall request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
 }
 
 /// Request for event-based engram recall.
@@ -132,6 +141,10 @@ pub struct RecallQuery {
     pub text: String,
     #[serde(default = "default_query_limit")]
     pub limit: usize,
+    /// When true, populate `cause` and `effect` on returned EngramEvents.
+    /// Backward-compatible: callers that omit this field get the original metadata-only response.
+    #[serde(default)]
+    pub include_text: Option<bool>,
 }
 
 /// Response from event-based recall.
@@ -142,4 +155,48 @@ pub struct RecallResponse {
     /// Hex-encoded 256-bit SDR of the query text (optional, for session drift tracking).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_sdr_hex: Option<String>,
+}
+
+// --- Sprint 044: Autonomous memory pipeline types ---
+
+/// Request for the autonomous memory ingest endpoint (`POST /api/v1/auto-ingest`).
+///
+/// Hook scripts send this after every Edit/Write/Bash tool invocation.
+/// Mimir SDR-encodes the content, matches against insight templates, and stores
+/// an engram only when the Hamming similarity exceeds the configured threshold.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AutoIngestRequest {
+    /// Text to classify and potentially store.
+    pub content: String,
+    /// Originating tool identifier, e.g. "Edit", "Write", "Bash".
+    pub source: String,
+    /// "pre_tool" or "post_tool".
+    pub event_type: String,
+    /// Hostname of the workstation that generated this event.
+    pub workstation: String,
+    /// File being edited/written, if applicable.
+    #[serde(default)]
+    pub file_path: Option<String>,
+    /// Project identifier for scoping, e.g. "yggdrasil".
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Response from the autonomous memory ingest endpoint.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AutoIngestResponse {
+    /// Whether an engram was created.
+    pub stored: bool,
+    /// UUID of the created engram, if stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engram_id: Option<Uuid>,
+    /// Name of the insight template that matched, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_template: Option<String>,
+    /// Hamming similarity score against the matched template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f64>,
+    /// Why the engram was not stored, e.g. "below_threshold", "duplicate", "cooldown".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
 }

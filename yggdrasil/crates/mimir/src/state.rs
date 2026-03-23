@@ -1,12 +1,14 @@
 use std::path::Path;
+use std::sync::Arc;
 
+use dashmap::DashMap;
 use ygg_domain::config::MimirConfig;
 use ygg_store::{Store, qdrant::VectorStore};
 use ygg_store::qdrant::Distance;
 
 use ygg_embed::OnnxEmbedder;
 
-use crate::{error::MimirError, sdr_index::SdrIndex};
+use crate::{error::MimirError, sdr::Sdr, sdr_index::SdrIndex};
 
 /// SDR collection dimension: 256 bits stored as 256 floats (0.0 / 1.0).
 const SDR_DIM: u64 = 256;
@@ -30,6 +32,23 @@ pub struct AppState {
     pub config: MimirConfig,
     /// Sender to signal background tasks (e.g. summarization) to shut down.
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Per-workstation cooldown map for auto-ingest rate limiting.
+    ///
+    /// IMPORTANT: Must be Arc<DashMap> — DashMap::clone() creates an independent
+    /// deep copy, not a shared reference. Arc ensures all Axum handler clones share
+    /// the same underlying map. (Sprint 018 gotcha)
+    pub cooldown_map: Arc<DashMap<String, std::time::Instant>>,
+    /// Content-hash dedup map: SHA-256 hex → last seen instant.
+    /// Same Arc pattern required for shared Axum state.
+    pub content_hashes: Arc<DashMap<String, std::time::Instant>>,
+    /// Insight template SDRs loaded at startup: (category_name, sdr).
+    /// Populated by main.rs after state construction via a PG query for tag "insight_template".
+    /// RwLock allows a single background writer at startup and concurrent readers thereafter.
+    pub template_sdrs: Arc<std::sync::RwLock<Vec<(String, Sdr)>>>,
+    /// Dense 384-dim template embeddings for cosine matching.
+    /// Loaded at startup alongside SDR templates. Preserves full magnitude information
+    /// that SDR binarization discards, yielding much better classification accuracy.
+    pub template_embeddings: Arc<std::sync::RwLock<Vec<(String, Vec<f32>)>>>,
 }
 
 impl AppState {
@@ -103,6 +122,16 @@ impl AppState {
         // --- Shutdown channel ---
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
 
+        // --- Auto-ingest state (Sprint 044) ---
+        // DashMap fields must be Arc-wrapped for Axum shared state — clone() creates
+        // an independent copy, not a shared reference. See Sprint 018 gotcha.
+        let cooldown_map = Arc::new(DashMap::new());
+        let content_hashes = Arc::new(DashMap::new());
+        // template_sdrs + template_embeddings populated in main.rs after startup
+        // via PG query for "insight_template" tag.
+        let template_sdrs = Arc::new(std::sync::RwLock::new(Vec::<(String, Sdr)>::new()));
+        let template_embeddings = Arc::new(std::sync::RwLock::new(Vec::<(String, Vec<f32>)>::new()));
+
         Ok(Self {
             store,
             vectors,
@@ -110,6 +139,10 @@ impl AppState {
             embedder,
             config,
             shutdown_tx,
+            cooldown_map,
+            content_hashes,
+            template_sdrs,
+            template_embeddings,
         })
     }
 }

@@ -1,0 +1,12 @@
+FROM ./saga-q4_k_m.gguf
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+SYSTEM "You are Saga, Yggdrasil's memory engine. Respond ONLY in valid JSON."
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9
+PARAMETER num_predict 256
+PARAMETER stop "<|im_end|>"

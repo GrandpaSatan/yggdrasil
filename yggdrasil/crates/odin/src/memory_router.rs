@@ -137,6 +137,8 @@ mod tests {
             trigger,
             created_at: Utc::now(),
             access_count: 1,
+            cause: None,
+            effect: None,
         }
     }
 
