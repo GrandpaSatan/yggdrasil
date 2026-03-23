@@ -48,6 +48,44 @@ done
 rsync -avz --rsync-path="sudo rsync" "deploy/wait-for-health.sh" "${REMOTE}:${INSTALL_DIR}/bin/"
 ssh "$REMOTE" "sudo chmod +x ${INSTALL_DIR}/bin/wait-for-health.sh"
 
+# 5b. Deploy power management overrides (Munin only — laptop server)
+if [ "$NODE" = "munin" ]; then
+    echo "Deploying power management overrides for Munin (laptop server)..."
+
+    # logind override: prevent suspend on lid close / idle
+    ssh "$REMOTE" "sudo mkdir -p /etc/systemd/logind.conf.d"
+    rsync -avz --rsync-path="sudo rsync" \
+        "deploy/munin/power/logind.conf.d/99-yggdrasil-nosuspend.conf" \
+        "${REMOTE}:/etc/systemd/logind.conf.d/"
+
+    # sleep override: disable all sleep states
+    ssh "$REMOTE" "sudo mkdir -p /etc/systemd/sleep.conf.d"
+    rsync -avz --rsync-path="sudo rsync" \
+        "deploy/munin/power/sleep.conf.d/99-yggdrasil-nosleep.conf" \
+        "${REMOTE}:/etc/systemd/sleep.conf.d/"
+
+    # Resume recovery service + script
+    rsync -avz --rsync-path="sudo rsync" \
+        "deploy/munin/power/yggdrasil-resume.service" \
+        "${REMOTE}:/etc/systemd/system/"
+    rsync -avz --rsync-path="sudo rsync" \
+        "deploy/munin/power/yggdrasil-resume.sh" \
+        "${REMOTE}:${INSTALL_DIR}/bin/"
+    ssh "$REMOTE" "sudo chmod +x ${INSTALL_DIR}/bin/yggdrasil-resume.sh"
+
+    # Mask sleep targets (belt and suspenders)
+    ssh "$REMOTE" "sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target"
+
+    # Restart logind to pick up new config
+    ssh "$REMOTE" "sudo systemctl restart systemd-logind"
+
+    # Enable resume recovery service
+    ssh "$REMOTE" "sudo systemctl daemon-reload"
+    ssh "$REMOTE" "sudo systemctl enable yggdrasil-resume.service"
+
+    echo "Power management configured: suspend disabled, resume safety net enabled."
+fi
+
 # 6. Reload systemd and enable services
 ssh "$REMOTE" "sudo systemctl daemon-reload"
 for svc in "${SERVICES[@]}"; do

@@ -12,6 +12,17 @@
 - **Runs:** Odin (port 8080), Mimir (port 9090), MCP Remote (port 9093), Sentinel, ygg-node
 - **SSH:** key-based authentication required (`yggdrasil@munin`)
 
+### Power Management (Laptop Server Mode)
+
+Munin is a laptop running as a headless server. Suspend/hibernate is fully disabled at three levels:
+1. **logind.conf override** (`/etc/systemd/logind.conf.d/99-yggdrasil-nosuspend.conf`): Ignores lid switch, power key, and idle actions
+2. **sleep.conf override** (`/etc/systemd/sleep.conf.d/99-yggdrasil-nosleep.conf`): Disables all sleep states (suspend, hibernate, hybrid)
+3. **Masked targets**: `sleep.target`, `suspend.target`, `hibernate.target`, `hybrid-sleep.target` are masked
+
+**Safety net:** `yggdrasil-resume.service` (oneshot, `WantedBy=suspend.target`) automatically restarts all Yggdrasil services in dependency order if a resume somehow occurs. Recovery script: `/opt/yggdrasil/bin/yggdrasil-resume.sh`.
+
+**Emergency shutdown:** Long-press power button (5s) still triggers poweroff for hardware failure scenarios.
+
 ## Hades (Database Host)
 
 - **IP:** `<hades-ip>`

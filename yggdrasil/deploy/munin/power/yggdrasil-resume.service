@@ -1,0 +1,13 @@
+[Unit]
+Description=Yggdrasil Post-Resume Service Recovery
+After=suspend.target hibernate.target hybrid-sleep.target
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/yggdrasil/bin/yggdrasil-resume.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=suspend.target hibernate.target hybrid-sleep.target
