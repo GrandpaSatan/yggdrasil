@@ -32,5 +32,7 @@ pub fn telemetry() -> PrometheusHandle {
 /// Silently ignored if `sd_notify` is not available (e.g. running outside
 /// systemd).
 pub fn sd_ready() {
-    let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+    // unset_environment=false: keep NOTIFY_SOCKET so watchdog tasks can
+    // continue sending WATCHDOG=1 pings after the ready notification.
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
 }
