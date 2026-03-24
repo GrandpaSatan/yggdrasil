@@ -21,6 +21,7 @@ members = [
     "crates/ygg-installer",
     "crates/ygg-voice",
     "crates/ygg-gaming",
+    "crates/ygg-server",
 ]
 
 [workspace.package]

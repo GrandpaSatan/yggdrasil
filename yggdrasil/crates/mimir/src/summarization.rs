@@ -260,7 +260,7 @@ impl SummarizationService {
             embedder.embed(&cause_text)
         })
         .await
-        .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))??;
+        .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))??;
 
         // Tags: "auto-summary" + a batch marker using the first source ID's short form.
         let batch_tag = format!("batch-{}", &source_ids[0].to_string()[..8]);

@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
 use sd_notify::NotifyState;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 use ygg_domain::config::HuginnConfig;
 
 use huginn::health::{HealthState, start_health_server};
@@ -41,9 +39,8 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    // --- Telemetry: tracing + Prometheus metrics recorder ---
+    let prometheus_handle = ygg_server::init::telemetry();
 
     let cli = Cli::parse();
     info!(config = %cli.config, "huginn starting");
@@ -65,13 +62,6 @@ async fn main() -> anyhow::Result<()> {
             "watch_path '{}' does not exist", path
         );
     }
-
-    // --- Prometheus metrics recorder ---
-    // Install the global recorder. The handle is passed into HealthState so
-    // that the /metrics endpoint can render text exposition format.
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .context("failed to install prometheus recorder")?;
 
     match cli.command {
         Command::Index { force, repo_root } => {
@@ -146,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
             // --- systemd ready notification ---
             // Signal after the initial index so that systemd considers the
             // service healthy only once it is actually ready to watch.
-            let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+            ygg_server::init::sd_ready();
 
             // --- systemd watchdog ---
             // Huginn uses WatchdogSec=60 (send every 30s). Cancelled on shutdown.

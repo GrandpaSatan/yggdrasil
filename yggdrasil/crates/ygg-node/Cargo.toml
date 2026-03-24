@@ -14,14 +14,15 @@ ygg-mesh = { path = "../ygg-mesh" }
 ygg-domain = { path = "../ygg-domain" }
 ygg-config = { path = "../ygg-config" }
 ygg-energy = { path = "../ygg-energy" }
+ygg-server = { path = "../ygg-server" }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+
 clap = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
-sd-notify = { workspace = true }
+
 tokio-util = { workspace = true }
 serde = { workspace = true }

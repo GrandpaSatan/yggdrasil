@@ -17,7 +17,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use clap::Parser;
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, fmt};
 use ygg_domain::mesh::{ClusterConfig, NodeCapabilities, ServiceEndpoint};
 use ygg_energy::EnergyManager;
 use ygg_mesh::discovery::{self, DiscoveryEvent};
@@ -53,11 +52,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let _prometheus_handle = ygg_server::init::telemetry();
 
     let args = Args::parse();
 
@@ -223,10 +218,10 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind to {}", bind_addr))?;
 
     info!(addr = %bind_addr, "mesh node ready");
-    let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+    ygg_server::init::sd_ready();
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(ygg_server::shutdown::signal())
         .await
         .context("mesh node HTTP server error")?;
 
@@ -272,36 +267,5 @@ async fn build_capabilities(
         services,
         has_gpu: false,
         energy_policy,
-    }
-}
-
-async fn shutdown_signal() {
-    use tokio::signal;
-
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            tracing::error!(error = %e, "failed to install CTRL+C handler");
-        }
-    };
-
-    #[cfg(unix)]
-    let sigterm = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGTERM handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => { info!("received SIGINT, shutting down"); }
-        _ = sigterm => { info!("received SIGTERM, shutting down"); }
     }
 }

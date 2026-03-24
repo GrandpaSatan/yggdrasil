@@ -7,10 +7,8 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
 use sd_notify::NotifyState;
 use tower_http::cors::CorsLayer;
-use tracing_subscriber::EnvFilter;
 
 use mimir::{
     handlers::{
@@ -20,7 +18,6 @@ use mimir::{
         recall_engrams, sdr_operations, store_engram, task_cancel, task_complete, task_list,
         task_pop, task_push, timeline,
     },
-    metrics::metrics_middleware,
     state::{AppState, load_sdr_rows},
     summarization::SummarizationService,
 };
@@ -39,10 +36,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // --- Tracing setup ---
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    // --- Tracing + Prometheus setup ---
+    let prometheus_handle = ygg_server::init::telemetry();
 
     let cli = Cli::parse();
     tracing::info!(config = %cli.config, "mimir starting");
@@ -58,13 +53,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("database_url overridden via CLI/env");
         config.database_url = db_url;
     }
-
-    // --- Prometheus metrics recorder ---
-    // Install the global recorder before building state so that any metrics
-    // emitted during startup are captured.
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .map_err(|e| anyhow::anyhow!("failed to install prometheus recorder: {e}"))?;
 
     // --- Build application state (connects to all external services) ---
     let state = AppState::new(config)
@@ -131,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         // Metrics middleware: records request count and duration for all routes.
-        .layer(middleware::from_fn(metrics_middleware))
+        .layer(middleware::from_fn(ygg_server::metrics::http_metrics("mimir")))
         .layer(CorsLayer::permissive())
         // Cap request body at 2MB to prevent abuse.
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
@@ -213,9 +201,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- systemd ready notification ---
-    // Signal systemd that the service is ready. No-ops when NOTIFY_SOCKET is
-    // not set (non-systemd environments).
-    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+    ygg_server::init::sd_ready();
 
     // --- systemd watchdog ---
     // Send WATCHDOG=1 at half the WatchdogSec interval. Cancelled on shutdown.
@@ -238,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Graceful shutdown on SIGTERM or SIGINT.
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(ygg_server::shutdown::signal())
         .await
         .map_err(|e| anyhow::anyhow!("server error: {e}"))?;
 
@@ -320,32 +306,3 @@ async fn load_template_sdrs(state: &std::sync::Arc<AppState>) -> anyhow::Result<
     Ok(count)
 }
 
-/// Wait for SIGTERM or SIGINT and return so that `axum::serve` can finish in-flight requests.
-async fn shutdown_signal() {
-    use tokio::signal;
-
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            tracing::error!(error = %e, "failed to install CTRL+C signal handler");
-        }
-    };
-
-    #[cfg(unix)]
-    let sigterm = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGTERM signal handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => { tracing::info!("received SIGINT, shutting down"); }
-        _ = sigterm => { tracing::info!("received SIGTERM, shutting down"); }
-    }
-}

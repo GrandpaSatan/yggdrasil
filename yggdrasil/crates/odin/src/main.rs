@@ -21,16 +21,12 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use sd_notify::NotifyState;
 use tower_http::cors::CorsLayer;
-use tracing_subscriber::EnvFilter;
 use ygg_domain::config::OdinConfig;
 use ygg_ha::HaClient;
 
 use odin::{
     handlers,
-    metrics::metrics_middleware,
     router::SemanticRouter,
     session::{self, SessionStore},
     state::{AppState, BackendState, CloudPool},
@@ -60,12 +56,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ── Logging ───────────────────────────────────────────────────
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    // ── Telemetry (tracing + Prometheus recorder) ─────────────────
+    let prometheus_handle = ygg_server::init::telemetry();
 
     // ── CLI ───────────────────────────────────────────────────────
     let cli = Cli::parse();
@@ -86,14 +78,6 @@ async fn main() -> anyhow::Result<()> {
         backends = config.backends.len(),
         "configuration loaded"
     );
-
-    // ── Prometheus metrics recorder ───────────────────────────────
-    // Install the global recorder. The returned handle is moved into the
-    // /metrics route closure so it can render the text exposition format on
-    // each scrape request.
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .context("failed to install prometheus recorder")?;
 
     // ── reqwest client ────────────────────────────────────────────
     // A single shared client for all outbound HTTP calls.
@@ -343,7 +327,7 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         // Metrics middleware: records request count and duration for all routes.
-        .layer(middleware::from_fn(metrics_middleware))
+        .layer(middleware::from_fn(ygg_server::metrics::http_metrics("odin")))
         // CORS middleware — permissive for private LAN deployment.
         .layer(CorsLayer::permissive())
         // Cap request body at 2MB to prevent abuse.
@@ -381,10 +365,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── systemd ready notification ────────────────────────────────
-    // Signal systemd that the service is ready. This unblocks any unit that
-    // lists odin in its `After=` or `Requires=` clauses.
-    // No-ops gracefully when NOTIFY_SOCKET is not set (non-systemd envs).
-    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+    ygg_server::init::sd_ready();
 
     // ── systemd watchdog ──────────────────────────────────────────
     // If WatchdogSec is configured, send WATCHDOG=1 at half the interval.
@@ -398,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
+                        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
                     }
                     _ = wd_rx.changed() => break,
                 }
@@ -408,7 +389,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Serve with graceful shutdown ──────────────────────────────
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(ygg_server::shutdown::signal())
         .await
         .context("server error")?;
 
@@ -427,38 +408,3 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Graceful shutdown signal
-// ─────────────────────────────────────────────────────────────────
-
-/// Wait for SIGINT (Ctrl-C) or SIGTERM to trigger graceful shutdown.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::error!(error = %e, "failed to install Ctrl-C handler");
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGTERM handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {
-            tracing::info!("received SIGINT — shutting down");
-        }
-        _ = terminate => {
-            tracing::info!("received SIGTERM — shutting down");
-        }
-    }
-}

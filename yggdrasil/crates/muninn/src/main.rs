@@ -5,10 +5,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use sd_notify::NotifyState;
 use tower_http::cors::CorsLayer;
-use tracing_subscriber::EnvFilter;
 use ygg_store::{Store, qdrant::VectorStore};
 use ygg_embed::OnnxEmbedder;
 
@@ -17,7 +14,6 @@ use muninn::{
         find_references_handler, health_handler, search_handler, stats_handler,
         symbol_lookup_handler,
     },
-    metrics::metrics_middleware,
     state::AppState,
 };
 
@@ -35,10 +31,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // --- Tracing setup ---
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    // --- Tracing + Prometheus ---
+    let prometheus_handle = ygg_server::init::telemetry();
 
     let cli = Cli::parse();
     tracing::info!(config = %cli.config, "muninn starting");
@@ -53,13 +47,6 @@ async fn main() -> anyhow::Result<()> {
         .listen_addr
         .clone()
         .unwrap_or_else(|| config.listen_addr.clone());
-
-    // --- Prometheus metrics recorder ---
-    // Install the global recorder before building state so that any metrics
-    // emitted during startup are captured.
-    let prometheus_handle = PrometheusBuilder::new()
-        .install_recorder()
-        .map_err(|e| anyhow::anyhow!("failed to install prometheus recorder: {e}"))?;
 
     // --- Connect to PostgreSQL ---
     tracing::info!(url = %config.database_url, "connecting to postgresql");
@@ -125,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         // Metrics middleware: records request count and duration for all routes.
-        .layer(middleware::from_fn(metrics_middleware))
+        .layer(middleware::from_fn(ygg_server::metrics::http_metrics("muninn")))
         .layer(CorsLayer::permissive())
         // Cap request body at 2MB to prevent abuse.
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
@@ -141,9 +128,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("muninn ready on {listen_addr}");
 
     // --- systemd ready notification ---
-    // Signal systemd that the service is ready. No-ops when NOTIFY_SOCKET is
-    // not set (non-systemd environments).
-    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+    ygg_server::init::sd_ready();
 
     // --- systemd watchdog ---
     // Send WATCHDOG=1 at half the WatchdogSec interval. Cancelled on shutdown.
@@ -156,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
+                        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
                     }
                     _ = wd_rx.changed() => break,
                 }
@@ -165,41 +150,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(ygg_server::shutdown::signal())
         .await
         .map_err(|e| anyhow::anyhow!("server error: {e}"))?;
 
     let _ = wd_tx.send(true);
     tracing::info!("muninn shut down gracefully");
     Ok(())
-}
-
-/// Wait for SIGTERM or SIGINT and return so that `axum::serve` can finish in-flight requests.
-async fn shutdown_signal() {
-    use tokio::signal;
-
-    let ctrl_c = async {
-        if let Err(e) = signal::ctrl_c().await {
-            tracing::error!(error = %e, "failed to install CTRL+C signal handler");
-        }
-    };
-
-    #[cfg(unix)]
-    let sigterm = async {
-        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGTERM signal handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => { tracing::info!("received SIGINT, shutting down"); }
-        _ = sigterm => { tracing::info!("received SIGTERM, shutting down"); }
-    }
 }

@@ -113,8 +113,8 @@ pub async fn store_engram(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&cause_text))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     // Step 4: Binarize → 256-bit SDR (uses first 256 dims of the 384-dim vector)
     let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
@@ -309,8 +309,8 @@ pub async fn list_sprints(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&qt))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     let results = state
         .vectors
@@ -361,8 +361,8 @@ pub async fn query_engrams(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&query_text))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
     let sdr_f32 = sdr::to_f32_vec(&query_sdr);
@@ -458,8 +458,8 @@ pub async fn recall_engrams(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&query_text))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
     let sdr_f32 = sdr::to_f32_vec(&query_sdr);
@@ -651,8 +651,8 @@ pub async fn embed_text(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&text))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     Ok((StatusCode::OK, Json(serde_json::json!({ "embedding": embedding }))))
 }
@@ -768,7 +768,7 @@ pub async fn sdr_operations(
         .embedder
         .embed_batch(&body.texts)
         .await
-        .map_err(|e| MimirError::Embedder(e.to_string()))?;
+        .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     // Step 2: Binarize each embedding → SDR
     let sdrs: Vec<sdr::Sdr> = embeddings
@@ -1593,8 +1593,8 @@ pub async fn auto_ingest(
     let embedding: Vec<f32> =
         tokio::task::spawn_blocking(move || embedder.embed(&content_for_embed))
             .await
-            .map_err(|e| MimirError::Embedder(format!("embed task panicked: {e}")))?
-            .map_err(|e| MimirError::Embedder(e.to_string()))?;
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     // Step 7: Dense cosine template matching (replaces lossy SDR Hamming).
     // Compare full 384-dim embedding against dense template embeddings.

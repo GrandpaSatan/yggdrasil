@@ -14,6 +14,7 @@ ygg-domain = { path = "../ygg-domain" }
 ygg-config = { path = "../ygg-config" }
 ygg-store = { path = "../ygg-store" }
 ygg-embed = { path = "../ygg-embed" }
+ygg-server = { path = "../ygg-server" }
 axum = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }

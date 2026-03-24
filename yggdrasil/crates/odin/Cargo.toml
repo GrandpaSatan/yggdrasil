@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 ygg-domain = { path = "../ygg-domain" }
 ygg-config = { path = "../ygg-config" }
+ygg-server = { path = "../ygg-server" }
 ygg-ha = { path = "../ygg-ha" }
 ygg-cloud = { path = "../ygg-cloud" }
 ygg-gaming = { path = "../ygg-gaming" }

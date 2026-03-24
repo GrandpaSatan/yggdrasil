@@ -36,7 +36,7 @@ pub async fn search_handler(
 ) -> Result<Json<SearchResponse>, MuninnError> {
     // --- Validate query ---
     if query.query.trim().is_empty() {
-        return Err(MuninnError::BadRequest("query must not be empty".to_string()));
+        return Err(MuninnError::Validation("query must not be empty".to_string()));
     }
 
     // --- Clamp limit to [1, 50] ---
@@ -178,7 +178,7 @@ pub async fn symbol_lookup_handler(
         && req.language.is_none()
         && req.file_path.is_none()
     {
-        return Err(MuninnError::BadRequest(
+        return Err(MuninnError::Validation(
             "at least one filter (name, chunk_type, language, file_path) is required".to_string(),
         ));
     }
@@ -255,7 +255,7 @@ pub async fn find_references_handler(
     Json(req): Json<FindReferencesRequest>,
 ) -> Result<Json<FindReferencesResponse>, MuninnError> {
     if req.symbol.trim().is_empty() {
-        return Err(MuninnError::BadRequest("symbol must not be empty".to_string()));
+        return Err(MuninnError::Validation("symbol must not be empty".to_string()));
     }
 
     let exclude_id = req

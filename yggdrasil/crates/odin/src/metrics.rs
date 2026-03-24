@@ -1,50 +1,16 @@
-/// Odin Prometheus metrics middleware and recording helpers.
+/// Odin-specific Prometheus metric recording helpers.
 ///
-/// Installs common HTTP request counters/histograms, plus Odin-specific
-/// metrics for LLM generation latency, routing intent, and active backend
-/// requests.
+/// HTTP request metrics (`ygg_http_requests_total`, `ygg_http_request_duration_seconds`)
+/// are handled by `ygg_server::metrics::http_metrics`. This module contains only
+/// Odin-specific metrics:
 ///
-/// Metrics registered here:
-/// - `ygg_http_requests_total`           counter   {service, endpoint, status}
-/// - `ygg_http_request_duration_seconds` histogram {service, endpoint}
-/// - `ygg_routing_intent_total`          counter   {intent}
-/// - `ygg_llm_generation_duration_seconds` histogram {model}
-/// - `ygg_backend_active_requests`       gauge     {backend}
-use axum::{extract::Request, middleware::Next, response::Response};
+/// - `ygg_routing_intent_total`             counter   {intent}
+/// - `ygg_llm_generation_duration_seconds`  histogram {model}
+/// - `ygg_backend_active_requests`          gauge     {backend}
+/// - `ygg_agent_tool_calls_total`           counter   {tool, status}
+/// - `ygg_agent_iterations_total`           counter
+/// - `ygg_agent_loop_duration_seconds`      histogram
 use metrics::{counter, histogram};
-use std::time::Instant;
-
-/// Axum middleware that records `ygg_http_requests_total` and
-/// `ygg_http_request_duration_seconds` for every request that passes through
-/// the router.
-///
-/// Install via `axum::middleware::from_fn(odin::metrics::metrics_middleware)`.
-pub async fn metrics_middleware(req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
-    let start = Instant::now();
-
-    let response = next.run(req).await;
-
-    let duration = start.elapsed().as_secs_f64();
-    let status = response.status().as_u16().to_string();
-
-    counter!(
-        "ygg_http_requests_total",
-        "service" => "odin",
-        "endpoint" => path.clone(),
-        "status" => status
-    )
-    .increment(1);
-
-    histogram!(
-        "ygg_http_request_duration_seconds",
-        "service" => "odin",
-        "endpoint" => path
-    )
-    .record(duration);
-
-    response
-}
 
 /// Increment the routing intent counter.
 ///

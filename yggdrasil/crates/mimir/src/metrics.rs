@@ -1,50 +1,14 @@
-/// Mimir Prometheus metrics middleware and recording helpers.
+/// Mimir-specific Prometheus metrics recording helpers.
 ///
-/// Installs common HTTP request counters/histograms, plus Mimir-specific
-/// metrics for engram counts, embedding latency, and summarization progress.
+/// HTTP request metrics (ygg_http_requests_total, ygg_http_request_duration_seconds)
+/// are handled by `ygg_server::metrics::http_metrics("mimir")`.
 ///
-/// Metrics registered here:
-/// - `ygg_http_requests_total`           counter   {service, endpoint, status}
-/// - `ygg_http_request_duration_seconds` histogram {service, endpoint}
+/// Mimir-specific metrics registered here:
 /// - `ygg_engram_count`                  gauge     {tier}
 /// - `ygg_embedding_duration_seconds`    histogram {}
 /// - `ygg_summarization_total`           counter   {}
 /// - `ygg_summarization_engrams_archived` counter  {}
-use axum::{extract::Request, middleware::Next, response::Response};
 use metrics::{counter, histogram};
-use std::time::Instant;
-
-/// Axum middleware that records `ygg_http_requests_total` and
-/// `ygg_http_request_duration_seconds` for every request through the Mimir
-/// router.
-///
-/// Install via `axum::middleware::from_fn(mimir::metrics::metrics_middleware)`.
-pub async fn metrics_middleware(req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
-    let start = Instant::now();
-
-    let response = next.run(req).await;
-
-    let duration = start.elapsed().as_secs_f64();
-    let status = response.status().as_u16().to_string();
-
-    counter!(
-        "ygg_http_requests_total",
-        "service" => "mimir",
-        "endpoint" => path.clone(),
-        "status" => status
-    )
-    .increment(1);
-
-    histogram!(
-        "ygg_http_request_duration_seconds",
-        "service" => "mimir",
-        "endpoint" => path
-    )
-    .record(duration);
-
-    response
-}
 
 /// Update the gauge for the number of engrams in a given tier.
 ///
