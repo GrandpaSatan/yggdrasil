@@ -262,6 +262,10 @@ async fn main() -> anyhow::Result<()> {
         tool_registry,
         gaming_config,
         skill_cache: Arc::new(odin::skill_cache::SkillCache::new()),
+        wake_word_registry: Arc::new(odin::wake_word::WakeWordRegistry::new(
+            Some(std::path::PathBuf::from("/var/lib/yggdrasil/wake-words.json")),
+        )),
+        omni_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         voice_alert_tx,
     };
 
@@ -311,6 +315,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/voice", get(voice_ws::voice_page))
         // Voice alert injection (Sentinel pushes anomaly alerts to browser clients).
         .route("/api/v1/voice/alert", post(voice_ws::voice_alert_handler))
+        // Wake word enrollment (multi-user SDR calibration).
+        .route("/api/v1/voice/enroll", get(handlers::wake_word_list))
+        .route("/api/v1/voice/enroll/{user_id}", post(handlers::wake_word_enroll).delete(handlers::wake_word_remove))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

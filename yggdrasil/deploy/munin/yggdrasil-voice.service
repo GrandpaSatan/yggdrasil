@@ -1,0 +1,19 @@
+[Unit]
+Description=Yggdrasil Voice — NPU-accelerated STT/TTS
+After=network.target
+Before=yggdrasil-odin.service
+
+[Service]
+Type=notify
+User=yggdrasil
+Group=yggdrasil
+SupplementaryGroups=audio render
+ExecStart=/opt/yggdrasil/bin/ygg-voice --config /etc/yggdrasil/voice/config.json
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+Environment=RUST_LOG=info
+EnvironmentFile=-/opt/yggdrasil/.env
+
+[Install]
+WantedBy=multi-user.target

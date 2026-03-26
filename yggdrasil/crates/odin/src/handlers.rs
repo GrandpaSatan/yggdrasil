@@ -92,21 +92,21 @@ fn acquire_with_fallback<'a>(
         "backend at capacity — attempting fallback reroute"
     );
 
-    if let Some(fb) = state.find_fallback_backend(&decision.backend_name, &decision.model) {
-        if let Ok(permit) = fb.semaphore.try_acquire() {
-            tracing::info!(
-                from = %decision.backend_name,
-                to = %fb.name,
-                "rerouted to fallback backend"
-            );
-            decision.backend_name = fb.name.clone();
-            decision.backend_url = fb.url.clone();
-            if let Some(m) = fb.models.first() {
-                decision.model = m.clone();
-            }
-            decision.backend_type = fb.backend_type.clone();
-            return Ok((fb, permit));
+    if let Some(fb) = state.find_fallback_backend(&decision.backend_name, &decision.model)
+        && let Ok(permit) = fb.semaphore.try_acquire()
+    {
+        tracing::info!(
+            from = %decision.backend_name,
+            to = %fb.name,
+            "rerouted to fallback backend"
+        );
+        decision.backend_name = fb.name.clone();
+        decision.backend_url = fb.url.clone();
+        if let Some(m) = fb.models.first() {
+            decision.model = m.clone();
         }
+        decision.backend_type = fb.backend_type.clone();
+        return Ok((fb, permit));
     }
 
     Err(OdinError::BackendUnavailable(format!(
@@ -2052,4 +2052,64 @@ async fn forward_get_to_mimir(
         .map_err(|e| OdinError::Proxy(format!("mimir body read error ({op}): {e}")))?;
 
     Ok((status, headers, response_body).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wake word enrollment
+// ─────────────────────────────────────────────────────────────────
+
+/// Enroll a wake word sample for a user.
+///
+/// `POST /api/v1/voice/enroll/:user_id`
+///
+/// Body: raw PCM s16le 16kHz mono bytes (application/octet-stream).
+pub async fn wake_word_enroll(
+    State(state): State<AppState>,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, OdinError> {
+    if body.len() < 2 || body.len() % 2 != 0 {
+        return Err(OdinError::BadRequest("body must be s16le PCM (even byte count)".into()));
+    }
+
+    let samples: Vec<i16> = body
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+
+    let sdr_hex = state
+        .wake_word_registry
+        .enroll(&user_id, &samples, &state.skill_cache)
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "user_id": user_id,
+        "sdr_hex": sdr_hex,
+        "samples_bytes": body.len(),
+    })))
+}
+
+/// List enrolled wake word users.
+///
+/// `GET /api/v1/voice/enroll`
+pub async fn wake_word_list(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let users = state.wake_word_registry.list_users().await;
+    let list: Vec<serde_json::Value> = users
+        .into_iter()
+        .map(|(id, count)| serde_json::json!({"user_id": id, "samples": count}))
+        .collect();
+    Json(serde_json::json!({"users": list}))
+}
+
+/// Remove all wake word samples for a user.
+///
+/// `DELETE /api/v1/voice/enroll/:user_id`
+pub async fn wake_word_remove(
+    State(state): State<AppState>,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let removed = state.wake_word_registry.remove_user(&user_id).await;
+    Json(serde_json::json!({"user_id": user_id, "removed": removed}))
 }

@@ -68,6 +68,11 @@
     "token": "${HA_TOKEN}",
     "timeout_secs": 10
   },
+  "voice": {
+    "enabled": true,
+    "voice_api_url": "http://localhost:9098",
+    "omni_url": "http://localhost:9098"
+  },
   "cloud": {
     "fallback_enabled": true,
     "openai": {

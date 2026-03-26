@@ -149,7 +149,7 @@ impl SkillCache {
             quantized[i] = (normalized * 255.0) as u8;
         }
 
-        let hash = Sha256::digest(&quantized);
+        let hash = Sha256::digest(quantized);
         sdr::from_bytes(&hash).unwrap_or(sdr::ZERO)
     }
 
@@ -228,10 +228,10 @@ impl SkillCache {
         }
 
         // Cache at capacity — evict LRU before inserting so post-insert size stays <= max_skills.
-        if guard.len() >= self.max_skills {
-            if let Some(lru_idx) = guard.iter().enumerate().min_by_key(|(_, s)| s.last_used).map(|(i, _)| i) {
-                guard.swap_remove(lru_idx);
-            }
+        if guard.len() >= self.max_skills
+            && let Some(lru_idx) = guard.iter().enumerate().min_by_key(|(_, s)| s.last_used).map(|(i, _)| i)
+        {
+            guard.swap_remove(lru_idx);
         }
 
         tracing::info!(

@@ -27,3 +27,4 @@ pub mod state;
 pub mod task_worker;
 pub mod tool_registry;
 pub mod voice_ws;
+pub mod wake_word;

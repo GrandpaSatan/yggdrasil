@@ -69,13 +69,86 @@ enum VadState {
 const SAMPLE_RATE: u32 = 16_000;
 /// Maximum buffer: 30 seconds of 16 kHz mono audio.
 const MAX_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
-/// RMS energy threshold for voice activity detection.
-const VAD_THRESHOLD: f32 = 0.01;
+/// RMS energy threshold for speech onset (voice activity detection).
+const VAD_THRESHOLD: f32 = 0.02;
+/// RMS energy threshold for silence detection (hysteresis — lower than onset).
+/// Laptop mics with AGC can have a noise floor around 0.01, so silence must be
+/// clearly below the onset threshold to avoid the VAD getting stuck in Listening.
+const SILENCE_THRESHOLD: f32 = 0.008;
 /// Number of consecutive below-threshold frames before end-of-speech.
 /// Each binary WebSocket message counts as one frame for this purpose.
 const SILENCE_TIMEOUT_FRAMES: u32 = 15;
 /// Window size (in samples) for the RMS energy check — 0.5 seconds.
 const VAD_WINDOW_SAMPLES: usize = SAMPLE_RATE as usize / 2;
+/// Maximum time in Listening state before forcing processing (in samples).
+/// Prevents VAD from getting stuck when background noise hovers near threshold.
+const MAX_UTTERANCE_SAMPLES: usize = 10 * SAMPLE_RATE as usize;
+
+// ─────────────────────────────────────────────────────────────────
+// Conversation state
+// ─────────────────────────────────────────────────────────────────
+
+/// Result of processing an utterance — drives the conversation state machine.
+#[derive(Debug)]
+enum ProcessResult {
+    /// Audio wasn't addressed to Fergus.
+    NotAddressed,
+    /// Greeting or question — stay in conversation, keep listening.
+    Continue(String),
+    /// Action completed — offer follow-up, shorter timeout.
+    Done(String),
+    /// User dismissed Fergus — return to idle.
+    Dismiss(String),
+    /// System is busy processing another request.
+    Busy,
+}
+
+/// Path to pre-rendered personality audio presets.
+const SOUNDS_DIR: &str = "/opt/yggdrasil/sounds";
+
+/// Send a pre-rendered PCM preset file over the WebSocket.
+async fn send_preset(socket: &mut WebSocket, name: &str) {
+    let path = format!("{SOUNDS_DIR}/{name}.pcm");
+    let Ok(data) = tokio::fs::read(&path).await else {
+        tracing::warn!(path, "preset file not found");
+        return;
+    };
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({"type": "audio_start", "sample_rate": 24000})
+                .to_string().into(),
+        ))
+        .await;
+    for chunk in data.chunks(8192) {
+        if socket.send(Message::Binary(chunk.to_vec().into())).await.is_err() {
+            return;
+        }
+    }
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({"type": "audio_end"}).to_string().into(),
+        ))
+        .await;
+}
+
+/// Parse a conversation flow tag from the end of a response.
+/// Returns (cleaned_text, tag) where tag is one of CONTINUE/DONE/DISMISS/NOT_ADDRESSED.
+fn parse_flow_tag(text: &str) -> (String, &'static str) {
+    let trimmed = text.trim();
+    for tag in &["[CONTINUE]", "[DONE]", "[DISMISS]", "[NOT_ADDRESSED]"] {
+        if trimmed.ends_with(tag) {
+            let cleaned = trimmed[..trimmed.len() - tag.len()].trim().to_string();
+            return (cleaned, tag);
+        }
+    }
+    // No tag found — default to CONTINUE (keep conversation open).
+    (trimmed.to_string(), "[CONTINUE]")
+}
+
+/// Conversation timeout (seconds of silence before returning to idle).
+const CONVERSATION_TIMEOUT_SECS: u64 = 8;
+/// Shorter timeout after a completed action.
+const CONVERSATION_DONE_TIMEOUT_SECS: u64 = 5;
 
 // ─────────────────────────────────────────────────────────────────
 // Per-connection session
@@ -108,6 +181,12 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     // Only honour the first *successful* session resume (valid session_id found in store).
     // A failed resume attempt (unknown session_id) leaves this false so the client can retry.
     let mut seen_resume = false;
+
+    // Conversation state — when active, wake word is not required.
+    let mut conversation_active = false;
+    let mut conversation_timeout = std::time::Instant::now();
+    let mut idle_since = std::time::Instant::now();
+    let mut conv_timeout_secs = CONVERSATION_TIMEOUT_SECS;
 
     loop {
         // Select between WebSocket messages and broadcast alerts.
@@ -165,26 +244,91 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                         }
                     }
                     VadState::Listening => {
-                        if energy <= VAD_THRESHOLD {
-                            silence_frames += 1;
-                            if silence_frames >= SILENCE_TIMEOUT_FRAMES {
-                                // Only send the speech portion, not pre-speech silence.
-                                let speech_audio = &audio_buffer[speech_start_sample..];
-                                process_utterance(
-                                    &mut socket,
-                                    &state,
-                                    &session_id,
-                                    speech_audio,
-                                )
-                                .await;
+                        let speech_len = audio_buffer.len().saturating_sub(speech_start_sample);
+                        let utterance_timeout = speech_len >= MAX_UTTERANCE_SAMPLES;
 
-                                // Reset for next utterance.
-                                audio_buffer.clear();
-                                vad_state = VadState::Idle;
-                                silence_frames = 0;
-                            }
+                        if energy <= SILENCE_THRESHOLD {
+                            silence_frames += 1;
                         } else {
                             silence_frames = 0;
+                        }
+
+                        if silence_frames >= SILENCE_TIMEOUT_FRAMES || utterance_timeout {
+                            if utterance_timeout {
+                                tracing::info!(speech_secs = speech_len / SAMPLE_RATE as usize, "voice: max utterance timeout — forcing processing");
+                            }
+
+                            // Pick the right wake preset based on idle duration.
+                            let wake_preset = if !conversation_active {
+                                let idle_secs = idle_since.elapsed().as_secs();
+                                Some(if idle_secs > 1800 {
+                                    "wake_drowsy"
+                                } else if idle_secs > 300 {
+                                    "wake_normal"
+                                } else {
+                                    "wake_fresh"
+                                })
+                            } else {
+                                None // Already in conversation, no wake preset.
+                            };
+
+                            // Only send the speech portion, not pre-speech silence.
+                            let speech_audio = &audio_buffer[speech_start_sample..];
+                            let result = process_utterance(
+                                &mut socket,
+                                &state,
+                                &session_id,
+                                speech_audio,
+                                conversation_active,
+                            )
+                            .await;
+
+                            // Drive conversation state machine based on result.
+                            match result {
+                                ProcessResult::NotAddressed => {
+                                    // Not for us — stay in current state.
+                                }
+                                ProcessResult::Continue(_) => {
+                                    if !conversation_active {
+                                        // First activation — play wake preset.
+                                        if let Some(preset) = wake_preset {
+                                            // Don't play preset — omni already responded.
+                                            tracing::info!(preset, "voice: conversation started");
+                                        }
+                                    }
+                                    conversation_active = true;
+                                    conversation_timeout = std::time::Instant::now();
+                                    conv_timeout_secs = CONVERSATION_TIMEOUT_SECS;
+                                }
+                                ProcessResult::Done(_) => {
+                                    conversation_active = true;
+                                    conversation_timeout = std::time::Instant::now();
+                                    conv_timeout_secs = CONVERSATION_DONE_TIMEOUT_SECS;
+                                }
+                                ProcessResult::Dismiss(_) => {
+                                    conversation_active = false;
+                                    idle_since = std::time::Instant::now();
+                                    send_preset(&mut socket, "dismiss_ack").await;
+                                }
+                                ProcessResult::Busy => {
+                                    send_preset(&mut socket, "busy_processing").await;
+                                }
+                            }
+
+                            // Reset for next utterance.
+                            audio_buffer.clear();
+                            vad_state = VadState::Idle;
+                            silence_frames = 0;
+
+                            // Check conversation timeout.
+                            if conversation_active
+                                && conversation_timeout.elapsed().as_secs() > conv_timeout_secs
+                            {
+                                tracing::info!("voice: conversation timed out");
+                                send_preset(&mut socket, "timeout_idle").await;
+                                conversation_active = false;
+                                idle_since = std::time::Instant::now();
+                            }
                         }
                     }
                     VadState::Processing => {
@@ -218,11 +362,12 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                             // Process if we have audio, regardless of server-side VAD state.
                             if !audio_buffer.is_empty() {
                                 let speech_audio = &audio_buffer[speech_start_sample..];
-                                process_utterance(
+                                let _result = process_utterance(
                                     &mut socket,
                                     &state,
                                     &session_id,
                                     speech_audio,
+                                    conversation_active,
                                 )
                                 .await;
 
@@ -257,7 +402,8 @@ async fn process_utterance(
     state: &AppState,
     session_id: &str,
     audio_buffer: &[i16],
-) {
+    conversation_active: bool,
+) -> ProcessResult {
     let http = &state.http_client;
     let voice_api_url = state.voice_api_url.as_deref().unwrap_or_default();
     let stt_url = state.stt_url.as_deref().unwrap_or(voice_api_url);
@@ -271,68 +417,35 @@ async fn process_utterance(
         ))
         .await;
 
-    // ── Wake word gate ─────────────────────────────────────────────
-    // Run STT first to check for "fergus". If not found, silently discard.
-    // This prevents TV/music/background noise from triggering the full pipeline.
-    // The transcript is reused by the legacy path to avoid a double STT call.
-    let pcm_bytes_precheck = pcm_to_bytes(audio_buffer);
-    tracing::info!(
-        samples = audio_buffer.len(),
-        stt_url = %stt_url,
-        "voice: running STT for wake word check"
-    );
-    let wake_transcript = match call_stt(http, stt_url, &pcm_bytes_precheck).await {
-        Ok(t) if !t.is_empty() => t,
-        Ok(_) => return, // empty transcript — silence, no error needed
-        Err(e) => {
-            tracing::warn!(error = %e, "STT failed in wake word check");
-            let _ = socket
-                .send(Message::Text(
-                    serde_json::json!({"type": "error", "message": format!("STT unavailable: {e}")})
-                        .to_string().into(),
-                ))
-                .await;
-            return;
+    // ── Busy check ────────────────────────────────────────────────
+    if state.omni_busy.load(std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!("voice: omni busy — playing busy preset");
+        return ProcessResult::Busy;
+    }
+
+    // ── Wake word gate (skipped during active conversation) ─────
+    if !conversation_active {
+        let wake_user = state
+            .wake_word_registry
+            .check(audio_buffer, &state.skill_cache)
+            .await;
+
+        if let Some(ref m) = wake_user {
+            tracing::info!(
+                user = %m.user_id,
+                similarity = m.similarity,
+                "voice: SDR wake word match — fast path"
+            );
+        } else {
+            tracing::debug!("voice: no SDR match — passing to omni for wake word detection");
         }
-    };
-
-    tracing::info!(transcript = %wake_transcript, "voice: STT result");
-    let transcript_lower = wake_transcript.to_lowercase();
-    // Match "fergus" and common STT mishearings
-    let wake_words = ["fergus", "vergus", "furgus", "for gus", "fur gus", "fairgus"];
-    let matched_wake = wake_words.iter().find(|w| transcript_lower.contains(*w));
-    if matched_wake.is_none() {
-        tracing::info!(transcript = %wake_transcript, "voice: no wake word — ignoring");
-        return;
-    }
-    let wake_str = matched_wake.unwrap();
-    tracing::info!(wake_word = %wake_str, "voice: wake word detected — processing command");
-
-    // Strip the matched wake word variant to get the command.
-    let command_text = transcript_lower.replace(wake_str, "").trim().to_string();
-
-    // Just the wake word alone — acknowledge.
-    if command_text.is_empty() {
-        let _ = socket
-            .send(Message::Text(
-                serde_json::json!({"type": "transcript", "text": &wake_transcript})
-                    .to_string().into(),
-            ))
-            .await;
-        let _ = socket
-            .send(Message::Text(
-                serde_json::json!({"type": "response", "text": "I'm listening, sir."})
-                    .to_string().into(),
-            ))
-            .await;
-        send_tts(socket, http, tts_url, "I'm listening, sir.").await;
-        return;
+    } else {
+        tracing::debug!("voice: conversation active — skipping wake word check");
     }
 
-    // Send transcript to client.
     let _ = socket
         .send(Message::Text(
-            serde_json::json!({"type": "transcript", "text": &wake_transcript})
+            serde_json::json!({"type": "transcript", "text": "listening..."})
                 .to_string().into(),
         ))
         .await;
@@ -342,16 +455,34 @@ async fn process_utterance(
     // Falls back to legacy STT → Ollama agent loop if omni is unavailable.
     let response_text = if let Some(omni) = omni_url {
         // Build the system prompt with persona + tool routing + gaming context.
+        // ── Speaker identification ────────────────────────────────
+        let speaker_id = state
+            .wake_word_registry
+            .identify(audio_buffer, &state.skill_cache)
+            .await
+            .map(|m| m.user_id)
+            .unwrap_or_else(|| {
+                // Unknown speaker — auto-enroll as guest (fire and forget).
+                "unknown".to_string()
+            });
+        tracing::info!(speaker = %speaker_id, "voice: identified speaker");
+
         let rag_context = crate::rag::RagContext::default();
         let gaming_ctx = state.gaming_config.as_ref().map(|gc| {
             let vm_names: Vec<&str> = gc.vms.iter().map(|v| v.name.as_str()).collect();
             format!("Available VMs on Thor: {}", vm_names.join(", "))
         });
-        let system_prompt = crate::rag::build_system_prompt(
+        let mut system_prompt = crate::rag::build_system_prompt(
             &rag_context,
             "voice",
             gaming_ctx.as_deref(),
         );
+        // Inject speaker context so Fergus can address the user by name.
+        if speaker_id != "unknown" {
+            system_prompt.push_str(&format!(
+                "\n\nCurrent speaker: {speaker_id}. Address them by name when appropriate."
+            ));
+        }
 
         // ── SDR skill cache: fast-path for repeat commands ──────────
         // Fingerprint the raw audio directly into a 256-bit SDR (~1ms, no
@@ -401,7 +532,7 @@ async fn process_utterance(
                     ))
                     .await;
                 send_tts(socket, http, tts_url, &confirmation).await;
-                return;
+                return ProcessResult::Done(confirmation);
             }
         }
 
@@ -410,6 +541,13 @@ async fn process_utterance(
 
         match call_omni_chat(http, omni, &pcm_bytes, &system_prompt).await {
             Ok(raw_response) if !raw_response.is_empty() => {
+                // Check if omni decided the user wasn't addressing Fergus.
+                let cleaned = strip_think_tags(&raw_response);
+                if cleaned.contains("[NOT_ADDRESSED]") {
+                    tracing::info!("voice: omni says not addressed — ignoring");
+                    return ProcessResult::NotAddressed;
+                }
+
                 // Parse and execute any tool calls from the response.
                 let (tool_calls, spoken_text_raw) = parse_tool_calls(&raw_response);
                 let spoken_text = strip_think_tags(&spoken_text_raw);
@@ -499,11 +637,10 @@ async fn process_utterance(
                     spoken_text
                 }
             }
-            Ok(_) => return, // Empty response — silence
+            Ok(_) => return ProcessResult::NotAddressed, // Empty response — silence
             Err(e) => {
                 tracing::warn!(error = %e, "omni chat failed, falling back to legacy pipeline");
-                // Reuse the transcript from the wake word pre-check (no double STT).
-                match handlers::process_chat_text(state, &command_text, session_id).await {
+                match handlers::process_chat_text(state, "Hello, I tried to speak to you but the voice model is unavailable.", session_id).await {
                     Ok(text) => strip_think_tags(&text),
                     Err(e) => {
                         let _ = socket
@@ -512,14 +649,14 @@ async fn process_utterance(
                                     .to_string().into(),
                             ))
                             .await;
-                        return;
+                        return ProcessResult::NotAddressed;
                     }
                 }
             }
         }
     } else {
-        // Legacy path: reuse transcript from wake word pre-check (no double STT).
-        match handlers::process_chat_text(state, &command_text, session_id).await {
+        // Legacy path: omni not configured, use text chat.
+        match handlers::process_chat_text(state, "Hello Fergus", session_id).await {
             Ok(text) => strip_think_tags(&text),
             Err(e) => {
                 let _ = socket
@@ -528,20 +665,33 @@ async fn process_utterance(
                             .to_string().into(),
                     ))
                     .await;
-                return;
+                return ProcessResult::NotAddressed;
             }
         }
     };
 
+    // ── Parse conversation flow tag and send response ────────────
+    let (spoken_text, flow_tag) = parse_flow_tag(&response_text);
+
     let _ = socket
         .send(Message::Text(
-            serde_json::json!({"type": "response", "text": &response_text})
+            serde_json::json!({"type": "response", "text": &spoken_text})
                 .to_string()
                 .into(),
         ))
         .await;
 
-    send_tts(socket, http, tts_url, &response_text).await;
+    // Mark omni as busy during TTS (blocks other sessions).
+    state.omni_busy.store(true, std::sync::atomic::Ordering::Relaxed);
+    send_tts(socket, http, tts_url, &spoken_text).await;
+    state.omni_busy.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    match flow_tag {
+        "[CONTINUE]" => ProcessResult::Continue(spoken_text),
+        "[DONE]" => ProcessResult::Done(spoken_text),
+        "[DISMISS]" => ProcessResult::Dismiss(spoken_text),
+        _ => ProcessResult::Continue(spoken_text),
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -130,6 +130,10 @@ pub struct AppState {
     pub gaming_config: Option<ygg_gaming::config::GamingConfig>,
     /// SDR-based skill cache for instant tool dispatch on repeat voice commands.
     pub skill_cache: Arc<crate::skill_cache::SkillCache>,
+    /// SDR-based wake word detection with per-user enrollment.
+    pub wake_word_registry: Arc<crate::wake_word::WakeWordRegistry>,
+    /// True when MiniCPM-o is processing a voice request. Used to play "busy" presets.
+    pub omni_busy: Arc<std::sync::atomic::AtomicBool>,
     /// Broadcast channel for pushing voice alerts to all connected WebSocket sessions.
     /// Sentinel (or any service) POSTs to `/api/v1/voice/alert`, Odin broadcasts to all
     /// active voice clients so they hear the alert via TTS.

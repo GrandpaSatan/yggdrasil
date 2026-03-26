@@ -1,345 +1,283 @@
-//! Voice processing pipeline: two-tier SDR fast path + Whisper/Kokoro slow path.
+//! Voice pipeline: WebSocket client to Odin's `/v1/voice` endpoint.
 //!
-//! State machine:
-//!   IDLE → (voice detected) → LISTENING → (silence) → PROCESSING → IDLE
-//!
-//! PROCESSING has two tiers:
-//!   1. SDR fast path: mel fingerprint → Hamming match → cached response (~4μs)
-//!   2. Full STT: Whisper → wake word check → Odin intent → Kokoro TTS → playback
+//! Captures audio from the local microphone, streams PCM frames to Odin
+//! over WebSocket, and plays back TTS audio through the speakers. All
+//! speech understanding (STT, wake word, omni chat, tool execution) is
+//! handled server-side by Odin — this module is a thin audio I/O bridge.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 use crate::audio::{self, AudioCapture, AudioPlayer};
-use crate::mel::MelSpectrogram;
-use crate::sdr_commands::{CommandResponse, SdrCommandRegistry};
-use crate::stt::WhisperStt;
-use crate::tts::KokoroTts;
 
-/// Energy VAD threshold (RMS). Tuned for typical USB/built-in microphones.
-const VAD_ENERGY_THRESHOLD: f32 = 0.01;
+/// Energy VAD threshold for speech onset (RMS). Tuned for built-in laptop mics.
+const VAD_ENERGY_THRESHOLD: f32 = 0.02;
+/// Silence threshold (hysteresis — lower than onset to avoid stuck VAD).
+const VAD_SILENCE_THRESHOLD: f32 = 0.008;
 /// Duration of audio to check for VAD (seconds).
 const VAD_WINDOW_SECONDS: f32 = 0.5;
 /// Silence duration to end an utterance (seconds).
 const SILENCE_TIMEOUT_SECONDS: f32 = 1.5;
+/// Maximum utterance duration (seconds) — force processing if VAD stays in Listening.
+const MAX_UTTERANCE_SECONDS: f32 = 10.0;
 /// How often to poll the audio buffer (milliseconds).
 const POLL_INTERVAL_MS: u64 = 100;
+/// Reconnect backoff (seconds).
+const RECONNECT_DELAY_SECS: u64 = 3;
+/// Size of PCM chunks sent per WebSocket frame (4096 samples = 0.256s at 16kHz).
+const PCM_CHUNK_SAMPLES: usize = 4096;
 
 /// Pipeline state machine states.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PipelineState {
-    /// Waiting for voice activity.
     Idle,
-    /// Capturing an utterance (voice detected).
     Listening,
-    /// Processing the captured utterance.
-    Processing,
 }
 
-/// Two-tier voice processing pipeline.
+/// Voice pipeline — thin WebSocket audio bridge to Odin.
 pub struct VoicePipeline {
     capture: AudioCapture,
-    _player: AudioPlayer,
-    stt: Arc<WhisperStt>,
-    tts: Arc<KokoroTts>,
-    sdr_registry: SdrCommandRegistry,
-    mel: Arc<MelSpectrogram>,
-    odin_url: String,
-    client: reqwest::Client,
-    busy_sound: Option<PathBuf>,
-    busy: Arc<AtomicBool>,
-    wake_word: String,
+    odin_ws_url: String,
     sample_rate: u32,
-    /// Receiver for voice alerts from external services (e.g. Sentinel anomalies).
-    /// Wrapped in Mutex because `run()` takes `&self`.
+    busy: Arc<AtomicBool>,
     alert_rx: Mutex<tokio::sync::mpsc::Receiver<String>>,
 }
 
 impl VoicePipeline {
-    /// Construct the pipeline from initialized components.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         capture: AudioCapture,
-        player: AudioPlayer,
-        stt: Arc<WhisperStt>,
-        tts: Arc<KokoroTts>,
-        sdr_registry: SdrCommandRegistry,
-        mel: MelSpectrogram,
-        odin_url: String,
-        busy_sound: Option<PathBuf>,
-        wake_word: String,
+        odin_ws_url: String,
         sample_rate: u32,
         alert_rx: tokio::sync::mpsc::Receiver<String>,
     ) -> Self {
         Self {
             capture,
-            _player: player,
-            stt,
-            tts,
-            sdr_registry,
-            mel: Arc::new(mel),
-            odin_url,
-            client: reqwest::Client::new(),
-            busy_sound,
-            busy: Arc::new(AtomicBool::new(false)),
-            wake_word,
+            odin_ws_url,
             sample_rate,
+            busy: Arc::new(AtomicBool::new(false)),
             alert_rx: Mutex::new(alert_rx),
         }
     }
 
-    /// Run the voice pipeline loop. Does not return unless interrupted.
+    /// Run the voice pipeline loop. Reconnects on WebSocket drop.
     pub async fn run(&self) {
-        info!(
-            wake_word = %self.wake_word,
-            sdr_commands = self.sdr_registry.len(),
-            "voice pipeline started"
-        );
-
-        let mut state = PipelineState::Idle;
-        let mut utterance_start_pos: usize = 0;
-        let mut silence_counter: u32 = 0;
-        let silence_limit =
-            (SILENCE_TIMEOUT_SECONDS * 1000.0 / POLL_INTERVAL_MS as f32) as u32;
+        info!(ws_url = %self.odin_ws_url, "voice pipeline started — connecting to Odin");
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+            match self.run_session().await {
+                Ok(()) => info!("WebSocket session ended cleanly"),
+                Err(e) => warn!(error = %e, "WebSocket session failed"),
+            }
+            info!(delay_secs = RECONNECT_DELAY_SECS, "reconnecting...");
+            tokio::time::sleep(std::time::Duration::from_secs(RECONNECT_DELAY_SECS)).await;
+        }
+    }
 
-            match state {
-                PipelineState::Idle => {
-                    // Drain any queued voice alerts before checking for speech.
-                    if let Ok(mut rx) = self.alert_rx.try_lock() {
-                        if let Ok(text) = rx.try_recv() {
-                            info!(text = %text, "speaking queued voice alert");
-                            self.busy.store(true, Ordering::Relaxed);
-                            if let Err(e) = self.speak(&text).await {
-                                error!(error = %e, "alert TTS failed");
-                            }
-                            self.busy.store(false, Ordering::Relaxed);
+    /// Run a single WebSocket session. Returns when the connection drops.
+    async fn run_session(&self) -> Result<(), VoiceError> {
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.odin_ws_url)
+            .await
+            .map_err(|e| VoiceError::Network(format!("WebSocket connect failed: {e}")))?;
+
+        let (mut ws_tx, mut ws_rx) = ws_stream.split();
+        info!("connected to Odin voice WebSocket");
+
+        let mut state = PipelineState::Idle;
+        let mut silence_counter: u32 = 0;
+        let mut utterance_polls: u32 = 0;
+        let mut last_send_pos: usize = self.capture.position();
+        let silence_limit =
+            (SILENCE_TIMEOUT_SECONDS * 1000.0 / POLL_INTERVAL_MS as f32) as u32;
+        let max_utterance_polls =
+            (MAX_UTTERANCE_SECONDS * 1000.0 / POLL_INTERVAL_MS as f32) as u32;
+
+        // Audio playback state for received TTS.
+        let mut audio_buf: Vec<u8> = Vec::new();
+        let mut playback_sample_rate: u32 = 24_000;
+
+        loop {
+            tokio::select! {
+                // ── Poll mic and send audio ──────────────────────────
+                _ = tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)) => {
+                    // Drain alerts in Idle.
+                    if state == PipelineState::Idle {
+                        if let Ok(mut rx) = self.alert_rx.try_lock()
+                            && let Ok(text) = rx.try_recv()
+                        {
+                            info!(text = %text, "sending alert text to Odin for TTS");
+                            // Send alert as a text command — Odin will TTS it.
+                            let msg = serde_json::json!({"type": "alert", "text": text});
+                            ws_tx.send(Message::Text(msg.to_string().into()))
+                                .await
+                                .map_err(|e| VoiceError::Network(e.to_string()))?;
                             continue;
                         }
                     }
 
-                    let window = self
-                        .capture
-                        .read_last_seconds(VAD_WINDOW_SECONDS, self.sample_rate);
+                    let window = self.capture.read_last_seconds(VAD_WINDOW_SECONDS, self.sample_rate);
                     let energy = audio::rms_energy(&window);
 
-                    if energy > VAD_ENERGY_THRESHOLD {
-                        utterance_start_pos = self.capture.position();
-                        silence_counter = 0;
-                        state = PipelineState::Listening;
-                        tracing::debug!(energy, "voice activity detected → LISTENING");
-                    }
-                }
-
-                PipelineState::Listening => {
-                    let window = self
-                        .capture
-                        .read_last_seconds(VAD_WINDOW_SECONDS, self.sample_rate);
-                    let energy = audio::rms_energy(&window);
-
-                    if energy <= VAD_ENERGY_THRESHOLD {
-                        silence_counter += 1;
-                        if silence_counter >= silence_limit {
-                            state = PipelineState::Processing;
-                            tracing::debug!("silence timeout → PROCESSING");
+                    match state {
+                        PipelineState::Idle => {
+                            if energy > VAD_ENERGY_THRESHOLD {
+                                state = PipelineState::Listening;
+                                silence_counter = 0;
+                                utterance_polls = 0;
+                                last_send_pos = self.capture.position()
+                                    .saturating_sub((VAD_WINDOW_SECONDS * self.sample_rate as f32) as usize);
+                                tracing::debug!(energy, "voice activity → LISTENING");
+                            }
                         }
-                    } else {
-                        silence_counter = 0;
+                        PipelineState::Listening => {
+                            utterance_polls += 1;
+
+                            // Stream new audio to Odin as PCM s16le binary frames.
+                            let current_pos = self.capture.position();
+                            if current_pos > last_send_pos {
+                                let new_samples = self.capture.read_since(last_send_pos);
+                                last_send_pos = current_pos;
+
+                                // Convert f32 → i16 le bytes and send in chunks.
+                                let pcm_bytes: Vec<u8> = new_samples.iter().flat_map(|&s| {
+                                    let i = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                                    i.to_le_bytes()
+                                }).collect();
+
+                                for chunk in pcm_bytes.chunks(PCM_CHUNK_SAMPLES * 2) {
+                                    ws_tx.send(Message::Binary(chunk.to_vec().into()))
+                                        .await
+                                        .map_err(|e| VoiceError::Network(e.to_string()))?;
+                                }
+                            }
+
+                            // Silence detection with hysteresis.
+                            if energy <= VAD_SILENCE_THRESHOLD {
+                                silence_counter += 1;
+                            } else {
+                                silence_counter = 0;
+                            }
+
+                            if silence_counter >= silence_limit || utterance_polls >= max_utterance_polls {
+                                if utterance_polls >= max_utterance_polls {
+                                    info!("max utterance timeout — sending vad_end");
+                                }
+                                // Signal end-of-speech to Odin.
+                                let vad_end = serde_json::json!({"type": "vad_end"});
+                                ws_tx.send(Message::Text(vad_end.to_string().into()))
+                                    .await
+                                    .map_err(|e| VoiceError::Network(e.to_string()))?;
+
+                                self.busy.store(true, Ordering::Relaxed);
+                                state = PipelineState::Idle;
+                                silence_counter = 0;
+                                utterance_polls = 0;
+                            }
+                        }
                     }
                 }
 
-                PipelineState::Processing => {
-                    let utterance = self.capture.read_since(utterance_start_pos);
-                    if utterance.is_empty() {
-                        state = PipelineState::Idle;
-                        continue;
+                // ── Receive messages from Odin ───────────────────────
+                msg = ws_rx.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                match json.get("type").and_then(|t| t.as_str()) {
+                                    Some("ready") => {
+                                        let sid = json["session_id"].as_str().unwrap_or("?");
+                                        info!(session_id = sid, "Odin voice session ready");
+                                    }
+                                    Some("listening") => {
+                                        tracing::debug!("Odin: listening");
+                                    }
+                                    Some("processing") => {
+                                        info!("Odin: processing utterance");
+                                    }
+                                    Some("transcript") => {
+                                        let t = json["text"].as_str().unwrap_or("");
+                                        info!(transcript = t, "Odin: transcript");
+                                    }
+                                    Some("response") => {
+                                        let r = json["text"].as_str().unwrap_or("");
+                                        info!(response = r, "Odin: response");
+                                    }
+                                    Some("audio_start") => {
+                                        playback_sample_rate = json["sample_rate"]
+                                            .as_u64()
+                                            .unwrap_or(24_000) as u32;
+                                        audio_buf.clear();
+                                    }
+                                    Some("audio_end") => {
+                                        if !audio_buf.is_empty() {
+                                            self.play_pcm_bytes(&audio_buf, playback_sample_rate).await;
+                                            audio_buf.clear();
+                                        }
+                                        self.busy.store(false, Ordering::Relaxed);
+                                    }
+                                    Some("error") => {
+                                        let m = json["message"].as_str().unwrap_or("unknown");
+                                        warn!(message = m, "Odin voice error");
+                                        self.busy.store(false, Ordering::Relaxed);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Binary(data))) => {
+                            // TTS audio chunk — accumulate for playback.
+                            audio_buf.extend_from_slice(&data);
+                        }
+                        Some(Ok(Message::Close(_))) | None => {
+                            info!("Odin WebSocket closed");
+                            return Ok(());
+                        }
+                        Some(Err(e)) => {
+                            return Err(VoiceError::Network(format!("WebSocket error: {e}")));
+                        }
+                        _ => {}
                     }
-
-                    self.busy.store(true, Ordering::Relaxed);
-
-                    if let Err(e) = self.process_utterance(&utterance).await {
-                        error!("utterance processing failed: {e}");
-                    }
-
-                    self.busy.store(false, Ordering::Relaxed);
-                    state = PipelineState::Idle;
                 }
             }
         }
     }
 
-    /// Process a captured utterance through the two-tier pipeline.
-    async fn process_utterance(&self, utterance: &[f32]) -> Result<(), VoiceError> {
-        // Tier 1: SDR fast path
-        if let Some(cmd) = self.sdr_registry.match_command(utterance, &self.mel) {
-            info!(label = %cmd.label, "SDR fast-path hit");
-            return self.execute_command_response(&cmd.response).await;
+    /// Play raw PCM s16le bytes through the speakers.
+    async fn play_pcm_bytes(&self, pcm: &[u8], sample_rate: u32) {
+        // Convert bytes → f32 samples for cpal playback.
+        let samples: Vec<f32> = pcm
+            .chunks_exact(2)
+            .map(|chunk| {
+                let i = i16::from_le_bytes([chunk[0], chunk[1]]);
+                i as f32 / 32768.0
+            })
+            .collect();
+
+        if samples.is_empty() {
+            return;
         }
 
-        // Tier 2: Full STT → Odin → TTS
-        // Play busy sound if configured (non-blocking)
-        if let Some(busy_path) = &self.busy_sound {
-            let path = busy_path.clone();
-            let sr = self.tts.sample_rate();
-            tokio::task::spawn_blocking(move || {
-                let player = AudioPlayer::new(sr);
-                if let Ok(p) = player
-                    && let Err(e) = p.play_wav(&path) {
-                        warn!("failed to play busy sound: {e}");
-                    }
-            });
-        }
-
-        // STT
-        let audio_clone = utterance.to_vec();
-        let stt = Arc::clone(&self.stt);
-        let transcript = stt.transcribe_async(audio_clone).await?;
-
-        if transcript.is_empty() {
-            tracing::debug!("empty transcript — ignoring");
-            return Ok(());
-        }
-
-        info!(transcript = %transcript, "STT result");
-
-        // Check for wake word
-        if !transcript
-            .to_lowercase()
-            .contains(&self.wake_word.to_lowercase())
-        {
-            tracing::debug!(
-                wake_word = %self.wake_word,
-                "wake word not found in transcript — ignoring"
-            );
-            return Ok(());
-        }
-
-        // Strip wake word from the command text
-        let command_text = transcript
-            .to_lowercase()
-            .replace(&self.wake_word.to_lowercase(), "")
-            .trim()
-            .to_string();
-
-        if command_text.is_empty() {
-            // Just the wake word with no command
-            let response = "I'm listening. What can I help you with?";
-            return self.speak(response).await;
-        }
-
-        // Route through Odin for intent processing
-        let response_text = self.process_intent(&command_text).await?;
-        info!(response = %response_text, "Odin response");
-
-        // TTS
-        self.speak(&response_text).await
-    }
-
-    /// Speak a text response via Kokoro TTS + audio playback.
-    async fn speak(&self, text: &str) -> Result<(), VoiceError> {
-        let tts = Arc::clone(&self.tts);
-        let text_owned = text.to_string();
-        let audio = tts.synthesize_async(text_owned).await?;
-
-        if audio.is_empty() {
-            warn!("TTS produced no audio");
-            return Ok(());
-        }
-
-        let sr = self.tts.sample_rate();
-        tokio::task::spawn_blocking(move || {
+        let sr = sample_rate;
+        if let Err(e) = tokio::task::spawn_blocking(move || {
             let player = AudioPlayer::new(sr)?;
-            player.play_samples(&audio, sr)
+            player.play_samples(&samples, sr)
         })
         .await
-        .map_err(|e| VoiceError::Audio(format!("playback task panicked: {e}")))?
-    }
-
-    /// Execute an SDR command response.
-    async fn execute_command_response(
-        &self,
-        response: &CommandResponse,
-    ) -> Result<(), VoiceError> {
-        match response {
-            CommandResponse::CannedAudio { path } => {
-                let path = path.clone();
-                let sr = self.tts.sample_rate();
-                tokio::task::spawn_blocking(move || {
-                    let player = AudioPlayer::new(sr)?;
-                    player.play_wav(&path)
-                })
-                .await
-                .map_err(|e| VoiceError::Audio(format!("canned audio task panicked: {e}")))?
-            }
-
-            CommandResponse::HaAction {
-                entity_id,
-                service,
-            } => {
-                info!(entity_id, service, "executing HA action via Odin");
-                let command = format!("{service} {entity_id}");
-                let _response = self.process_intent(&command).await?;
-                Ok(())
-            }
-
-            CommandResponse::OdinIntent { text } => {
-                let response = self.process_intent(text).await?;
-                self.speak(&response).await
-            }
+        .unwrap_or_else(|e| Err(crate::VoiceError::Audio(format!("playback panicked: {e}"))))
+        {
+            error!(error = %e, "TTS playback failed");
         }
-    }
-
-    /// Process text through Odin for intent routing.
-    async fn process_intent(&self, text: &str) -> Result<String, VoiceError> {
-        let payload = serde_json::json!({
-            "model": "default",
-            "messages": [
-                {"role": "user", "content": text}
-            ]
-        });
-
-        let resp = self
-            .client
-            .post(format!("{}/api/v1/chat", self.odin_url))
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| VoiceError::Network(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VoiceError::OdinError { status, body });
-        }
-
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| VoiceError::Network(e.to_string()))?;
-
-        let response = body["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("I couldn't process that request.")
-            .to_string();
-
-        Ok(response)
     }
 }
 
-/// Voice pipeline errors.
+/// Voice pipeline errors (shared across the crate).
 #[derive(Debug, thiserror::Error)]
 pub enum VoiceError {
     #[error("network error: {0}")]
     Network(String),
-
-    #[error("Odin error (HTTP {status}): {body}")]
-    OdinError { status: u16, body: String },
 
     #[error("audio error: {0}")]
     Audio(String),
@@ -352,4 +290,7 @@ pub enum VoiceError {
 
     #[error("model load error: {0}")]
     ModelLoad(String),
+
+    #[error("Odin error (HTTP {status}): {body}")]
+    OdinError { status: u16, body: String },
 }
