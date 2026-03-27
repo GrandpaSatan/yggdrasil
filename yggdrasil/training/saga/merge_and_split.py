@@ -6,7 +6,7 @@ import os
 import random
 from pathlib import Path
 
-BARN = os.environ.get("BARN_DIR", "/data/saga/data")
+BARN = os.environ.get("BARN_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 
 
 def validate_pair(pair):

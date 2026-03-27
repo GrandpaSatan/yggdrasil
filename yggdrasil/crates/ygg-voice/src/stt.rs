@@ -397,13 +397,10 @@ pub(crate) fn build_session(model_path: &Path, device: &str, fallback: &str) -> 
 /// { "0": "!", "1": "\"", ... }
 fn load_vocab(path: &Path) -> Result<Vec<String>, VoiceError> {
     if !path.exists() {
-        // Return a minimal placeholder vocab if vocab.json is missing.
-        // The model will still run but output will be token IDs.
-        tracing::warn!(
-            path = %path.display(),
-            "vocab.json not found — transcription will use raw token IDs"
-        );
-        return Ok(Vec::new());
+        return Err(VoiceError::ModelLoad(format!(
+            "vocab.json not found at {} — STT cannot produce text without it",
+            path.display()
+        )));
     }
 
     let content = std::fs::read_to_string(path)

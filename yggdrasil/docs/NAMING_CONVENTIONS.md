@@ -3,7 +3,7 @@
 ## Crates / Modules
 
 - **Service crates:** Norse names, lowercase, no prefix. Examples: `mimir`, `odin`, `huginn`, `muninn`.
-- **Library crates:** Prefixed with `ygg-`. Examples: `ygg-domain`, `ygg-store`, `ygg-embed`, `ygg-mcp`, `ygg-ha`.
+- **Library crates:** Prefixed with `ygg-`. Examples: `ygg-domain`, `ygg-store`, `ygg-embed`, `ygg-mcp`, `ygg-ha`, `ygg-config`, `ygg-server`, `ygg-voice`, `ygg-mesh`, `ygg-cloud`, `ygg-energy`, `ygg-gaming`, `ygg-sentinel`, `ygg-node`, `ygg-installer`.
 - **Internal modules:** Rust `snake_case`. Examples: `handlers`, `state`, `lsh`, `error`.
 
 ## Binaries
@@ -33,9 +33,11 @@
 - Prefixed with the service name in uppercase. Format: `<SERVICE>_<SETTING>`.
 - Examples: `MIMIR_DATABASE_URL`, `ODIN_LISTEN_ADDR`.
 
-## Configuration Keys (YAML)
+## Configuration Keys (JSON / YAML)
 
 - `snake_case` throughout. Nested objects for logical grouping.
+- Format is auto-detected by file extension (`.json` default, `.yaml`/`.yml` supported).
+- Supports `${ENV_VAR}` expansion for secrets (e.g., `"postgres://${DB_USER}:${DB_PASS}@localhost/yggdrasil"`).
 - Examples: `listen_addr`, `database_url`, `embed.ollama_url`, `lsh.num_tables`, `tiers.recall_capacity`.
 
 ## Rust Types
@@ -51,4 +53,4 @@
 
 ---
 
-Last updated: 2026-03-09
+Last updated: 2026-03-26

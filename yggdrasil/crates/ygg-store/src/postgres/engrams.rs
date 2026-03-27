@@ -13,6 +13,10 @@ pub struct EngramSdrParams<'a> {
     pub tags: &'a [String],
     pub trigger_type: &'a str,
     pub trigger_label: &'a str,
+    /// Project isolation key. None = global scope.
+    pub project: Option<&'a str>,
+    /// Scope: "global", "project", or "user:{name}".
+    pub scope: &'a str,
 }
 
 /// Retrieve an engram by ID.
@@ -265,8 +269,8 @@ pub async fn insert_engram_sdr(
     sqlx::query(
         r#"
         INSERT INTO yggdrasil.engrams
-            (id, cause, effect, sdr_bits, content_hash, tier, tags, trigger_type, trigger_label)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (id, cause, effect, sdr_bits, content_hash, tier, tags, trigger_type, trigger_label, project, scope)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
     )
     .bind(id)
@@ -278,6 +282,8 @@ pub async fn insert_engram_sdr(
     .bind(params.tags)
     .bind(params.trigger_type)
     .bind(params.trigger_label)
+    .bind(params.project)
+    .bind(params.scope)
     .execute(pool)
     .await
     .map_err(|e| {

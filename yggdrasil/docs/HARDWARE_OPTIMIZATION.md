@@ -1,7 +1,7 @@
 # Hardware Optimization — Yggdrasil
 
 Sprint: 009
-Status: IN PROGRESS — benchmark values marked TBD, to be filled by hardware-optimizer agent after physical execution.
+Status: HISTORICAL — benchmark values were not executed. This document serves as a reference for future hardware optimization work. The Munin iGPU (Xe-LPG) was found unsuitable for LLM inference (no XMX units). IPEX-LLM container is used instead for Ollama on Munin. Intel AI Boost NPU is used for STT inference (SenseVoiceSmall via OpenVINO EP).
 
 This document is the canonical reference for all hardware optimization work on the two production nodes: **Munin** (Intel Core Ultra 185H) and **Hugin** (AMD Ryzen 7 255 / Zen 5). It covers iGPU activation, AVX-512 verification, thread pinning, distributed inference evaluation, and in-process embedding benchmarks.
 
@@ -37,7 +37,7 @@ This document is the canonical reference for all hardware optimization work on t
 | iGPU | Intel ARC (Xe-LPG, 8 Xe-cores) | AMD RDNA (integrated, not targeted) |
 | RAM | 48 GB DDR5 | 64 GB DDR5 |
 | Network | 2x 5 Gb Ethernet | Standard Ethernet |
-| Ollama model | qwen3-coder-30b-a3b | qwq-32b |
+| Ollama model | qwen3-coder:30b-a3b-q4_K_M | qwen3-coder:30b-a3b-q4_K_M |
 | Services | Mimir, Odin | Huginn, Muninn |
 
 ---

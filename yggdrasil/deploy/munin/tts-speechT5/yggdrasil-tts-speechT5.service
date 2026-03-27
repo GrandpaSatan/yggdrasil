@@ -1,0 +1,23 @@
+[Unit]
+Description=Yggdrasil TTS - SpeechT5 on Intel NPU (OpenVINO)
+After=network-online.target
+Before=yggdrasil-odin.service
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+SupplementaryGroups=render
+WorkingDirectory=/opt/yggdrasil/deploy/munin/tts-speechT5
+ExecStart=/opt/yggdrasil/deploy/munin/tts-speechT5/.venv/bin/python3 server.py \
+    --model-path /opt/yggdrasil/deploy/munin/tts-speechT5/speecht5_tts \
+    --device NPU \
+    --speaker-embedding /opt/yggdrasil/deploy/munin/tts-speechT5/speecht5_tts/speaker_embedding.bin \
+    --port 9095
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

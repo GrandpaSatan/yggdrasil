@@ -15,7 +15,7 @@ import subprocess
 import re
 from pathlib import Path
 
-BARN = os.environ.get("BARN_DIR", "/data/saga/data")
+BARN = os.environ.get("BARN_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 REPO = os.environ.get("YGGDRASIL_REPO", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 SYSTEM_PROMPT = "You are Saga, Yggdrasil's memory engine. Respond ONLY in valid JSON."
 
@@ -178,7 +178,7 @@ def generate_classify_negatives():
         "cargo check",
         "cat README.md",
         "pwd",
-        "cd /home/jesus/Documents",
+        "cd ~/Documents",
         "grep -r 'TODO' src/",
         "wc -l src/*.rs",
         "git log --oneline -5",

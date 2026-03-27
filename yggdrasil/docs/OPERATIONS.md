@@ -4,15 +4,22 @@
 
 | Service | Binary | Node | Port | Role |
 |---------|--------|------|------|------|
-| Mimir | `mimir` | Munin (<munin-ip>) | 9090 | Engram memory service (PostgreSQL + Qdrant + LSH) |
-| Odin | `odin` | Munin (<munin-ip>) | 8080 | LLM orchestrator, semantic router, RAG pipeline |
-| ygg-mcp-server | `ygg-mcp-server` | Munin (<munin-ip>) | stdio | MCP server for IDE clients (stdio transport) |
-| Muninn | `muninn` | Hugin (<hugin-ip>) | 9091 | Code retrieval engine (hybrid search) |
-| Huginn | `huginn` | Hugin (<hugin-ip>) | 9092 | Code indexer + file watcher |
-| PostgreSQL | — | Hades (<hades-ip>) | 5432 | Primary database (yggdrasil schema) |
-| Qdrant | — | Hades (<hades-ip>) | 6333/6334 | Vector database (engrams + code_chunks collections) |
+| Odin | `odin` | Munin | 8080 | LLM orchestrator, semantic router, RAG pipeline, voice WebSocket |
+| Mimir | `mimir` | Munin | 9090 | Engram memory service (PostgreSQL + Qdrant + SDR) |
+| ygg-mcp-remote | `ygg-mcp-remote` | Munin | 9093 | MCP remote server for IDE clients (StreamableHTTP) |
+| ygg-mcp-server | `ygg-mcp-server` | Workstation | stdio | MCP local server for IDE clients (stdio transport) |
+| STT | Python server | Munin | 9097 | Speech-to-text (SenseVoiceSmall, ONNX + OpenVINO EP on NPU) |
+| TTS | Python server | Munin | 9095 | Text-to-speech (Kokoro v1.0, ONNX Runtime CPU) |
+| Muninn | `muninn` | Hugin | 9091 | Code retrieval engine (hybrid search) |
+| Huginn | `huginn` | Hugin | 9092 | Code indexer + file watcher |
+| ygg-node | `ygg-node` | Each node | — | Mesh node daemon (mDNS discovery, heartbeats) |
+| ygg-sentinel | `ygg-sentinel` | Munin | — | Distributed log monitoring + anomaly detection |
+| PostgreSQL | Docker | Munin | 5432 | Primary database (yggdrasil schema, pgvector container) |
+| Qdrant | — | Hades | 6333/6334 | Vector database (engrams_sdr + code_chunks collections) |
+| Ollama (Munin) | IPEX-LLM | Munin | 11434 | LLM inference (qwen3-coder:30b-a3b-q4_K_M) |
+| Ollama (Hugin) | Native | Hugin | 11434 | LLM inference (qwen3-coder:30b-a3b-q4_K_M) |
 
-Startup ordering: Hades (PostgreSQL + Qdrant) must be reachable before any
+Startup ordering: PostgreSQL (Munin Docker) and Qdrant (Hades) must be reachable before any
 Yggdrasil service starts. On Munin, `yggdrasil-mimir.service` starts first
 and `yggdrasil-odin.service` waits for Mimir's `/health` to return 200 before
 its own process starts (`ExecStartPre`).
@@ -27,6 +34,7 @@ its own process starts (`ExecStartPre`).
 ssh your-user@munin
 sudo systemctl start yggdrasil-mimir
 sudo systemctl start yggdrasil-odin
+sudo systemctl start yggdrasil-mcp-remote
 ```
 
 ### Start all services on Hugin
@@ -35,15 +43,7 @@ sudo systemctl start yggdrasil-odin
 ssh your-user@hugin
 sudo systemctl start yggdrasil-muninn
 sudo systemctl start yggdrasil-huginn
-```98,181
-22
-Last updated:
-13 days ago
-￼
-￼
-Staff Pick
-
-
+```
 
 ### Stop a service
 
@@ -51,19 +51,12 @@ Staff Pick
 sudo systemctl stop yggdrasil-<service>
 ```
 
-### Check service status98,181
-22
-Last updated:
-13 days ago
-￼
-￼
-Staff Pick
-
-
+### Check service status
 
 ```bash
 sudo systemctl status yggdrasil-mimir
 sudo systemctl status yggdrasil-odin
+sudo systemctl status yggdrasil-mcp-remote
 sudo systemctl status yggdrasil-huginn
 sudo systemctl status yggdrasil-muninn
 ```
@@ -91,17 +84,10 @@ journalctl -u yggdrasil-odin -f
 journalctl -u yggdrasil-mimir -f
 journalctl -u yggdrasil-huginn -f
 journalctl -u yggdrasil-muninn -f
+journalctl -u yggdrasil-mcp-remote -f
 ```
 
-### View errors from the last hour98,181
-22
-Last updated:
-13 days ago
-￼
-￼
-Staff Pick
-
-
+### View errors from the last hour
 
 ```bash
 journalctl -u yggdrasil-mimir --since "1 hour ago" -p err
@@ -139,9 +125,10 @@ journalctl -u yggdrasil-odin -n 100 --no-pager
 | Service | URL | Expected Response |
 |---------|-----|-------------------|
 | Odin | `GET http://munin:8080/health` | `200 OK` (JSON with backend status) |
-| Mimir | `GET http://munin:9090/health` | `200 OK` |
+| Mimir | `GET http://munin:9090/health` | `200 OK` (checks PG + Qdrant, returns 503 if degraded) |
 | Muninn | `GET http://hugin:9091/health` | `200 OK` |
 | Huginn | `GET http://hugin:9092/health` | `200 OK` (JSON with indexing stats) |
+| MCP Remote | `GET http://munin:9093/health` | `200 OK` |
 
 ### Manual health checks
 
@@ -150,6 +137,7 @@ curl -s http://localhost:8080/health  # Odin
 curl -s http://localhost:9090/health  # Mimir
 curl -s http://localhost:9091/health  # Muninn
 curl -s http://localhost:9092/health  # Huginn
+curl -s http://localhost:9093/health  # MCP Remote
 ```
 
 ---
@@ -213,7 +201,7 @@ curl -s http://localhost:8080/metrics | wc -c  # should be < 50KB
 
 ## Backup and Restore
 
-### Backup (run on Hades or a machine with network access to Hades)
+### Backup (run on Munin or a machine with network access)
 
 The backup script is at `deploy/backup-hades.sh`.
 
@@ -221,7 +209,7 @@ The backup script is at `deploy/backup-hades.sh`.
 # Manual backup
 ./deploy/backup-hades.sh
 
-# Scheduled backup (add to crontab on Hades)
+# Scheduled backup (add to crontab on Munin)
 crontab -e
 # Add: 0 3 * * * /opt/yggdrasil/deploy/backup-hades.sh >> /var/log/yggdrasil-backup.log 2>&1
 ```
@@ -241,7 +229,7 @@ apt install postgresql-client curl
 
 ```bash
 # Restore from a custom-format dump
-pg_restore -h <hades-ip> -U your-user -d postgres \
+pg_restore -h localhost -U your-user -d postgres \
   --schema=yggdrasil \
   /mnt/raven/yggdrasil-backups/pg_yggdrasil_YYYYMMDD_HHMMSS.dump
 ```
@@ -255,10 +243,10 @@ Qdrant snapshots are stored locally on the Qdrant server. To restore:
 
 ```bash
 # List available snapshots
-curl -s http://<hades-ip>:6333/collections/engrams/snapshots | jq .
+curl -s http://<qdrant-host>:6333/collections/engrams/snapshots | jq .
 
 # Restore from a snapshot (replace <snapshot_name> with the actual name)
-curl -X PUT "http://<hades-ip>:6333/collections/engrams/snapshots/recover" \
+curl -X PUT "http://<qdrant-host>:6333/collections/engrams/snapshots/recover" \
   -H "Content-Type: application/json" \
   -d '{"location": "/path/to/snapshot/<snapshot_name>"}'
 ```
@@ -304,8 +292,7 @@ inspect what was deployed.
 ### SSH note
 
 Scripts use `your-user@<node>` for SSH. SSH key-based authentication is
-required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
-`~/.ssh/authorized_keys` on Munin and Hugin.
+required. Ensure your public key is in `~/.ssh/authorized_keys` on target nodes.
 
 ---
 
@@ -317,10 +304,11 @@ required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 | Muninn | No code search in responses | Chat completions skip code context injection. Logs warning. Chat still works. |
 | Ollama on Munin | Coding model requests fail | Chat completions to coding model return 503. Reasoning model (Hugin) unaffected. |
 | Ollama on Hugin | Reasoning model requests fail | Chat completions to reasoning model return 503. Coding requests unaffected. |
-| Hades (PostgreSQL) | Memory and search unavailable | Mimir returns 503. Muninn returns 503. Huginn stops indexing. Chat without context still works via Odin → Ollama directly. |
-| Hades (Qdrant) | Reduced search quality | Mimir falls back to PostgreSQL-only query (pgvector). Muninn search degrades. Functional but slower. |
+| PostgreSQL (Munin) | Memory and search unavailable | Mimir returns 503. Muninn returns 503. Huginn stops indexing. Chat without context still works via Odin to Ollama directly. |
+| Qdrant (Hades) | Reduced search quality | Mimir falls back to PostgreSQL-only query (pgvector). Muninn search degrades. Functional but slower. |
 | Huginn | Code search serves stale index | No new code indexing. Existing index in PostgreSQL/Qdrant still searchable. No user impact unless codebase changes frequently. |
-| Home Assistant | HA tool calls fail | HA tools return error responses. Non-HA features unaffected. Implemented in Sprint 007. |
+| Home Assistant | HA tool calls fail | HA tools return error responses. Non-HA features unaffected. |
+| STT/TTS servers | Voice pipeline degraded | Odin voice WebSocket falls back to text-only responses. Core chat unaffected. |
 
 ---
 
@@ -330,21 +318,26 @@ required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 |---------|------|----------|------|
 | Odin | 8080 | HTTP | Munin |
 | Mimir | 9090 | HTTP | Munin |
+| MCP Remote | 9093 | HTTP (StreamableHTTP) | Munin |
+| STT | 9097 | HTTP | Munin |
+| TTS | 9095 | HTTP | Munin |
 | Muninn | 9091 | HTTP | Hugin |
 | Huginn | 9092 | HTTP | Hugin |
-| PostgreSQL | 5432 | TCP | Hades |
+| PostgreSQL | 5432 | TCP | Munin (Docker) |
 | Qdrant REST | 6333 | HTTP | Hades |
 | Qdrant gRPC | 6334 | gRPC | Hades |
+| Ollama (Munin) | 11434 | HTTP | Munin |
+| Ollama (Hugin) | 11434 | HTTP | Hugin |
 
 ---
 
 ## Node Deployment Mapping
 
-| Node | Hostname | IP | Services | Hardware |
-|------|----------|-----|---------|----------|
-| Munin | munin | <munin-ip> | Odin, Mimir, ygg-mcp-server | Intel Core Ultra 185H, 48GB DDR5 |
-| Hugin | hugin | <hugin-ip> | Huginn, Muninn | AMD Ryzen 7 255, 64GB DDR5 |
-| Hades | hades | <hades-ip> | PostgreSQL, Qdrant | Intel N150, 32GB DDR5, Merlin SSD pool (444 GiB), RAVEN SSD pool (2.63 TiB) |
+| Node | Hostname | Services | Hardware |
+|------|----------|---------|----------|
+| Munin | munin | Odin, Mimir, MCP Remote, STT, TTS, PostgreSQL, ygg-node, ygg-sentinel | Intel Core Ultra 185H, 48GB DDR5, Intel AI Boost NPU |
+| Hugin | hugin | Huginn, Muninn, Ollama, ygg-node | AMD Ryzen 7 255, 64GB DDR5 |
+| Hades | hades | Qdrant | Intel N150, 32GB DDR5, TrueNAS Scale |
 
 ---
 
@@ -354,18 +347,16 @@ required. Ensure `~/.ssh/id_rsa.pub` (or equivalent) is in
 
 1. Check the unit status: `sudo systemctl status yggdrasil-<service>`
 2. Check recent logs: `journalctl -u yggdrasil-<service> -n 50`
-1. Check the unit status: `sudo systemctl status yggdrasil-<service>`
-2. Check recent logs: `journalctl -u yggdrasil-<service> -n 50`
 3. Verify the binary exists: `ls -la /opt/yggdrasil/bin/<service>`
 4. Verify the config file exists: `ls -la /etc/yggdrasil/<service>/`
-5. Test the config manually: `/opt/yggdrasil/bin/<service> --config /etc/yggdrasil/<service>/config.yaml`
+5. Test the config manually: `/opt/yggdrasil/bin/<service> --config /etc/yggdrasil/<service>/config.json`
 
 ### Odin fails to start (waits for Mimir)
 
 Odin's `ExecStartPre` polls Mimir's `/health` for up to 30 seconds. If Mimir
 is not healthy:
 1. Check Mimir status: `sudo systemctl status yggdrasil-mimir`
-2. Check Hades connectivity: `curl -s http://<hades-ip>:5432` (should connect)
+2. Check PostgreSQL container: `docker ps | grep ygg-postgres`
 3. Check Mimir logs for database errors: `journalctl -u yggdrasil-mimir -n 100`
 
 ### Metrics endpoint not responding
@@ -383,7 +374,7 @@ is served by the same Axum process as all other endpoints — if `/health` works
 Huginn's health server only runs in `watch` mode (not `index` mode). The
 systemd unit uses `watch` subcommand. If running manually, specify:
 ```bash
-/opt/yggdrasil/bin/huginn --config /etc/yggdrasil/huginn/config.yaml watch
+/opt/yggdrasil/bin/huginn --config /etc/yggdrasil/huginn/config.json watch
 ```
 
 ### High memory usage
@@ -392,3 +383,6 @@ Each service uses < 2MB additional RSS for metrics counters. If memory is
 higher than expected, check for embedding model loading (Mimir/Muninn use
 Ollama via HTTP, not in-process) or large Qdrant result sets.
 
+---
+
+Last updated: 2026-03-26

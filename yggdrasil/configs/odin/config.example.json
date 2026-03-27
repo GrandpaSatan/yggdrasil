@@ -78,5 +78,9 @@
       "default_model": "gemini-2.5-flash",
       "requests_per_minute": 60
     }
+  },
+  "web_search": {
+    "api_key": "${BRAVE_SEARCH_API_KEY}",
+    "max_results": 5
   }
 }

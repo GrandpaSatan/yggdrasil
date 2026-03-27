@@ -62,8 +62,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 
-# Hashing
+# Hashing / Encryption
 sha2 = "0.10"
+aes-gcm = "0.10"
 
 # Random number generation
 rand = "0.8"

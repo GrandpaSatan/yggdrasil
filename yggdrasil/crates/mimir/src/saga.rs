@@ -251,6 +251,8 @@ pub async fn enrich_engram(
                             tags: &tags,
                             trigger_type: "pattern",
                             trigger_label: &trigger_label,
+                            project: None,  // saga enrichment preserves original scope
+                            scope: "global",
                         };
 
                         match engrams::update_engram_sdr(

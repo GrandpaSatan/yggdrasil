@@ -258,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
         voice_api_url,
         stt_url,
         omni_url,
+        web_search_config: config.web_search.clone(),
         config,
         tool_registry,
         gaming_config,
@@ -307,6 +308,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/references", post(handlers::proxy_references))
         // Gaming VM orchestration endpoint.
         .route("/api/v1/gaming", post(handlers::gaming_handler))
+        // Web search endpoint (Brave Search API).
+        .route("/api/v1/web_search", post(handlers::web_search_handler))
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
         .route("/api/v1/webhook", post(ygg_ha::webhook::handle_webhook))
@@ -369,6 +372,35 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         tracing::info!("task worker not configured");
+    }
+
+    // ── Omni keepalive — prevent GPU idle clock-down ─────────────
+    if let Some(ref omni) = state.omni_url {
+        let client = state.http_client.clone();
+        let url = format!("{omni}/keepalive");
+        tracing::info!(url = %url, "omni keepalive task started (60s interval)");
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                match client
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::debug!("omni keepalive OK");
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(status = %resp.status(), "omni keepalive non-200");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "omni keepalive failed");
+                    }
+                }
+            }
+        });
     }
 
     // ── systemd ready notification ────────────────────────────────

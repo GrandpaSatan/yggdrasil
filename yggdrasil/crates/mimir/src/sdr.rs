@@ -81,17 +81,24 @@ pub fn from_bytes(bytes: &[u8]) -> Sdr {
     sdr
 }
 
-/// Convert an SDR to a Vec<f32> of 0.0/1.0 values for Qdrant upsert.
+/// Convert an SDR to a bipolar Vec<f32> of {-1.0, 1.0} values for Qdrant upsert.
 ///
-/// Qdrant does not natively store binary vectors, so we represent each bit
-/// as a float. With BinaryQuantization enabled, Qdrant compresses these
-/// back to 1 bit per dimension internally.
-pub fn to_f32_vec(sdr: &Sdr) -> Vec<f32> {
+/// Maps {0,1} bits to {-1.0, 1.0} (bipolar encoding) so that Qdrant Dot product
+/// distance is strictly rank-equivalent to Hamming distance:
+///
+///   A' · B' = 256 - 2·H(A,B)
+///
+/// where A', B' ∈ {-1, 1}^256.
+///
+/// Using {0.0, 1.0} is WRONG for Dot product — it measures intersection
+/// (co-occurring 1s) rather than Hamming distance, making vectors with
+/// different popcount incomparable.
+pub fn to_bipolar_f32(sdr: &Sdr) -> Vec<f32> {
     let mut vec = Vec::with_capacity(SDR_BITS);
     for i in 0..SDR_BITS {
         let word = sdr[i / 64];
         let bit = (word >> (i % 64)) & 1;
-        vec.push(bit as f32);
+        vec.push(if bit == 1 { 1.0 } else { -1.0 });
     }
     vec
 }
@@ -231,12 +238,26 @@ mod tests {
     }
 
     #[test]
-    fn to_f32_vec_length() {
+    fn to_bipolar_f32_length_and_values() {
         let sdr: Sdr = [1, 0, 0, 0]; // only bit 0 set
-        let vec = to_f32_vec(&sdr);
+        let vec = to_bipolar_f32(&sdr);
         assert_eq!(vec.len(), SDR_BITS);
+        // bit 0 is set → 1.0
         assert_eq!(vec[0], 1.0);
-        assert_eq!(vec[1], 0.0);
+        // bit 1 is unset → -1.0 (bipolar, NOT 0.0)
+        assert_eq!(vec[1], -1.0);
+    }
+
+    #[test]
+    fn bipolar_dot_product_equals_hamming() {
+        let a: Sdr = [0xFF, 0xF0, 0, 0]; // 12 bits set
+        let b: Sdr = [0x0F, 0xFF, 0, 0]; // 12 bits set
+        let va = to_bipolar_f32(&a);
+        let vb = to_bipolar_f32(&b);
+        let dot: f32 = va.iter().zip(vb.iter()).map(|(x, y)| x * y).sum();
+        let hamming = hamming_distance(&a, &b);
+        // A'·B' = 256 - 2·H(A,B)
+        assert_eq!(dot as i32, SDR_BITS as i32 - 2 * hamming as i32);
     }
 
     #[test]

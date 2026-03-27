@@ -118,6 +118,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         voice: None,
         agent: Some(AgentLoopConfig::default()),
         task_worker: None,
+        web_search: None,
     };
 
     AppState {
@@ -137,7 +138,10 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         tool_registry: Arc::new(build_registry()),
         gaming_config: None,
         skill_cache: Arc::new(odin::skill_cache::SkillCache::new()),
+        wake_word_registry: Arc::new(odin::wake_word::WakeWordRegistry::new(None)),
+        omni_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         voice_alert_tx: tokio::sync::broadcast::channel::<String>(16).0,
+        web_search_config: None,
     }
 }
 

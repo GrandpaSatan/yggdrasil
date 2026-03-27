@@ -267,7 +267,7 @@ impl KokoroTtsHandle {
 
 /// Run espeak-ng to convert English text to IPA phonemes.
 fn phonemize(text: &str) -> Result<String, VoiceError> {
-    let output = Command::new("espeak-ng")
+    let output = Command::new("/usr/bin/espeak-ng")
         .args(["--ipa", "-q", "--stdin", "-v", "en-us"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

@@ -2,8 +2,9 @@
 # Merge LoRA adapters into base model, convert to GGUF, quantize, and import to Ollama.
 set -euo pipefail
 
-BARN="${BARN_DIR:-/data/saga}"
-BASE_MODEL="Qwen/Qwen3-0.6B"
+SCRIPT_DIR_REAL="$(cd "$(dirname "$0")" && pwd)"
+BARN="${BARN_DIR:-$SCRIPT_DIR_REAL}"
+BASE_MODEL="LiquidAI/LFM2.5-1.2B-Instruct"
 ADAPTER_PATH="$BARN/adapters/saga-lora"
 MERGED_PATH="$BARN/merged"
 GGUF_DIR="$BARN/gguf"
@@ -97,10 +98,10 @@ MODELFILE
 cp "$GGUF_DIR/Modelfile" "$SCRIPT_DIR/Modelfile"
 
 cd "$GGUF_DIR"
-ollama create saga:0.6b -f Modelfile
+ollama create saga:1.2b -f Modelfile
 
 echo ""
 echo "=== Done ==="
-echo "Model imported as saga:0.6b"
-echo "Test: ollama run saga:0.6b 'CLASSIFY\ntool: Edit\nfile: src/main.rs\ncontent: Fixed null pointer crash'"
+echo "Model imported as saga:1.2b"
+echo "Test: ollama run saga:1.2b 'CLASSIFY\ntool: Edit\nfile: src/main.rs\ncontent: Fixed null pointer crash'"
 ls -lh "$GGUF_DIR/"

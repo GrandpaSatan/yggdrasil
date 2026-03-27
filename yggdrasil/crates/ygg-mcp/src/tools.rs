@@ -497,6 +497,25 @@ pub struct ConfigSyncParams {
     pub project_id: Option<String>,
 }
 
+/// Parameters for the `vault` tool (encrypted secret storage).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultParams {
+    /// Action: "get", "set", "list", "delete".
+    pub action: String,
+    /// Secret key name (required for get/set/delete).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Plaintext value to store (required for set).
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Scope: "global", "project:xxx", "user:xxx" (default: "global").
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Tags for categorization.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal HTTP response types (Muninn / Odin shapes)
 // ---------------------------------------------------------------------------
@@ -727,11 +746,16 @@ pub async fn query_memory(
     struct Req<'a> {
         text: &'a str,
         limit: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project: Option<&'a str>,
+        include_global: bool,
     }
 
     let body = Req {
         text: &params.text,
         limit: params.limit.unwrap_or(5).min(20),
+        project: config.project.as_deref(),
+        include_global: true,
     };
 
     let resp = match client
@@ -836,6 +860,8 @@ pub async fn store_memory(
         tags: Option<&'a Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project: Option<&'a str>,
     }
 
     let body = Req {
@@ -844,6 +870,7 @@ pub async fn store_memory(
         effect: &params.effect,
         tags: params.tags.as_ref(),
         force: params.force,
+        project: config.project.as_deref(),
     };
 
     let resp = match client
@@ -1724,12 +1751,15 @@ async fn sync_docs_sprint_end(
         cause: &'a str,
         effect: &'a str,
         tags: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        project: Option<&'a str>,
     }
 
     let store_body = StoreReq {
         cause: &cause,
         effect: &summary_text,
         tags: &tags,
+        project: config.project.as_deref(),
     };
 
     let timeout = Duration::from_secs(config.timeout_secs);
@@ -2633,7 +2663,7 @@ pub async fn delegate(
     let workspace = config
         .workspace_path
         .as_deref()
-        .unwrap_or("/home/jesushernandez/Documents/Code/Yggdrasil/yggdrasil");
+        .unwrap_or(".");
     let prompt_config = agent_prompts::load_prompt(
         std::path::Path::new(workspace),
         agent_type,
@@ -5073,5 +5103,113 @@ fn real() {}
         // "rust" has no dot, so it's treated as a language tag and skipped
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].0, "src/real.rs");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// vault_tool — encrypted secret storage
+// ---------------------------------------------------------------------------
+
+pub async fn vault(
+    client: &Client,
+    config: &McpServerConfig,
+    params: VaultParams,
+) -> CallToolResult {
+    let timeout = Duration::from_secs(config.timeout_secs);
+    let url = format!(
+        "{}/api/v1/vault",
+        config.odin_url.trim_end_matches('/')
+    );
+
+    #[derive(Serialize)]
+    struct Req<'a> {
+        action: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tags: Option<&'a Vec<String>>,
+    }
+
+    let body = Req {
+        action: &params.action,
+        key: params.key.as_deref(),
+        value: params.value.as_deref(),
+        scope: params.scope.as_deref(),
+        tags: params.tags.as_ref(),
+    };
+
+    let resp = match client
+        .post(&url)
+        .json(&body)
+        .timeout(timeout)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if e.is_timeout() => {
+            return tool_error(format!(
+                "Request timed out after {} seconds",
+                config.timeout_secs
+            ));
+        }
+        Err(e) => {
+            return tool_error(format!("Vault request failed: {}", e));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() || status.is_server_error() {
+        let body = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Vault error (HTTP {}): {}", status, body));
+    }
+
+    let result: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse vault response: {}", e)),
+    };
+
+    match params.action.as_str() {
+        "get" => {
+            let key = result["key"].as_str().unwrap_or("?");
+            let value = result["value"].as_str().unwrap_or("");
+            let scope = result["scope"].as_str().unwrap_or("global");
+            tool_ok(format!("**{key}** (scope: {scope})\n```\n{value}\n```"))
+        }
+        "set" => {
+            let key = result["key"].as_str().unwrap_or("?");
+            let scope = result["scope"].as_str().unwrap_or("global");
+            tool_ok(format!("Secret **{key}** stored (scope: {scope})"))
+        }
+        "list" => {
+            let count = result["count"].as_u64().unwrap_or(0);
+            if count == 0 {
+                return tool_ok("No secrets found.".to_string());
+            }
+            let mut out = format!("**{count} secrets:**\n\n");
+            if let Some(secrets) = result["secrets"].as_array() {
+                for s in secrets {
+                    let key = s["key"].as_str().unwrap_or("?");
+                    let scope = s["scope"].as_str().unwrap_or("?");
+                    let tags = s["tags"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default();
+                    out.push_str(&format!("- **{key}** (scope: {scope})"));
+                    if !tags.is_empty() {
+                        out.push_str(&format!(" [{}]", tags));
+                    }
+                    out.push('\n');
+                }
+            }
+            tool_ok(out)
+        }
+        "delete" => {
+            let key = result["deleted"].as_str().unwrap_or("?");
+            tool_ok(format!("Secret **{key}** deleted."))
+        }
+        _ => tool_ok(format!("{}", result)),
     }
 }

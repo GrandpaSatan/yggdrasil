@@ -1,13 +1,14 @@
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, PointStruct, SearchPointsBuilder,
+    CreateCollectionBuilder, SearchPointsBuilder,
     UpsertPointsBuilder, VectorParamsBuilder, DeletePointsBuilder,
-    PointsIdsList, Value, point_id::PointIdOptions,
+    PointsIdsList, point_id::PointIdOptions,
+    CreateFieldIndexCollectionBuilder, FieldType,
 };
 
-// Re-export Distance so callers (e.g. mimir state.rs) can specify the metric
-// without adding qdrant_client as a direct dependency.
-pub use qdrant_client::qdrant::Distance;
+// Re-export types so callers can build filters and points without depending
+// on qdrant_client directly.
+pub use qdrant_client::qdrant::{Distance, Filter, Condition, Value, PointStruct};
 use uuid::Uuid;
 
 use crate::error::StoreError;
@@ -202,6 +203,93 @@ impl VectorStore {
                         ids: vec![id.to_string().into()],
                     }),
             )
+            .await
+            .map_err(|e| StoreError::Qdrant(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Search with an optional payload filter. Returns (id, score) pairs.
+    ///
+    /// Qdrant pre-filters payloads before HNSW traversal at zero latency cost.
+    /// Pass `None` for unfiltered search (backward compat).
+    pub async fn search_filtered(
+        &self,
+        collection: &str,
+        query_embedding: Vec<f32>,
+        limit: u64,
+        filter: Option<Filter>,
+    ) -> Result<Vec<(Uuid, f32)>, StoreError> {
+        let do_search = |emb: Vec<f32>| {
+            let mut builder = SearchPointsBuilder::new(collection, emb, limit)
+                .with_payload(false);
+            if let Some(ref f) = filter {
+                builder = builder.filter(f.clone());
+            }
+            async move {
+                self.client.search_points(builder).await
+            }
+        };
+
+        let results = match do_search(query_embedding.clone()).await {
+            Ok(r) => r,
+            Err(first_err) => {
+                tracing::warn!(error = %first_err, "qdrant filtered search failed, retrying in 500ms");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                do_search(query_embedding)
+                    .await
+                    .map_err(|e| StoreError::Qdrant(e.to_string()))?
+            }
+        };
+
+        let mut out = Vec::with_capacity(results.result.len());
+        for point in results.result {
+            let id_str = match point.id.as_ref().and_then(|pid| pid.point_id_options.as_ref()) {
+                Some(PointIdOptions::Uuid(s)) => s.clone(),
+                _ => continue,
+            };
+            if let Ok(id) = Uuid::parse_str(&id_str) {
+                out.push((id, point.score));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Create a keyword payload index on a field for O(1) pre-filtering.
+    ///
+    /// Idempotent — Qdrant ignores duplicate index creation.
+    pub async fn create_payload_index(
+        &self,
+        collection: &str,
+        field_name: &str,
+    ) -> Result<(), StoreError> {
+        self.client
+            .create_field_index(
+                CreateFieldIndexCollectionBuilder::new(
+                    collection,
+                    field_name,
+                    FieldType::Keyword,
+                ),
+            )
+            .await
+            .map_err(|e| StoreError::Qdrant(e.to_string()))?;
+        tracing::info!(collection, field_name, "qdrant payload index created");
+        Ok(())
+    }
+
+    /// Batch upsert multiple points in a single request.
+    ///
+    /// Use for migrations — avoids per-point network round-trips over Munin→Hades.
+    /// Caller builds `Vec<PointStruct>` in memory and fires one gRPC call per batch.
+    pub async fn upsert_batch(
+        &self,
+        collection: &str,
+        points: Vec<PointStruct>,
+    ) -> Result<(), StoreError> {
+        if points.is_empty() {
+            return Ok(());
+        }
+        self.client
+            .upsert_points(UpsertPointsBuilder::new(collection, points))
             .await
             .map_err(|e| StoreError::Qdrant(e.to_string()))?;
         Ok(())

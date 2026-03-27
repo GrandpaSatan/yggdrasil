@@ -35,6 +35,14 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `POST` | `/api/v1/webhook` | Home Assistant webhook receiver |
 | `GET`  | `/v1/voice` | Voice WebSocket endpoint. Upgrade to WebSocket; stream PCM s16le audio (16 kHz mono) as binary frames. Server sends JSON control frames and TTS audio back. See [Voice WebSocket Pipeline](ARCHITECTURE.md#data-flow-voice-websocket-pipeline-odin) for full protocol. |
 | `GET`  | `/voice` | Embedded browser voice UI (HTML page) |
+| `POST` | `/api/v1/embed` | Proxy to Mimir: embed text. Body: `{text}` |
+| `GET`  | `/api/v1/engrams/{id}` | Proxy to Mimir: get engram by ID |
+| `POST` | `/api/v1/gaming` | Cloud gaming VM orchestration. Body: `{action, vm_name?, gpu?}` |
+| `POST` | `/api/v1/web_search` | Web search via Brave API. Body: `{query, count?}` |
+| `POST` | `/api/v1/voice/alert` | Inject voice alert from Sentinel. Body: `{message, priority?}` |
+| `GET`  | `/api/v1/voice/enroll` | List wake word enrollments |
+| `POST` | `/api/v1/voice/enroll/{user_id}` | Enroll wake word for user |
+| `DELETE`| `/api/v1/voice/enroll/{user_id}` | Remove wake word enrollment |
 | `GET`  | `/health` | Health check (always HTTP 200, status in body) |
 | `GET`  | `/metrics` | Prometheus text metrics |
 
@@ -70,6 +78,9 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 | `POST` | `/api/v1/graph/unlink` | Unlink engrams. Body: `{source_id, target_id, relation?}` |
 | `POST` | `/api/v1/graph/neighbors` | Get neighbors. Body: `{engram_id, direction, relation?, depth?}` |
 | `POST` | `/api/v1/graph/traverse` | Traverse graph. Body: `{start_id, max_depth?, relation?, limit?}` |
+| `POST` | `/api/v1/vault` | Encrypted secret vault. Body: `{action: "set"|"get"|"list"|"delete", key_name, scope?, value?, tags?}` |
+| `GET`  | `/api/v1/engrams/{id}` | Get engram by ID |
+| `POST` | `/api/v1/embed` | Embed text and return vector. Body: `{text}` |
 | `GET`  | `/health` | Health check |
 | `GET`  | `/metrics` | Prometheus metrics |
 
@@ -112,7 +123,7 @@ Huginn is a background daemon — no user-facing API. It watches configured path
 
 The MCP layer is split into two servers (Sprint 027):
 
-1. **`yggdrasil`** (remote, StreamableHTTP) — 12 network tools + 3 resources. Always-on, shared across IDE windows.
+1. **`yggdrasil`** (remote, StreamableHTTP) — 29 network tools + 3 resources. Always-on, shared across IDE windows.
 2. **`yggdrasil-local`** (local, stdio) — Filesystem tools only. One process per IDE window.
 
 #### Remote Server — `yggdrasil` (Munin :9093)
@@ -138,6 +149,13 @@ The MCP layer is split into two servers (Sprint 027):
 | `task_delegate_tool` | Delegate code generation task to local Qwen3-30B with full Muninn+Mimir context |
 | `diff_review_tool` | Perform memory-aware code review via local LLM |
 | `context_bridge_tool` | Share context across IDE windows using Antigravity |
+| `config_version_tool` | Check/bump version info for server, client, config |
+| `config_sync_tool` | Cross-workstation config file sync (push/pull/status) |
+| `gaming_tool` | Cloud gaming VM management on Thor (Proxmox) |
+| `vault_tool` | Encrypted secret vault (get/set/list/delete) |
+| `deploy_tool` | Build and deploy Yggdrasil service binaries |
+| `network_topology_tool` | Query Yggdrasil mesh network topology |
+| `delegate_tool` | Unified LLM delegation with full context and agentic tool use |
 
 | Resource URI | Description |
 |--------------|-------------|

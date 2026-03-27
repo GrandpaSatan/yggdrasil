@@ -1,0 +1,20 @@
+[Unit]
+Description=Yggdrasil STT - Whisper (faster-whisper CPU)
+After=network-online.target
+Before=yggdrasil-odin.service
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil/deploy/munin/stt-server
+ExecStart=/opt/yggdrasil/deploy/munin/stt-server/.venv/bin/python3 \
+    /opt/yggdrasil/deploy/munin/stt-server/server-whisper.py \
+    --model large-v3 --device cpu --compute-type int8 --port 9097
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

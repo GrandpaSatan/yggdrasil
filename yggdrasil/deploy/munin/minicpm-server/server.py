@@ -185,6 +185,22 @@ async def health():
     )
 
 
+@app.get("/keepalive")
+async def keepalive():
+    """Lightweight inference to keep GPU clocks hot and prevent idle power-down."""
+    if _model is None:
+        raise HTTPException(503, "model not loaded")
+    t0 = time.time()
+    _model.chat(
+        msgs=[{"role": "user", "content": "Hi"}],
+        tokenizer=_processor.tokenizer,
+        max_new_tokens=1,
+    )
+    elapsed_ms = (time.time() - t0) * 1000
+    log.info("Keepalive: %.0fms", elapsed_ms)
+    return {"latency_ms": round(elapsed_ms, 1)}
+
+
 @app.post("/api/v1/stt", response_model=SttResponse)
 async def stt(request: Request):
     """STT endpoint — drop-in replacement for SenseVoice.

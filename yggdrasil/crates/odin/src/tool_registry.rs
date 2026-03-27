@@ -62,6 +62,12 @@ pub struct ToolSpec {
     /// the global `AgentLoopConfig.tool_timeout_secs` for this tool only.
     /// Used for long-running operations like gaming VM launches (WOL + boot).
     pub timeout_override_secs: Option<u64>,
+    /// Keyword triggers for voice query-based tool selection.
+    /// When the user's voice query contains any of these substrings (case-insensitive),
+    /// this tool is included in the agent loop context.
+    pub keywords: &'static [&'static str],
+    /// Core tool — always included in keyword-based selection regardless of query.
+    pub voice_always: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -87,6 +93,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Muninn("/api/v1/search"),
             timeout_override_secs: None,
+            keywords: &["code", "function", "codebase", "implementation", "source", "module"],
+            voice_always: false,
         },
         ToolSpec {
             name: "query_memory",
@@ -102,6 +110,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Mimir("/api/v1/query"),
             timeout_override_secs: None,
+            keywords: &["remember", "recall", "memory", "previously", "last time", "did we"],
+            voice_always: true,
         },
         ToolSpec {
             name: "memory_intersect",
@@ -117,6 +127,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Mimir("/api/v1/sdr/operations"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
         ToolSpec {
             name: "get_sprint_history",
@@ -132,6 +144,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Mimir("/api/v1/sprints/list"),
             timeout_override_secs: None,
+            keywords: &["sprint"],
+            voice_always: false,
         },
         ToolSpec {
             name: "memory_timeline",
@@ -147,6 +161,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Mimir("/api/v1/timeline"),
             timeout_override_secs: None,
+            keywords: &["timeline", "history", "when did"],
+            voice_always: false,
         },
         ToolSpec {
             name: "list_models",
@@ -155,6 +171,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::OdinSelf("/v1/models"),
             timeout_override_secs: None,
+            keywords: &["model", "models", "llm", "available models"],
+            voice_always: false,
         },
         ToolSpec {
             name: "service_health",
@@ -163,6 +181,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::OdinSelf("/health"),
             timeout_override_secs: None,
+            keywords: &["health", "status", "service", "running", "online"],
+            voice_always: false,
         },
         ToolSpec {
             name: "ast_analyze",
@@ -178,6 +198,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Muninn("/api/v1/symbols"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
         ToolSpec {
             name: "impact_analysis",
@@ -193,6 +215,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Muninn("/api/v1/references"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
         ToolSpec {
             name: "ha_get_states",
@@ -206,6 +230,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Ha(HaToolKind::GetStates),
             timeout_override_secs: None,
+            keywords: &["light", "switch", "sensor", "temperature", "device", "thermostat", "climate", "door", "window", "lock", "plug", "energy"],
+            voice_always: false,
         },
         ToolSpec {
             name: "ha_list_entities",
@@ -219,6 +245,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::Ha(HaToolKind::ListEntities),
             timeout_override_secs: None,
+            keywords: &["device", "entities", "what devices", "list devices"],
+            voice_always: false,
         },
         ToolSpec {
             name: "config_version",
@@ -227,6 +255,25 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Safe,
             endpoint: ToolEndpoint::OdinSelf("/api/v1/version"),
             timeout_override_secs: None,
+            keywords: &["version"],
+            voice_always: false,
+        },
+        ToolSpec {
+            name: "web_search",
+            description: "Search the web for current information. Returns titles, URLs, and descriptions of matching web pages.",
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query" },
+                    "count": { "type": "integer", "description": "Number of results (default 5, max 10)" }
+                },
+                "required": ["query"]
+            }),
+            tier: ToolTier::Safe,
+            endpoint: ToolEndpoint::OdinSelf("/api/v1/web_search"),
+            timeout_override_secs: None,
+            keywords: &["search", "look up", "lookup", "google", "web", "online", "latest", "news", "weather", "today", "current", "who is", "what is", "when is", "where is"],
+            voice_always: false,
         },
         // ── Restricted tier (write operations) ──────────────────
         ToolSpec {
@@ -244,6 +291,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Ha(HaToolKind::CallService),
             timeout_override_secs: None,
+            keywords: &["turn on", "turn off", "toggle", "light", "switch", "fan", "scene", "thermostat", "climate", "cover", "lock", "plug"],
+            voice_always: false,
         },
         ToolSpec {
             name: "gaming",
@@ -260,6 +309,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::OdinSelf("/api/v1/gaming"),
             timeout_override_secs: Some(360),
+            keywords: &["game", "gaming", "vm", "launch", "play", "moonlight", "harpy", "morrigan"],
+            voice_always: false,
         },
         ToolSpec {
             name: "store_memory",
@@ -276,6 +327,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Mimir("/api/v1/store"),
             timeout_override_secs: None,
+            keywords: &["remember this", "save", "store", "note this"],
+            voice_always: true,
         },
         ToolSpec {
             name: "context_offload",
@@ -291,6 +344,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Mimir("/api/v1/context/offload"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
         ToolSpec {
             name: "context_bridge",
@@ -306,6 +361,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Mimir("/api/v1/context/bridge"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
         ToolSpec {
             name: "task_queue",
@@ -322,6 +379,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Mimir("/api/v1/tasks"),
             timeout_override_secs: None,
+            keywords: &["task", "todo", "queue", "remind me"],
+            voice_always: false,
         },
         ToolSpec {
             name: "memory_graph",
@@ -339,6 +398,8 @@ pub fn build_registry() -> Vec<ToolSpec> {
             tier: ToolTier::Restricted,
             endpoint: ToolEndpoint::Mimir("/api/v1/graph"),
             timeout_override_secs: None,
+            keywords: &[],
+            voice_always: false,
         },
     ]
 }
@@ -352,6 +413,55 @@ pub fn to_tool_definitions(specs: &[ToolSpec], allowed_tiers: &[ToolTier]) -> Ve
     specs
         .iter()
         .filter(|s| allowed_tiers.contains(&s.tier))
+        .map(|s| ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: s.name.to_string(),
+                description: s.description.to_string(),
+                parameters: s.parameters_schema.clone(),
+            },
+        })
+        .collect()
+}
+
+/// Filter tools by allowed tiers AND a name allowlist.
+pub fn to_tool_definitions_filtered(
+    specs: &[ToolSpec],
+    allowed_tiers: &[ToolTier],
+    allowed_names: &[String],
+) -> Vec<ToolDefinition> {
+    specs
+        .iter()
+        .filter(|s| allowed_tiers.contains(&s.tier) && allowed_names.iter().any(|n| n == s.name))
+        .map(|s| ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: s.name.to_string(),
+                description: s.description.to_string(),
+                parameters: s.parameters_schema.clone(),
+            },
+        })
+        .collect()
+}
+
+/// Select tools for a voice query using keyword matching.
+///
+/// Returns tools whose `keywords` match substrings in the query (case-insensitive),
+/// plus any tools marked `voice_always`. Falls back to only `voice_always` tools
+/// when no keywords match.
+pub fn select_tools_for_query(
+    specs: &[ToolSpec],
+    query: &str,
+    allowed_tiers: &[ToolTier],
+) -> Vec<ToolDefinition> {
+    let query_lower = query.to_lowercase();
+    specs
+        .iter()
+        .filter(|s| {
+            allowed_tiers.contains(&s.tier)
+                && (s.voice_always
+                    || s.keywords.iter().any(|kw| query_lower.contains(kw)))
+        })
         .map(|s| ToolDefinition {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
@@ -464,12 +574,12 @@ mod tests {
     #[test]
     fn registry_has_correct_counts() {
         let registry = build_registry();
-        assert_eq!(registry.len(), 19);
+        assert_eq!(registry.len(), 20);
 
         let safe = registry.iter().filter(|s| s.tier == ToolTier::Safe).count();
         let restricted = registry.iter().filter(|s| s.tier == ToolTier::Restricted).count();
         let blocked = registry.iter().filter(|s| s.tier == ToolTier::Blocked).count();
-        assert_eq!(safe, 12);
+        assert_eq!(safe, 13);
         assert_eq!(restricted, 7);
         assert_eq!(blocked, 0);
     }
@@ -489,7 +599,7 @@ mod tests {
     fn tier_filtering_safe_only() {
         let registry = build_registry();
         let defs = to_tool_definitions(&registry, &[ToolTier::Safe]);
-        assert_eq!(defs.len(), 12);
+        assert_eq!(defs.len(), 13);
         for def in &defs {
             assert_eq!(def.tool_type, "function");
         }
@@ -499,7 +609,7 @@ mod tests {
     fn tier_filtering_safe_and_restricted() {
         let registry = build_registry();
         let defs = to_tool_definitions(&registry, &[ToolTier::Safe, ToolTier::Restricted]);
-        assert_eq!(defs.len(), 19);
+        assert_eq!(defs.len(), 20);
     }
 
     #[test]

@@ -35,13 +35,13 @@ use crate::{
         HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
         MemoryIntersectParams, MemoryTimelineParams, NetworkTopologyParams,
         QueryMemoryParams, SearchCodeParams, ServiceHealthParams, StoreMemoryParams,
-        TaskDelegateParams, TaskQueueParams,
+        TaskDelegateParams, TaskQueueParams, VaultParams,
         ast_analyze, build_check, config_sync, config_version, context_bridge,
         context_offload, delegate, deploy, diff_review, gaming, generate,
         get_sprint_history, ha_call_service, ha_generate_automation, ha_get_states,
         ha_list_entities, impact_analysis, list_models, memory_graph, memory_intersect,
         memory_timeline, network_topology, query_memory, search_code, service_health,
-        store_memory, task_delegate, task_queue,
+        store_memory, task_delegate, task_queue, vault,
     },
 };
 
@@ -678,6 +678,27 @@ impl YggdrasilServer {
         Parameters(params): Parameters<GamingParams>,
     ) -> String {
         let result = gaming(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Encrypted secret vault for API keys, passwords, SSH keys, and credentials.
+    ///
+    /// Secrets are AES-256-GCM encrypted at rest in PostgreSQL.
+    #[tool(description = "Encrypted secret vault for API keys, passwords, SSH keys, and credentials. \
+        Actions: 'get' (retrieve a secret by key), 'set' (store/update a secret), \
+        'list' (show all secrets — values are NOT shown), 'delete' (remove a secret). \
+        Scopes: 'global' (all projects), 'project:NAME' (project-specific), 'user:NAME' (user-specific). \
+        Requires MIMIR_VAULT_KEY env var on the server.")]
+    async fn vault_tool(
+        &self,
+        Parameters(params): Parameters<VaultParams>,
+    ) -> String {
+        let result = vault(&self.client, &self.config, params).await;
         result
             .content
             .into_iter()

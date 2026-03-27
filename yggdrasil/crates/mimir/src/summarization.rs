@@ -286,6 +286,8 @@ impl SummarizationService {
                 tags: &tags,
                 trigger_type: "pattern",
                 trigger_label: &trigger_label,
+                project: None,  // summaries inherit global scope for now
+                scope: "global",
             },
             ygg_domain::engram::MemoryTier::Archival,
         )
@@ -309,10 +311,9 @@ impl SummarizationService {
         );
 
         // --- Step 7: Upsert summary SDR into Qdrant engrams_sdr collection ---
-        // Convert the packed SDR to a Vec<f32> of {0.0, 1.0} values for Qdrant.
-        // OPTIMIZATION: With BinaryQuantization enabled on engrams_sdr, Qdrant
-        // compresses these back to 1 bit per dimension internally.
-        let sdr_f32 = crate::sdr::to_f32_vec(&sdr);
+        // Convert the packed SDR to bipolar {-1.0, 1.0} for Qdrant Dot product.
+        // Bipolar mapping makes Dot product rank-equivalent to Hamming distance.
+        let sdr_f32 = crate::sdr::to_bipolar_f32(&sdr);
         self.vectors
             .upsert(
                 "engrams_sdr",

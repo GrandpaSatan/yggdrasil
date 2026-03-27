@@ -146,7 +146,7 @@ fn parse_flow_tag(text: &str) -> (String, &'static str) {
 }
 
 /// Conversation timeout (seconds of silence before returning to idle).
-const CONVERSATION_TIMEOUT_SECS: u64 = 8;
+const CONVERSATION_TIMEOUT_SECS: u64 = 20;
 /// Shorter timeout after a completed action.
 const CONVERSATION_DONE_TIMEOUT_SECS: u64 = 5;
 
@@ -182,11 +182,21 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     // A failed resume attempt (unknown session_id) leaves this false so the client can retry.
     let mut seen_resume = false;
 
+    // ── Dynamic VAD calibration ──────────────────────────────────
+    // Measure ambient noise for the first 2 seconds to set thresholds
+    // adaptively. Until calibration completes, use conservative defaults.
+    const CALIBRATION_SAMPLES: usize = 2 * SAMPLE_RATE as usize; // 2 seconds
+    let mut calibration_buf: Vec<i16> = Vec::with_capacity(CALIBRATION_SAMPLES);
+    let mut calibrated = false;
+    let mut dyn_vad_threshold = VAD_THRESHOLD;
+    let mut dyn_silence_threshold = SILENCE_THRESHOLD;
+
     // Conversation state — when active, wake word is not required.
     let mut conversation_active = false;
     let mut conversation_timeout = std::time::Instant::now();
     let mut idle_since = std::time::Instant::now();
     let mut conv_timeout_secs = CONVERSATION_TIMEOUT_SECS;
+    let mut last_response = String::new(); // Echo cancellation: last Fergus spoken text
 
     loop {
         // Select between WebSocket messages and broadcast alerts.
@@ -211,6 +221,11 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
         match ws_msg {
             // ── Binary: raw PCM s16le audio ──────────────────────
             Some(Ok(Message::Binary(data))) => {
+                // ── Echo suppression: drop audio while TTS is playing ──
+                if state.omni_busy.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+
                 // Decode little-endian i16 samples.
                 let samples: Vec<i16> = data
                     .chunks_exact(2)
@@ -231,7 +246,25 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
 
                 match vad_state {
                     VadState::Idle => {
-                        if energy > VAD_THRESHOLD {
+                        // ── Calibration phase: measure noise floor ──
+                        if !calibrated {
+                            calibration_buf.extend_from_slice(&samples);
+                            if calibration_buf.len() >= CALIBRATION_SAMPLES {
+                                let noise_floor = rms_energy_i16(&calibration_buf);
+                                dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_THRESHOLD);
+                                dyn_silence_threshold = (noise_floor * 1.5_f32).max(SILENCE_THRESHOLD);
+                                calibrated = true;
+                                tracing::info!(
+                                    noise_floor = %format!("{noise_floor:.6}"),
+                                    vad_threshold = %format!("{dyn_vad_threshold:.6}"),
+                                    silence_threshold = %format!("{dyn_silence_threshold:.6}"),
+                                    "voice: VAD calibrated to ambient noise"
+                                );
+                                // Free calibration buffer
+                                calibration_buf = Vec::new();
+                            }
+                            // Don't process speech during calibration
+                        } else if energy > dyn_vad_threshold {
                             vad_state = VadState::Listening;
                             silence_frames = 0;
                             // Mark where speech begins (with a small lookback for onset)
@@ -247,7 +280,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                         let speech_len = audio_buffer.len().saturating_sub(speech_start_sample);
                         let utterance_timeout = speech_len >= MAX_UTTERANCE_SAMPLES;
 
-                        if energy <= SILENCE_THRESHOLD {
+                        if energy <= dyn_silence_threshold {
                             silence_frames += 1;
                         } else {
                             silence_frames = 0;
@@ -274,19 +307,49 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
 
                             // Only send the speech portion, not pre-speech silence.
                             let speech_audio = &audio_buffer[speech_start_sample..];
+
+                            // ── Reject noise: too short (<300ms) or too quiet ──
+                            let speech_duration_ms = speech_audio.len() as f32 / SAMPLE_RATE as f32 * 1000.0;
+                            let speech_rms = rms_energy_i16(speech_audio);
+                            if speech_duration_ms < 300.0 || speech_rms < VAD_THRESHOLD * 0.5 {
+                                tracing::debug!(
+                                    duration_ms = speech_duration_ms,
+                                    rms = speech_rms,
+                                    "voice: rejecting short/quiet utterance"
+                                );
+                                audio_buffer.clear();
+                                speech_start_sample = 0;
+                                vad_state = VadState::Idle;
+                                silence_frames = 0;
+                                continue;
+                            }
+
                             let result = process_utterance(
                                 &mut socket,
                                 &state,
                                 &session_id,
                                 speech_audio,
                                 conversation_active,
+                                &last_response,
                             )
                             .await;
+
+                            // Update echo cancellation state from result.
+                            match &result {
+                                ProcessResult::Continue(text) | ProcessResult::Done(text) | ProcessResult::Dismiss(text) => {
+                                    last_response = text.clone();
+                                }
+                                _ => {}
+                            }
 
                             // Drive conversation state machine based on result.
                             match result {
                                 ProcessResult::NotAddressed => {
-                                    // Not for us — stay in current state.
+                                    // Not for us — but don't let noise-processing
+                                    // time eat the conversation timer.
+                                    if conversation_active {
+                                        conversation_timeout = std::time::Instant::now();
+                                    }
                                 }
                                 ProcessResult::Continue(_) => {
                                     if !conversation_active {
@@ -317,6 +380,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
 
                             // Reset for next utterance.
                             audio_buffer.clear();
+                            speech_start_sample = 0;
                             vad_state = VadState::Idle;
                             silence_frames = 0;
 
@@ -361,17 +425,23 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                             // Client-side VAD signalled end-of-speech (mic stop or client VAD).
                             // Process if we have audio, regardless of server-side VAD state.
                             if !audio_buffer.is_empty() {
-                                let speech_audio = &audio_buffer[speech_start_sample..];
+                                let start = speech_start_sample.min(audio_buffer.len());
+                                let speech_audio = &audio_buffer[start..];
                                 let _result = process_utterance(
                                     &mut socket,
                                     &state,
                                     &session_id,
                                     speech_audio,
                                     conversation_active,
+                                    &last_response,
                                 )
                                 .await;
+                                if let ProcessResult::Continue(ref text) | ProcessResult::Done(ref text) | ProcessResult::Dismiss(ref text) = _result {
+                                    last_response = text.clone();
+                                }
 
                                 audio_buffer.clear();
+                                speech_start_sample = 0;
                                 vad_state = VadState::Idle;
                                 silence_frames = 0;
                             }
@@ -403,6 +473,7 @@ async fn process_utterance(
     session_id: &str,
     audio_buffer: &[i16],
     conversation_active: bool,
+    last_response: &str,
 ) -> ProcessResult {
     let http = &state.http_client;
     let voice_api_url = state.voice_api_url.as_deref().unwrap_or_default();
@@ -416,6 +487,13 @@ async fn process_utterance(
             serde_json::json!({"type": "processing"}).to_string().into(),
         ))
         .await;
+
+    // ── Energy floor check — reject noise before burning inference ──
+    let overall_rms = rms_energy_i16(audio_buffer);
+    if overall_rms < VAD_THRESHOLD * 0.75 {
+        tracing::debug!(rms = overall_rms, "voice: utterance below energy floor — skipping");
+        return ProcessResult::NotAddressed;
+    }
 
     // ── Busy check ────────────────────────────────────────────────
     if state.omni_busy.load(std::sync::atomic::Ordering::Relaxed) {
@@ -640,7 +718,7 @@ async fn process_utterance(
             Ok(_) => return ProcessResult::NotAddressed, // Empty response — silence
             Err(e) => {
                 tracing::warn!(error = %e, "omni chat failed, falling back to legacy pipeline");
-                match handlers::process_chat_text(state, "Hello, I tried to speak to you but the voice model is unavailable.", session_id).await {
+                match handlers::process_chat_text(state, "Hello, I tried to speak to you but the voice model is unavailable.", session_id, handlers::ChatSource::Voice).await {
                     Ok(text) => strip_think_tags(&text),
                     Err(e) => {
                         let _ = socket
@@ -655,8 +733,76 @@ async fn process_utterance(
             }
         }
     } else {
-        // Legacy path: omni not configured, use text chat.
-        match handlers::process_chat_text(state, "Hello Fergus", session_id).await {
+        // ── Split pipeline: STT → Ollama LLM → TTS ─────────────────
+        // No omni server — use dedicated STT to transcribe, then route
+        // through the standard Odin chat pipeline (agent loop + tools).
+        let pcm_bytes = pcm_to_bytes(audio_buffer);
+        let transcript = match call_stt(http, stt_url, &pcm_bytes).await {
+            Ok(t) if !t.trim().is_empty() => t,
+            Ok(_) => {
+                tracing::debug!("voice: STT returned empty transcript — ignoring");
+                return ProcessResult::NotAddressed;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "voice: STT failed");
+                return ProcessResult::NotAddressed;
+            }
+        };
+
+        tracing::info!(transcript = %transcript, "voice: STT transcription");
+
+        // ── Echo cancellation via SDR: reject if transcript matches last response ──
+        // When Fergus speaks through speakers, the mic picks it up and STT
+        // transcribes it back. Compare transcript against last response using
+        // word-level overlap to detect echo.
+        if !last_response.is_empty() {
+            let resp_lower = last_response.to_lowercase();
+            let trans_lower = transcript.to_lowercase();
+            let resp_words: std::collections::HashSet<&str> = resp_lower
+                .split_whitespace()
+                .filter(|w| w.len() > 2)
+                .collect();
+            let trans_words: std::collections::HashSet<&str> = trans_lower
+                .split_whitespace()
+                .filter(|w| w.len() > 2)
+                .collect();
+            if !resp_words.is_empty() && !trans_words.is_empty() {
+                let overlap = resp_words.intersection(&trans_words).count();
+                let echo_ratio = overlap as f32 / trans_words.len().min(resp_words.len()) as f32;
+                if echo_ratio > 0.75 {
+                    tracing::info!(
+                        echo_ratio = echo_ratio,
+                        overlap = overlap,
+                        "voice: echo detected — transcript matches last response, dropping"
+                    );
+                    return ProcessResult::NotAddressed;
+                }
+            }
+        }
+
+        let _ = socket
+            .send(Message::Text(
+                serde_json::json!({"type": "transcript", "text": &transcript})
+                    .to_string().into(),
+            ))
+            .await;
+
+        // Wake word check on transcript (case-insensitive).
+        if !conversation_active {
+            let lower = transcript.to_lowercase();
+            let has_wake = lower.contains("fergus")
+                || lower.contains("hey fergus")
+                || lower.contains("fergis")
+                || lower.contains("vertex")
+                || lower.contains("furgus")
+                || lower.contains("vergus");
+            if !has_wake {
+                tracing::debug!("voice: no wake word in transcript — ignoring");
+                return ProcessResult::NotAddressed;
+            }
+        }
+
+        match handlers::process_chat_text(state, &transcript, session_id, handlers::ChatSource::Voice).await {
             Ok(text) => strip_think_tags(&text),
             Err(e) => {
                 let _ = socket
@@ -671,6 +817,7 @@ async fn process_utterance(
     };
 
     // ── Parse conversation flow tag and send response ────────────
+    tracing::info!(response_len = response_text.len(), response_preview = %response_text.chars().take(100).collect::<String>(), "voice: LLM response received");
     let (spoken_text, flow_tag) = parse_flow_tag(&response_text);
 
     let _ = socket
@@ -681,10 +828,12 @@ async fn process_utterance(
         ))
         .await;
 
-    // Mark omni as busy during TTS (blocks other sessions).
+    // Mark omni as busy during TTS (blocks audio input + other sessions).
     state.omni_busy.store(true, std::sync::atomic::Ordering::Relaxed);
     send_tts(socket, http, tts_url, &spoken_text).await;
     state.omni_busy.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    // Echo cancellation: spoken_text is captured by caller via ProcessResult.
 
     match flow_tag {
         "[CONTINUE]" => ProcessResult::Continue(spoken_text),

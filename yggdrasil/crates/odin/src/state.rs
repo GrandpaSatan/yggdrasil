@@ -138,6 +138,8 @@ pub struct AppState {
     /// Sentinel (or any service) POSTs to `/api/v1/voice/alert`, Odin broadcasts to all
     /// active voice clients so they hear the alert via TTS.
     pub voice_alert_tx: tokio::sync::broadcast::Sender<String>,
+    /// Optional web search config. Present when `config.web_search` is `Some`.
+    pub web_search_config: Option<ygg_domain::config::WebSearchConfig>,
 }
 
 impl AppState {

@@ -10,8 +10,11 @@ use ygg_embed::OnnxEmbedder;
 
 use crate::{error::MimirError, sdr::Sdr, sdr_index::SdrIndex};
 
-/// SDR collection dimension: 256 bits stored as 256 floats (0.0 / 1.0).
+/// SDR collection dimension: 256 bits stored as 256 bipolar floats ({-1.0, 1.0}).
 const SDR_DIM: u64 = 256;
+
+/// Name of the v2 SDR collection with payload-based project isolation.
+pub const V2_SDR_COLLECTION: &str = "yggdrasil_v2_sdr";
 
 /// Shared application state injected into every Axum handler via `State<Arc<AppState>>`.
 ///
@@ -85,27 +88,43 @@ impl AppState {
             .map_err(MimirError::Store)?;
         tracing::info!("qdrant collection 'engrams' ready");
 
-        // SDR collection: 256-dim, Dot product distance.
-        // OPTIMIZATION: Dot product is mathematically identical to Hamming similarity
-        // on {0,1} float vectors (inner product counts shared set bits). With
-        // BinaryQuantization enabled on this collection, Qdrant compresses each
-        // dimension to 1 bit internally. Fallback: Cosine also works but is slower.
+        // Legacy SDR collection (kept for backward compat during migration).
         vectors
             .ensure_collection_dim("engrams_sdr", SDR_DIM, Distance::Dot)
             .await
             .map_err(MimirError::Store)?;
-        tracing::info!("qdrant collection 'engrams_sdr' ready (256-dim, Dot)");
+        tracing::info!("qdrant collection 'engrams_sdr' ready (legacy, 256-dim, Dot)");
 
-        // Category collections: 384-dim Cosine (dense ONNX embeddings).
-        // These scope the novelty gate per category so sprints don't compete
-        // with topology entries, etc.
+        // Legacy category collections (kept for backward compat during migration).
         for name in ["sprints", "topology", "projects"] {
             vectors
                 .ensure_collection(name)
                 .await
                 .map_err(MimirError::Store)?;
-            tracing::info!("qdrant collection '{name}' ready (384-dim, Cosine)");
+            tracing::info!("qdrant collection '{name}' ready (legacy, 384-dim, Cosine)");
         }
+
+        // --- V2 SDR collection: single collection with payload-based project isolation ---
+        // Uses bipolar {-1.0, 1.0} encoding so Dot product is rank-equivalent to
+        // Hamming distance: A'·B' = 256 - 2·H(A,B).
+        // Payload fields "project" and "scope" enable O(1) pre-filtering before
+        // HNSW traversal — no per-project collection overhead on Hades' N150.
+        vectors
+            .ensure_collection_dim(V2_SDR_COLLECTION, SDR_DIM, Distance::Dot)
+            .await
+            .map_err(MimirError::Store)?;
+        tracing::info!("qdrant collection '{}' ready (256-dim, Dot, bipolar)", V2_SDR_COLLECTION);
+
+        // Create keyword payload indexes for pre-filtered search.
+        vectors
+            .create_payload_index(V2_SDR_COLLECTION, "project")
+            .await
+            .map_err(MimirError::Store)?;
+        vectors
+            .create_payload_index(V2_SDR_COLLECTION, "scope")
+            .await
+            .map_err(MimirError::Store)?;
+        tracing::info!("payload indexes on 'project' and 'scope' ready for {}", V2_SDR_COLLECTION);
 
         // --- ONNX Embedder ---
         // Load synchronously at startup. The ONNX session builder is blocking I/O
@@ -178,6 +197,33 @@ pub async fn load_sdr_rows(
             let id: uuid::Uuid = r.get("id");
             let sdr_bits: Vec<u8> = r.get("sdr_bits");
             (id, sdr_bits)
+        })
+        .collect())
+}
+
+/// Load all SDR rows with project affiliation for scoped backfill.
+///
+/// Returns `(id, sdr_bits, project)` triples. The `project` column may be NULL
+/// for engrams that predate the project isolation migration (008).
+pub async fn load_sdr_rows_scoped(
+    pool: &sqlx::PgPool,
+) -> Result<Vec<(uuid::Uuid, Vec<u8>, Option<String>)>, MimirError> {
+    use sqlx::Row as _;
+
+    let rows: Vec<sqlx::postgres::PgRow> = sqlx::query(
+        "SELECT id, sdr_bits, project FROM yggdrasil.engrams WHERE tier = 'recall' AND sdr_bits IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e: sqlx::Error| MimirError::Store(ygg_store::error::StoreError::Query(e.to_string())))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let id: uuid::Uuid = r.get("id");
+            let sdr_bits: Vec<u8> = r.get("sdr_bits");
+            let project: Option<String> = r.get("project");
+            (id, sdr_bits, project)
         })
         .collect())
 }

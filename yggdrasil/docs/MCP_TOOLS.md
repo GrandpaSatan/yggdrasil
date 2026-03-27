@@ -1,6 +1,6 @@
 # Yggdrasil MCP Tools Reference
 
-Complete reference for all 23 MCP tools exposed by the Yggdrasil ecosystem.
+Complete reference for all 31 MCP tools exposed by the Yggdrasil ecosystem.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Tools are split across two servers:
 
 | Server | Binary | Transport | Tools |
 |--------|--------|-----------|-------|
-| `ygg-mcp-remote` | Munin (<munin-ip>:9093) | StreamableHTTP | 21 tools (all network tools) |
+| `ygg-mcp-remote` | Munin (<munin-ip>:9093) | StreamableHTTP | 29 tools (all network tools) |
 | `ygg-mcp-server` | Local (stdio) | stdio | 2 tools (filesystem-dependent) |
 
 ---
@@ -41,6 +41,13 @@ Tools are split across two servers:
 | 22 | `ha_generate_automation_tool` | Home Assistant | **Operational** | LLM-generated automation YAML (10-60s) |
 | 23 | `sync_docs_tool` | Docs (local) | **Operational** | Sprint lifecycle doc agent |
 | 24 | `screenshot_tool` | Utility (local) | **Operational** | Headless Chromium page capture |
+| 25 | `config_version_tool` | Config | **Operational** | Check/bump version for server, client, config |
+| 26 | `config_sync_tool` | Config | **Operational** | Push/pull config files across workstations |
+| 27 | `gaming_tool` | Gaming | **Operational** | Proxmox VM management on Thor |
+| 28 | `vault_tool` | Security | **Operational** | AES-256-GCM encrypted secret vault |
+| 29 | `deploy_tool` | DevOps | **Operational** | Build and deploy service binaries |
+| 30 | `network_topology_tool` | Infra | **Operational** | Mesh network topology query |
+| 31 | `delegate_tool` | LLM | **Operational** | Unified LLM delegation with agentic tool use |
 
 ---
 
@@ -522,6 +529,115 @@ Capture a screenshot of a web page via headless Chromium. Browser is launched la
 | `viewport_height` | u32 | No | 720 | Viewport height in pixels |
 
 Screenshots are saved to `/tmp/ygg-screenshots/`. Use the Read tool on the returned path to view the image.
+
+---
+
+### 25. `config_version_tool`
+**Category:** Config | **Server:** Remote
+
+Check or bump version information for Yggdrasil server, client, or config components.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `action` | string | Yes | — | `"check"` or `"bump"` |
+| `component` | string | No | `"server"` | `"server"`, `"client"`, or `"config"` |
+| `bump_type` | string | No | `"patch"` | `"major"`, `"minor"`, or `"patch"` (for bump action) |
+
+---
+
+### 26. `config_sync_tool`
+**Category:** Config | **Server:** Remote
+
+Synchronize configuration files across workstations. Supports push (upload), pull (download), and status (diff) operations.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `action` | string | Yes | — | `"push"`, `"pull"`, or `"status"` |
+| `file_type` | string | Yes | — | Config file type to sync (e.g. `"odin"`, `"mimir"`, `"mcp-remote"`) |
+| `content` | string | No | — | For push: file content (auto-reads from disk if omitted) |
+
+---
+
+### 27. `gaming_tool`
+**Category:** Gaming | **Server:** Remote
+
+Manage cloud gaming VMs on Thor (Proxmox). Start/stop VMs, assign GPUs, trigger Wake-on-LAN.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `action` | string | Yes | — | `"start"`, `"stop"`, `"status"`, `"list"` |
+| `vm_name` | string | No | — | VM name (e.g. `"harpy"`, `"morrigan"`) |
+| `gpu` | string | No | — | GPU to assign (e.g. `"rtx3060"`, `"rtx5070"`) |
+
+**When to use:** When the user wants to manage gaming VMs or check GPU availability on Thor.
+
+---
+
+### 28. `vault_tool`
+**Category:** Security | **Server:** Remote
+
+Encrypted secret vault backed by AES-256-GCM. Store and retrieve API keys, passwords, SSH keys, and credentials.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `action` | string | Yes | — | `"set"`, `"get"`, `"list"`, `"delete"` |
+| `key_name` | string | Yes | — | Secret key name |
+| `scope` | string | No | `"default"` | Namespace for the secret |
+| `value` | string | No | — | Secret value (for `"set"` action) |
+| `tags` | string[] | No | — | Metadata tags |
+
+**When to use:** For storing secrets that services need at runtime. Never store secrets in code or config files — use the vault instead.
+
+---
+
+### 29. `deploy_tool`
+**Category:** DevOps | **Server:** Remote
+
+Build and deploy Yggdrasil service binaries to target nodes. Handles cargo build, rsync, and systemd restart.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `action` | string | Yes | — | `"build"`, `"deploy"`, `"rollback"`, `"status"` |
+| `service` | string | Yes | — | Service name (e.g. `"odin"`, `"mimir"`) |
+| `node` | string | No | auto | Target node (e.g. `"munin"`, `"hugin"`) |
+
+---
+
+### 30. `network_topology_tool`
+**Category:** Infrastructure | **Server:** Remote
+
+Query the Yggdrasil mesh network topology. Returns node status, service assignments, and connectivity information.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `format` | string | No | `"summary"` | `"summary"` (markdown) or `"json"` (raw) |
+
+**When to use:** When you need to understand the current network layout, node assignments, or service distribution.
+
+---
+
+### 31. `delegate_tool`
+**Category:** LLM / Code Generation | **Server:** Remote
+
+Unified delegation to local LLM with full project context and optional agentic tool use. Assembles context from code search + memory, then generates via Ollama with optional multi-turn tool calling.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `task` | string | Yes | — | Natural language task description |
+| `agent_type` | string | No | `"general"` | Agent persona (e.g. `"general"`, `"code"`, `"review"`) |
+| `search_queries` | string[] | No | — | Code search queries for context assembly |
+| `memory_queries` | string[] | No | — | Memory queries for context assembly |
+| `model` | string | No | auto | Model override |
+| `max_tokens` | u64 | No | 8192 | Max response tokens |
+
+**When to use:** For complex code generation that benefits from multiple rounds of tool use. Prefer over `task_delegate_tool` when the task may require iterative refinement.
 
 ---
 

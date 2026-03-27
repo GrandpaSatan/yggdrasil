@@ -31,6 +31,7 @@ count=$(echo "$response" | jq '[.events[]? | select(.similarity > 0.7)] | length
 
 if [ "${count:-0}" -gt 0 ]; then
     printf "\033[0;36m[mem]\033[0m <- recalled %s engrams for %s (%sms)\n" "$count" "$filename" "$elapsed_ms" >&2
+    notify-send -t 2000 -i dialog-information "[mem] recalled" "$count engrams for $filename" 2>/dev/null || true
 
     # Build additionalContext from engram cause/effect text
     context=$(echo "$response" | jq -r '

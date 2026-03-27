@@ -4,3 +4,4 @@ pub mod engrams;
 pub mod edges;
 pub mod sessions;
 pub mod tasks;
+pub mod vault;

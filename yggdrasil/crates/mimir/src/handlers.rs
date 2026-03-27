@@ -15,8 +15,37 @@ use ygg_domain::engram::{
     NewEngram, RecallQuery, RecallResponse,
 };
 use ygg_store::postgres::engrams;
+use ygg_store::qdrant::{Condition, Filter, Value};
 
 use crate::{error::MimirError, sdr, state::AppState};
+
+/// Build a Qdrant payload for project/scope isolation on the v2 collection.
+fn build_qdrant_payload(project: Option<&str>, scope: &str) -> HashMap<String, Value> {
+    let mut payload = HashMap::new();
+    if let Some(p) = project {
+        payload.insert("project".to_string(), Value::from(p.to_string()));
+    }
+    payload.insert("scope".to_string(), Value::from(scope.to_string()));
+    payload
+}
+
+/// Build a Qdrant filter for project-scoped queries.
+///
+/// - project=Some + include_global: should(project=p OR scope="global")
+/// - project=Some + !include_global: must(project=p)
+/// - project=None: no filter (search everything)
+fn build_project_filter(project: Option<&str>, include_global: bool) -> Option<Filter> {
+    match project {
+        Some(p) if include_global => Some(Filter::should(vec![
+            Condition::matches("project", p.to_string()),
+            Condition::matches("scope", "global".to_string()),
+        ])),
+        Some(p) => Some(Filter::must(vec![
+            Condition::matches("project", p.to_string()),
+        ])),
+        None => None,
+    }
+}
 
 /// SHA-256 hash of `cause + "\n" + effect` for engram content dedup in PG.
 pub fn engram_content_hash(cause: &str, effect: &str) -> Vec<u8> {
@@ -136,6 +165,11 @@ pub async fn store_engram(
     // Step 7: Update-by-ID path vs new insert path
     if let Some(existing_id) = body.id {
         // Update path: caller knows the engram ID, bypass novelty gate
+        // Resolve scope: explicit > inferred from project > "global"
+        let scope = body.scope.as_deref().unwrap_or(
+            if body.project.is_some() { "project" } else { "global" }
+        );
+
         let updated = engrams::update_engram_sdr(
             state.store.pool(),
             existing_id,
@@ -147,6 +181,8 @@ pub async fn store_engram(
                 tags: &body.tags,
                 trigger_type,
                 trigger_label: &trigger_label,
+                project: body.project.as_deref(),
+                scope,
             },
         )
         .await?;
@@ -160,43 +196,35 @@ pub async fn store_engram(
 
         tracing::info!(engram_id = %existing_id, trigger_type, "engram updated by ID");
 
-        // Update in-memory SDR index (remove old, insert new)
+        // Update in-memory SDR index (remove old, insert scoped)
         state.sdr_index.remove(existing_id);
-        state.sdr_index.insert(existing_id, sdr_val);
+        state.sdr_index.insert_scoped(body.project.as_deref(), existing_id, sdr_val);
 
-        // Update Qdrant
-        let sdr_f32 = sdr::to_f32_vec(&sdr_val);
+        // Update both legacy and v2 Qdrant collections
+        let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+        let payload = build_qdrant_payload(body.project.as_deref(), scope);
         state
             .vectors
-            .upsert("engrams_sdr", existing_id, sdr_f32, HashMap::new())
+            .upsert("engrams_sdr", existing_id, sdr_f32.clone(), HashMap::new())
+            .await?;
+        state
+            .vectors
+            .upsert(crate::state::V2_SDR_COLLECTION, existing_id, sdr_f32, payload)
             .await?;
 
         return Ok((StatusCode::OK, Json(serde_json::json!({ "id": existing_id, "updated": true }))));
     }
 
-    // Determine target Qdrant collection from tags
-    let collection = if tags_lower.iter().any(|t| t == "sprint") {
-        "sprints"
-    } else if tags_lower.iter().any(|t| t == "topology") {
-        "topology"
-    } else if tags_lower.iter().any(|t| t == "project") {
-        "projects"
-    } else {
-        "engrams_sdr"
-    };
-
     // Step 4b: Novelty gate — reject near-duplicates (new inserts only, skipped when force=true)
+    // Uses project-scoped SDR index for fast in-memory dedup.
     let dedup_threshold = state.config.sdr.dedup_threshold;
     if dedup_threshold < 1.0 && !body.force {
-        // For category collections, search Qdrant with dense embedding.
-        // For engrams_sdr (default), use the fast in-memory SDR index.
-        let nearest_match: Option<(Uuid, f64)> = if collection != "engrams_sdr" {
-            let hits = state
-                .vectors
-                .search(collection, embedding.clone(), 1)
-                .await
-                .unwrap_or_default();
-            hits.into_iter().next().map(|(id, sim)| (id, sim as f64))
+        let nearest_match: Option<(Uuid, f64)> = if let Some(ref proj) = body.project {
+            state
+                .sdr_index
+                .query_scoped(&sdr_val, proj, true, 1)
+                .into_iter()
+                .next()
         } else {
             state
                 .sdr_index
@@ -212,7 +240,7 @@ pub async fn store_engram(
                     duplicate_id = %dup_id,
                     similarity = %sim,
                     threshold = %dedup_threshold,
-                    collection,
+                    project = ?body.project,
                     "engram flagged by novelty gate — returning match for client tiebreak"
                 );
 
@@ -245,6 +273,11 @@ pub async fn store_engram(
         }
     }
 
+    // Resolve scope for new insert path (update path resolved above in the if-let)
+    let scope = body.scope.as_deref().unwrap_or(
+        if body.project.is_some() { "project" } else { "global" }
+    );
+
     // Step 8: Insert into PostgreSQL
     let id = engrams::insert_engram_sdr(
         state.store.pool(),
@@ -256,30 +289,41 @@ pub async fn store_engram(
             tags: &body.tags,
             trigger_type,
             trigger_label: &trigger_label,
+            project: body.project.as_deref(),
+            scope,
         },
         MemoryTier::Recall,
     )
     .await?;
 
-    tracing::info!(engram_id = %id, trigger_type, "engram stored via SDR");
+    tracing::info!(engram_id = %id, trigger_type, project = ?body.project, scope, "engram stored via SDR");
 
-    // Step 9: Insert into in-memory SDR index
-    state.sdr_index.insert(id, sdr_val);
+    // Step 9: Insert into project-scoped in-memory SDR index
+    state.sdr_index.insert_scoped(body.project.as_deref(), id, sdr_val);
 
-    // Step 10: Upsert into Qdrant — route to category collection or default SDR
-    if collection == "engrams_sdr" {
-        let sdr_f32 = sdr::to_f32_vec(&sdr_val);
-        state
-            .vectors
-            .upsert("engrams_sdr", id, sdr_f32, HashMap::new())
-            .await?;
-    } else {
-        // Category collections use dense 384-dim embeddings for better semantic recall
-        state
-            .vectors
-            .upsert(collection, id, embedding.clone(), HashMap::new())
-            .await?;
+    // Step 10: Upsert into both legacy and v2 Qdrant collections
+    let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+
+    // Legacy collection (backward compat during migration)
+    state
+        .vectors
+        .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+        .await?;
+
+    // Also upsert into legacy category collections for backward compat
+    let tags_lower: Vec<String> = body.tags.iter().map(|t| t.to_lowercase()).collect();
+    if tags_lower.iter().any(|t| t == "sprint") {
+        state.vectors.upsert("sprints", id, embedding.clone(), HashMap::new()).await?;
+    } else if tags_lower.iter().any(|t| t == "topology") {
+        state.vectors.upsert("topology", id, embedding.clone(), HashMap::new()).await?;
     }
+
+    // V2 collection with payload-based project isolation
+    let payload = build_qdrant_payload(body.project.as_deref(), scope);
+    state
+        .vectors
+        .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+        .await?;
 
     // Step 11: Return 201 Created
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
@@ -365,17 +409,23 @@ pub async fn query_engrams(
             .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
-    let sdr_f32 = sdr::to_f32_vec(&query_sdr);
+    let sdr_f32 = sdr::to_bipolar_f32(&query_sdr);
 
     // Step 2: Dual-system search (Hamming + Qdrant) in parallel
+    // Uses project-scoped search on both systems when project is set.
     let limit = body.limit;
-    let (sys1_results, sys2_results) = tokio::join!(
-        async { Ok::<_, MimirError>(state.sdr_index.query(&query_sdr, limit)) },
-        state.vectors.search("engrams_sdr", sdr_f32, limit as u64)
-    );
+    let filter = build_project_filter(body.project.as_deref(), body.include_global);
 
-    let sys1 = sys1_results?;
-    let sys2 = sys2_results?;
+    let sys1 = if let Some(ref proj) = body.project {
+        state.sdr_index.query_scoped(&query_sdr, proj, body.include_global, limit)
+    } else {
+        state.sdr_index.query(&query_sdr, limit)
+    };
+
+    let sys2 = state
+        .vectors
+        .search_filtered(crate::state::V2_SDR_COLLECTION, sdr_f32, limit as u64, filter)
+        .await?;
 
     // Step 3: Merge by UUID — take max similarity
     let mut merged: HashMap<Uuid, f64> = HashMap::new();
@@ -462,19 +512,23 @@ pub async fn recall_engrams(
             .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
 
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
-    let sdr_f32 = sdr::to_f32_vec(&query_sdr);
+    let sdr_f32 = sdr::to_bipolar_f32(&query_sdr);
 
     // Steps 3 & 4: Run System 1 (in-memory Hamming) and System 2 (Qdrant) in parallel
+    // Uses project-scoped search on both systems when project is set.
     let limit = body.limit;
-    let (sys1_results, sys2_results) = tokio::join!(
-        // System 1: brute-force Hamming scan (sub-millisecond for < 50k entries)
-        async { Ok::<_, MimirError>(state.sdr_index.query(&query_sdr, limit)) },
-        // System 2: Qdrant dot-product search on engrams_sdr collection
-        state.vectors.search("engrams_sdr", sdr_f32, limit as u64)
-    );
+    let filter = build_project_filter(body.project.as_deref(), body.include_global);
 
-    let sys1 = sys1_results?;
-    let sys2 = sys2_results?;
+    let sys1 = if let Some(ref proj) = body.project {
+        state.sdr_index.query_scoped(&query_sdr, proj, body.include_global, limit)
+    } else {
+        state.sdr_index.query(&query_sdr, limit)
+    };
+
+    let sys2 = state
+        .vectors
+        .search_filtered(crate::state::V2_SDR_COLLECTION, sdr_f32, limit as u64, filter)
+        .await?;
 
     // Step 5: Merge by UUID — take max similarity when both systems return same ID.
     //
@@ -1643,6 +1697,7 @@ pub async fn auto_ingest(
                 matched_name.clone(),
                 format!("workstation:{}", body.workstation),
             ];
+            let auto_scope = if body.project.is_some() { "project" } else { "global" };
             let id = engrams::insert_engram_sdr(
                 state.store.pool(),
                 &engrams::EngramSdrParams {
@@ -1653,16 +1708,25 @@ pub async fn auto_ingest(
                     tags: &tags,
                     trigger_type: "pattern",
                     trigger_label: &trigger_label,
+                    project: body.project.as_deref(),
+                    scope: auto_scope,
                 },
                 MemoryTier::Recall,
             )
             .await?;
 
-            state.sdr_index.insert(id, sdr_val);
-            let sdr_f32 = sdr::to_f32_vec(&sdr_val);
+            state.sdr_index.insert_scoped(body.project.as_deref(), id, sdr_val);
+            let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+            // Legacy collection
             state
                 .vectors
-                .upsert("engrams_sdr", id, sdr_f32, HashMap::new())
+                .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+                .await?;
+            // V2 collection with project payload
+            let payload = build_qdrant_payload(body.project.as_deref(), auto_scope);
+            state
+                .vectors
+                .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
                 .await?;
 
             // Update cooldown and dedup maps
@@ -1785,4 +1849,116 @@ mod tests {
             panic!("expected Pattern");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vault endpoints (Sprint 049)
+// ---------------------------------------------------------------------------
+
+/// POST /api/v1/vault — get, set, list, or delete secrets.
+///
+/// Requires `MIMIR_VAULT_KEY` env var. Returns 503 if vault is not configured.
+pub async fn vault_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VaultRequest>,
+) -> Result<Json<serde_json::Value>, MimirError> {
+    use ygg_store::postgres::vault;
+
+    let vault_key = crate::vault::VaultKey::from_env()
+        .map_err(|e| MimirError::Internal(e))?
+        .ok_or_else(|| MimirError::Internal(
+            "Vault not configured: set MIMIR_VAULT_KEY env var (base64-encoded 32-byte key)".into()
+        ))?;
+
+    let scope = body.scope.as_deref().unwrap_or("global");
+
+    match body.action.as_str() {
+        "set" => {
+            let key_name = body.key.as_deref()
+                .ok_or_else(|| MimirError::Validation("key is required for set".into()))?;
+            let value = body.value.as_deref()
+                .ok_or_else(|| MimirError::Validation("value is required for set".into()))?;
+
+            let encrypted = vault_key.encrypt(value.as_bytes())
+                .map_err(|e| MimirError::Internal(e))?;
+
+            let tags = body.tags.as_deref().unwrap_or(&[]);
+            let id = vault::set_secret(state.store.pool(), key_name, &encrypted, scope, tags).await?;
+
+            Ok(Json(serde_json::json!({ "id": id, "key": key_name, "scope": scope })))
+        }
+        "get" => {
+            let key_name = body.key.as_deref()
+                .ok_or_else(|| MimirError::Validation("key is required for get".into()))?;
+
+            let entry = vault::get_secret(state.store.pool(), key_name, scope).await?
+                .ok_or_else(|| MimirError::NotFound(
+                    format!("vault key '{key_name}' not found in scope '{scope}'")
+                ))?;
+
+            let decrypted = vault_key.decrypt(&entry.encrypted_value)
+                .map_err(|e| MimirError::Internal(e))?;
+
+            let value = String::from_utf8(decrypted)
+                .map_err(|e| MimirError::Internal(format!("decrypted value is not UTF-8: {e}")))?;
+
+            Ok(Json(serde_json::json!({
+                "key": entry.key_name,
+                "value": value,
+                "scope": entry.scope,
+                "tags": entry.tags,
+            })))
+        }
+        "list" => {
+            let scope_filter = if scope == "all" { None } else { Some(scope) };
+            let entries = vault::list_secrets(state.store.pool(), scope_filter).await?;
+
+            let items: Vec<serde_json::Value> = entries
+                .into_iter()
+                .map(|e| serde_json::json!({
+                    "key": e.key_name,
+                    "scope": e.scope,
+                    "tags": e.tags,
+                    "updated_at": e.updated_at.to_rfc3339(),
+                }))
+                .collect();
+
+            Ok(Json(serde_json::json!({ "secrets": items, "count": items.len() })))
+        }
+        "delete" => {
+            let key_name = body.key.as_deref()
+                .ok_or_else(|| MimirError::Validation("key is required for delete".into()))?;
+
+            let deleted = vault::delete_secret(state.store.pool(), key_name, scope).await?;
+
+            if !deleted {
+                return Err(MimirError::NotFound(
+                    format!("vault key '{key_name}' not found in scope '{scope}'")
+                ));
+            }
+
+            Ok(Json(serde_json::json!({ "deleted": key_name, "scope": scope })))
+        }
+        other => Err(MimirError::Validation(
+            format!("unknown vault action '{other}', expected: get, set, list, delete")
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaultRequest {
+    /// Action: "get", "set", "list", "delete"
+    pub action: String,
+    /// Secret key name (required for get/set/delete)
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Plaintext value (required for set)
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Scope: "global", "project:xxx", "user:xxx" (default: "global")
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Tags for categorization
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }

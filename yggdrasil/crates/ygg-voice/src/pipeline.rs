@@ -96,6 +96,16 @@ impl VoicePipeline {
         let max_utterance_polls =
             (MAX_UTTERANCE_SECONDS * 1000.0 / POLL_INTERVAL_MS as f32) as u32;
 
+        // ── Dynamic VAD calibration ──────────────────────────────
+        // Measure ambient noise for the first 2 seconds to set thresholds.
+        let calibration_needed = (2.0 * self.sample_rate as f32) as usize;
+        let mut calibration_samples: usize = 0;
+        let mut calibration_energy_sum: f64 = 0.0;
+        let mut calibration_energy_count: u32 = 0;
+        let mut calibrated = false;
+        let mut dyn_vad_threshold = VAD_ENERGY_THRESHOLD;
+        let mut dyn_silence_threshold = VAD_SILENCE_THRESHOLD;
+
         // Audio playback state for received TTS.
         let mut audio_buf: Vec<u8> = Vec::new();
         let mut playback_sample_rate: u32 = 24_000;
@@ -124,7 +134,26 @@ impl VoicePipeline {
 
                     match state {
                         PipelineState::Idle => {
-                            if energy > VAD_ENERGY_THRESHOLD {
+                            // ── Calibration: measure noise floor ──
+                            if !calibrated {
+                                let window_samples = (VAD_WINDOW_SECONDS * self.sample_rate as f32) as usize;
+                                calibration_samples += window_samples;
+                                calibration_energy_sum += energy as f64;
+                                calibration_energy_count += 1;
+                                if calibration_samples >= calibration_needed {
+                                    let noise_floor = (calibration_energy_sum / calibration_energy_count as f64) as f32;
+                                    dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_ENERGY_THRESHOLD);
+                                    dyn_silence_threshold = (noise_floor * 1.5_f32).max(VAD_SILENCE_THRESHOLD);
+                                    calibrated = true;
+                                    info!(
+                                        noise_floor = %format!("{noise_floor:.6}"),
+                                        vad = %format!("{dyn_vad_threshold:.6}"),
+                                        silence = %format!("{dyn_silence_threshold:.6}"),
+                                        "VAD calibrated to ambient noise"
+                                    );
+                                }
+                                // Don't trigger speech during calibration
+                            } else if energy > dyn_vad_threshold {
                                 state = PipelineState::Listening;
                                 silence_counter = 0;
                                 utterance_polls = 0;
@@ -156,7 +185,7 @@ impl VoicePipeline {
                             }
 
                             // Silence detection with hysteresis.
-                            if energy <= VAD_SILENCE_THRESHOLD {
+                            if energy <= dyn_silence_threshold {
                                 silence_counter += 1;
                             } else {
                                 silence_counter = 0;

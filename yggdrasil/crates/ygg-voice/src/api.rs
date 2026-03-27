@@ -86,7 +86,7 @@ async fn stt_handler(
         ));
     }
 
-    if body.len() % 2 != 0 {
+    if !body.len().is_multiple_of(2) {
         return Err((
             StatusCode::BAD_REQUEST,
             "body length must be even (s16le samples are 2 bytes each)".to_string(),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fine-tune Qwen3 0.6B into Saga using QLoRA on GTX 1080.
+"""Fine-tune LFM2.5-1.2B into Saga using QLoRA on RTX 2070S.
 
 Usage:
     python3 train.py [--epochs 3] [--batch-size 4] [--lr 2e-4]
@@ -20,8 +20,8 @@ from transformers import (
 )
 from trl import SFTTrainer, SFTConfig
 
-BARN = os.environ.get("BARN_DIR", "/data/saga")
-BASE_MODEL = "Qwen/Qwen3-0.6B"
+BARN = os.environ.get("BARN_DIR", os.path.dirname(os.path.abspath(__file__)))
+BASE_MODEL = "LiquidAI/LFM2.5-1.2B-Instruct"
 MAX_SEQ_LEN = 512
 
 
@@ -100,11 +100,22 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     # LoRA config
+    # Auto-detect LoRA target modules from model linear layers
+    target_modules = set()
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            # Extract the last part of the name (e.g. "q_proj", "gate_proj", "in_proj")
+            short = name.split(".")[-1]
+            if short in ("lm_head",):
+                continue  # skip output head
+            target_modules.add(short)
+    target_modules = sorted(target_modules)
+    print(f"LoRA target modules: {target_modules}")
+
     lora_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=args.lora_alpha,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
+        target_modules=target_modules,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",

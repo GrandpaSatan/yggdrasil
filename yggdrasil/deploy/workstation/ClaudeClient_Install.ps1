@@ -26,7 +26,7 @@
     # Auto-detect project dir
 
 .EXAMPLE
-    .\ClaudeClient_Install.ps1 -ProjectDir C:\Users\jesus\Documents\HardwareSetup
+    .\ClaudeClient_Install.ps1 -ProjectDir C:\Users\YourUser\Documents\MyProject
     # Explicit project dir
 #>
 

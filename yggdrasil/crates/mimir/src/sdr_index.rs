@@ -1,60 +1,100 @@
 //! In-memory SDR index for System 1 (hot/fast) recall.
 //!
-//! Stores SDRs in a contiguous `Vec` protected by `RwLock` for concurrent
+//! Stores SDRs in per-project partitions protected by `RwLock` for concurrent
 //! access. Queries perform a brute-force XOR + popcount scan. For 1000
 //! Recall-tier engrams × 4 u64 words, this completes in ~4μs.
+//!
+//! Partitioning by project avoids scanning irrelevant engrams during
+//! project-scoped queries, saving CPU cycles proportional to the number
+//! of off-project engrams.
 
+use std::collections::HashMap;
 use std::sync::RwLock;
 use uuid::Uuid;
 
 use crate::sdr::{self, Sdr};
 
-/// Thread-safe in-memory SDR index.
+/// The partition key used for engrams with no project (global scope).
+const GLOBAL_PARTITION: &str = "__global__";
+
+/// Thread-safe in-memory SDR index, partitioned by project.
 ///
 /// Read-biased: queries take a read lock, stores take a write lock.
-/// Queries are vastly more frequent than stores, so write starvation
-/// is negligible given sub-millisecond scan times.
+/// Each partition is a contiguous `Vec<(Uuid, Sdr)>` — near-zero memory
+/// overhead per partition since SDRs are just 32 bytes each.
 pub struct SdrIndex {
-    entries: RwLock<Vec<(Uuid, Sdr)>>,
+    partitions: RwLock<HashMap<String, Vec<(Uuid, Sdr)>>>,
 }
 
 impl SdrIndex {
-    /// Create an empty index.
+    /// Create an empty index with no partitions.
     pub fn new() -> Self {
         Self {
-            entries: RwLock::new(Vec::new()),
+            partitions: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Insert an SDR for the given engram ID.
+    /// Insert an SDR into a specific project partition.
+    pub fn insert_scoped(&self, project: Option<&str>, id: Uuid, sdr: Sdr) {
+        let key = project.unwrap_or(GLOBAL_PARTITION);
+        let mut partitions = self.partitions.write().unwrap();
+        partitions
+            .entry(key.to_string())
+            .or_default()
+            .push((id, sdr));
+    }
+
+    /// Insert into the global partition (backward compat).
     pub fn insert(&self, id: Uuid, sdr: Sdr) {
-        let mut entries = self.entries.write().unwrap();
-        entries.push((id, sdr));
+        self.insert_scoped(None, id, sdr);
     }
 
-    /// Remove all entries for the given engram ID.
+    /// Remove an engram from ALL partitions (handles project reassignment).
     pub fn remove(&self, id: Uuid) {
-        let mut entries = self.entries.write().unwrap();
-        entries.retain(|(eid, _)| *eid != id);
+        let mut partitions = self.partitions.write().unwrap();
+        for entries in partitions.values_mut() {
+            entries.retain(|(eid, _)| *eid != id);
+        }
     }
 
-    /// Query the index for the top-K most similar SDRs by Hamming distance.
+    /// Query a specific project partition + global partition, merge and return top-K.
     ///
-    /// Returns `(engram_id, similarity)` pairs sorted by descending similarity.
-    pub fn query(&self, target: &Sdr, limit: usize) -> Vec<(Uuid, f64)> {
-        let entries = self.entries.read().unwrap();
-
-        if entries.is_empty() || limit == 0 {
+    /// This is the primary query path for project-scoped searches. It scans
+    /// only the project and global partitions, skipping all other projects.
+    pub fn query_scoped(
+        &self,
+        target: &Sdr,
+        project: &str,
+        include_global: bool,
+        limit: usize,
+    ) -> Vec<(Uuid, f64)> {
+        let partitions = self.partitions.read().unwrap();
+        if limit == 0 {
             return Vec::new();
         }
 
-        // Brute-force scan: compute Hamming similarity for every entry.
-        let mut scored: Vec<(Uuid, f64)> = entries
-            .iter()
-            .map(|(id, stored_sdr)| (*id, sdr::hamming_similarity(target, stored_sdr)))
-            .collect();
+        let mut scored: Vec<(Uuid, f64)> = Vec::new();
 
-        // Sort by similarity descending, then by UUID for deterministic ordering.
+        // Scan project partition
+        if let Some(entries) = partitions.get(project) {
+            scored.extend(
+                entries
+                    .iter()
+                    .map(|(id, s)| (*id, sdr::hamming_similarity(target, s))),
+            );
+        }
+
+        // Scan global partition
+        if include_global {
+            if let Some(entries) = partitions.get(GLOBAL_PARTITION) {
+                scored.extend(
+                    entries
+                        .iter()
+                        .map(|(id, s)| (*id, sdr::hamming_similarity(target, s))),
+                );
+            }
+        }
+
         scored.sort_by(|(id_a, sim_a), (id_b, sim_b)| {
             sim_b
                 .partial_cmp(sim_a)
@@ -66,21 +106,77 @@ impl SdrIndex {
         scored
     }
 
-    /// Number of entries in the index.
-    pub fn len(&self) -> usize {
-        self.entries.read().unwrap().len()
+    /// Query ALL partitions (backward compat / unscoped search).
+    pub fn query(&self, target: &Sdr, limit: usize) -> Vec<(Uuid, f64)> {
+        let partitions = self.partitions.read().unwrap();
+
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let mut scored: Vec<(Uuid, f64)> = Vec::new();
+        for entries in partitions.values() {
+            scored.extend(
+                entries
+                    .iter()
+                    .map(|(id, s)| (*id, sdr::hamming_similarity(target, s))),
+            );
+        }
+
+        scored.sort_by(|(id_a, sim_a), (id_b, sim_b)| {
+            sim_b
+                .partial_cmp(sim_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| id_a.cmp(id_b))
+        });
+
+        scored.truncate(limit);
+        scored
     }
 
-    /// Whether the index is empty.
+    /// Total number of entries across all partitions.
+    pub fn len(&self) -> usize {
+        self.partitions
+            .read()
+            .unwrap()
+            .values()
+            .map(|v| v.len())
+            .sum()
+    }
+
+    /// Whether the index has zero entries.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Bulk load from PostgreSQL rows: `(id, sdr_bits BYTEA)`.
+    /// Bulk load from PostgreSQL rows: `(id, sdr_bits BYTEA, project)`.
     ///
     /// Called once at startup to populate the index from persisted data.
+    pub fn load_from_rows_scoped(&self, rows: &[(Uuid, Vec<u8>, Option<String>)]) {
+        let mut partitions = self.partitions.write().unwrap();
+        for (id, bytes, project) in rows {
+            if bytes.len() >= sdr::SDR_WORDS * 8 {
+                let key = project.as_deref().unwrap_or(GLOBAL_PARTITION);
+                partitions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push((*id, sdr::from_bytes(bytes)));
+            } else {
+                tracing::warn!(
+                    engram_id = %id,
+                    bytes_len = bytes.len(),
+                    "skipping SDR with invalid byte length"
+                );
+            }
+        }
+    }
+
+    /// Bulk load from PostgreSQL rows without project info (backward compat).
+    ///
+    /// All entries go into the global partition.
     pub fn load_from_rows(&self, rows: &[(Uuid, Vec<u8>)]) {
-        let mut entries = self.entries.write().unwrap();
+        let mut partitions = self.partitions.write().unwrap();
+        let entries = partitions.entry(GLOBAL_PARTITION.to_string()).or_default();
         entries.reserve(rows.len());
         for (id, bytes) in rows {
             if bytes.len() >= sdr::SDR_WORDS * 8 {
@@ -94,12 +190,28 @@ impl SdrIndex {
             }
         }
     }
+
+    /// Number of partitions (projects + global).
+    pub fn partition_count(&self) -> usize {
+        self.partitions.read().unwrap().len()
+    }
+
+    /// Number of entries in a specific partition.
+    pub fn partition_len(&self, project: Option<&str>) -> usize {
+        let key = project.unwrap_or(GLOBAL_PARTITION);
+        self.partitions
+            .read()
+            .unwrap()
+            .get(key)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
 }
 
 /// Aggregate statistics about the SDR index for health monitoring.
 #[derive(Debug, Clone)]
 pub struct SdrStats {
-    /// Total entries in the index.
+    /// Total entries across all partitions.
     pub count: usize,
     /// Average popcount across all SDRs (healthy: ~110-140 for 256-bit SDRs).
     pub avg_popcount: f64,
@@ -112,13 +224,16 @@ pub struct SdrStats {
 }
 
 impl SdrIndex {
-    /// Compute aggregate health statistics for the index.
+    /// Compute aggregate health statistics across all partitions.
     ///
     /// Samples up to 200 random pairs for pairwise similarity estimation.
     /// Runs under a read lock — safe to call from a periodic background task.
     pub fn stats(&self) -> SdrStats {
-        let entries = self.entries.read().unwrap();
-        let count = entries.len();
+        let partitions = self.partitions.read().unwrap();
+
+        // Flatten all entries for stats computation
+        let all_entries: Vec<&(Uuid, Sdr)> = partitions.values().flat_map(|v| v.iter()).collect();
+        let count = all_entries.len();
 
         if count == 0 {
             return SdrStats {
@@ -131,12 +246,12 @@ impl SdrIndex {
         }
 
         // Average popcount
-        let total_pop: u64 = entries.iter().map(|(_, s)| sdr::popcount(s) as u64).sum();
+        let total_pop: u64 = all_entries.iter().map(|(_, s)| sdr::popcount(s) as u64).sum();
         let avg_popcount = total_pop as f64 / count as f64;
 
         // Concept coverage: OR all SDRs together
         let mut global_or = sdr::ZERO;
-        for (_, s) in entries.iter() {
+        for (_, s) in all_entries.iter() {
             for i in 0..sdr::SDR_WORDS {
                 global_or[i] |= s[i];
             }
@@ -148,11 +263,10 @@ impl SdrIndex {
             let max_pairs = 200usize;
             let mut sims = Vec::with_capacity(max_pairs);
 
-            // Deterministic pseudo-random sampling using index-based hashing
             let step = if count > 20 { count / 20 } else { 1 };
             'outer: for i in (0..count).step_by(step) {
                 for j in (i + 1..count).step_by(step) {
-                    sims.push(sdr::hamming_similarity(&entries[i].1, &entries[j].1));
+                    sims.push(sdr::hamming_similarity(&all_entries[i].1, &all_entries[j].1));
                     if sims.len() >= max_pairs {
                         break 'outer;
                     }
@@ -206,9 +320,45 @@ mod tests {
 
         let results = index.query(&make_sdr(0xFF), 2);
         assert_eq!(results.len(), 2);
-        // First result should be id1 (exact match)
         assert_eq!(results[0].0, id1);
         assert_eq!(results[0].1, 1.0);
+    }
+
+    #[test]
+    fn insert_scoped_and_query_scoped() {
+        let index = SdrIndex::new();
+        let id_ygg = Uuid::new_v4();
+        let id_fen = Uuid::new_v4();
+        let id_global = Uuid::new_v4();
+
+        index.insert_scoped(Some("yggdrasil"), id_ygg, make_sdr(0xFF));
+        index.insert_scoped(Some("fenrir"), id_fen, make_sdr(0xFF));
+        index.insert_scoped(None, id_global, make_sdr(0xFF));
+
+        // Query yggdrasil + global — should NOT see fenrir
+        let results = index.query_scoped(&make_sdr(0xFF), "yggdrasil", true, 10);
+        let ids: Vec<Uuid> = results.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&id_ygg));
+        assert!(ids.contains(&id_global));
+        assert!(!ids.contains(&id_fen));
+
+        // Query fenrir only (no global) — should only see fenrir
+        let results = index.query_scoped(&make_sdr(0xFF), "fenrir", false, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id_fen);
+    }
+
+    #[test]
+    fn query_all_spans_partitions() {
+        let index = SdrIndex::new();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+
+        index.insert_scoped(Some("a"), id1, make_sdr(0xFF));
+        index.insert_scoped(Some("b"), id2, make_sdr(0xFF));
+
+        let results = index.query(&make_sdr(0xFF), 10);
+        assert_eq!(results.len(), 2);
     }
 
     #[test]
@@ -216,6 +366,17 @@ mod tests {
         let index = SdrIndex::new();
         let id = Uuid::new_v4();
         index.insert(id, make_sdr(0xFF));
+        assert_eq!(index.len(), 1);
+
+        index.remove(id);
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn remove_crosses_partitions() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        index.insert_scoped(Some("proj"), id, make_sdr(0xFF));
         assert_eq!(index.len(), 1);
 
         index.remove(id);
@@ -244,6 +405,25 @@ mod tests {
         assert_eq!(results[0].1, 1.0);
     }
 
+    #[test]
+    fn load_from_rows_scoped() {
+        let index = SdrIndex::new();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let sdr_val: Sdr = [0xDEAD, 0xBEEF, 0xCAFE, 0x1234];
+        let bytes = sdr::to_bytes(&sdr_val);
+
+        index.load_from_rows_scoped(&[
+            (id1, bytes.clone(), Some("yggdrasil".to_string())),
+            (id2, bytes, None),
+        ]);
+
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.partition_count(), 2);
+        assert_eq!(index.partition_len(Some("yggdrasil")), 1);
+        assert_eq!(index.partition_len(None), 1);
+    }
+
     // --- stats() tests ---
 
     #[test]
@@ -266,8 +446,7 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.count, 1);
         assert_eq!(stats.avg_popcount, 8.0);
-        assert_eq!(stats.concept_coverage, 8); // OR of one SDR = itself
-        // No pairwise similarity with only 1 entry
+        assert_eq!(stats.concept_coverage, 8);
         assert_eq!(stats.similarity_p50, 0.0);
     }
 
@@ -282,8 +461,7 @@ mod tests {
         let stats = index.stats();
         assert_eq!(stats.count, 3);
         assert_eq!(stats.avg_popcount, 32.0);
-        assert_eq!(stats.concept_coverage, 32); // All identical → OR = same
-        // All pairwise similarities should be 1.0
+        assert_eq!(stats.concept_coverage, 32);
         assert_eq!(stats.similarity_p50, 1.0);
         assert_eq!(stats.similarity_p90, 1.0);
     }
@@ -291,33 +469,43 @@ mod tests {
     #[test]
     fn stats_disjoint_entries_have_low_similarity() {
         let index = SdrIndex::new();
-        // Two SDRs with no overlapping bits
-        let a: Sdr = [u64::MAX, 0, 0, 0]; // 64 bits in word 0
-        let b: Sdr = [0, u64::MAX, 0, 0]; // 64 bits in word 1
+        let a: Sdr = [u64::MAX, 0, 0, 0];
+        let b: Sdr = [0, u64::MAX, 0, 0];
         index.insert(Uuid::new_v4(), a);
         index.insert(Uuid::new_v4(), b);
 
         let stats = index.stats();
         assert_eq!(stats.count, 2);
         assert_eq!(stats.avg_popcount, 64.0);
-        assert_eq!(stats.concept_coverage, 128); // OR covers both words
-        // Hamming similarity = 1 - 128/256 = 0.5 (128 bits differ)
+        assert_eq!(stats.concept_coverage, 128);
         assert_eq!(stats.similarity_p50, 0.5);
     }
 
     #[test]
     fn stats_concept_coverage_accumulates() {
         let index = SdrIndex::new();
-        // 4 SDRs each activating a different word
-        index.insert(Uuid::new_v4(), [0xFF, 0, 0, 0]);      // 8 bits in word 0
-        index.insert(Uuid::new_v4(), [0, 0xFF, 0, 0]);      // 8 bits in word 1
-        index.insert(Uuid::new_v4(), [0, 0, 0xFF, 0]);      // 8 bits in word 2
-        index.insert(Uuid::new_v4(), [0, 0, 0, 0xFF]);      // 8 bits in word 3
+        index.insert(Uuid::new_v4(), [0xFF, 0, 0, 0]);
+        index.insert(Uuid::new_v4(), [0, 0xFF, 0, 0]);
+        index.insert(Uuid::new_v4(), [0, 0, 0xFF, 0]);
+        index.insert(Uuid::new_v4(), [0, 0, 0, 0xFF]);
 
         let stats = index.stats();
         assert_eq!(stats.count, 4);
         assert_eq!(stats.avg_popcount, 8.0);
-        assert_eq!(stats.concept_coverage, 32); // 8 bits × 4 words
+        assert_eq!(stats.concept_coverage, 32);
+    }
+
+    #[test]
+    fn stats_spans_partitions() {
+        let index = SdrIndex::new();
+        let sdr_val: Sdr = [0xFF, 0xFF, 0xFF, 0xFF];
+        index.insert_scoped(Some("a"), Uuid::new_v4(), sdr_val);
+        index.insert_scoped(Some("b"), Uuid::new_v4(), sdr_val);
+        index.insert_scoped(None, Uuid::new_v4(), sdr_val);
+
+        let stats = index.stats();
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.similarity_p50, 1.0);
     }
 
     // --- novelty gate pattern test ---
@@ -325,15 +513,13 @@ mod tests {
     #[test]
     fn novelty_gate_detects_near_duplicates() {
         let index = SdrIndex::new();
-        let sdr_a: Sdr = [u64::MAX, u64::MAX, u64::MAX, u64::MAX]; // all bits set
+        let sdr_a: Sdr = [u64::MAX, u64::MAX, u64::MAX, u64::MAX];
         index.insert(Uuid::new_v4(), sdr_a);
 
-        // A nearly-identical SDR should have very high similarity
-        let sdr_b: Sdr = [u64::MAX, u64::MAX, u64::MAX, u64::MAX ^ 0x1]; // 1 bit different
+        let sdr_b: Sdr = [u64::MAX, u64::MAX, u64::MAX, u64::MAX ^ 0x1];
         let results = index.query(&sdr_b, 1);
         assert_eq!(results.len(), 1);
         let similarity = results[0].1;
-        // 1 bit out of 256 different → similarity = 255/256 ≈ 0.996
         assert!(similarity > 0.99, "expected > 0.99, got {similarity}");
         assert!(similarity > 0.85, "novelty gate (threshold 0.85) should catch this");
     }
@@ -341,15 +527,13 @@ mod tests {
     #[test]
     fn novelty_gate_passes_distinct_content() {
         let index = SdrIndex::new();
-        let sdr_a: Sdr = [u64::MAX, 0, 0, 0]; // word 0 all set
+        let sdr_a: Sdr = [u64::MAX, 0, 0, 0];
         index.insert(Uuid::new_v4(), sdr_a);
 
-        // Completely different SDR
-        let sdr_b: Sdr = [0, 0, 0, u64::MAX]; // word 3 all set
+        let sdr_b: Sdr = [0, 0, 0, u64::MAX];
         let results = index.query(&sdr_b, 1);
         assert_eq!(results.len(), 1);
         let similarity = results[0].1;
-        // 128 bits differ → similarity = 0.5
         assert!(similarity < 0.85, "distinct content should pass novelty gate, got {similarity}");
     }
 }

@@ -32,6 +32,10 @@ pub struct OdinConfig {
     /// When enabled, Odin polls the Mimir task queue and executes tasks autonomously.
     #[serde(default)]
     pub task_worker: Option<TaskWorkerConfig>,
+    /// Optional web search configuration (Brave Search API).
+    /// When present, enables the `web_search` tool in the agent loop.
+    #[serde(default)]
+    pub web_search: Option<WebSearchConfig>,
 }
 
 /// Configuration for Odin's autonomous background task worker.
@@ -112,6 +116,14 @@ pub struct VoiceStreamConfig {
     /// the separate STT → Ollama agent loop chain. TTS still uses voice_api_url.
     #[serde(default)]
     pub omni_url: Option<String>,
+    /// Model to use for voice interactions. When set, voice requests bypass
+    /// the semantic router's model selection and use this model instead.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Tool names to load for voice requests. When set, only these tools
+    /// are included in the agent loop context (reduces token overhead).
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
 }
 
 fn default_voice_api_url() -> String {
@@ -493,6 +505,20 @@ pub struct HaConfig {
 
 fn default_ha_timeout() -> u64 {
     10
+}
+
+/// Web search configuration (Brave Search API).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    /// Brave Search API key (use `${BRAVE_SEARCH_API_KEY}` expansion).
+    pub api_key: String,
+    /// Maximum results per query (default: 5).
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: usize,
+}
+
+fn default_web_search_max_results() -> usize {
+    5
 }
 
 /// MCP server configuration.

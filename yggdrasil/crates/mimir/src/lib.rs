@@ -6,3 +6,4 @@ pub mod sdr;
 pub mod sdr_index;
 pub mod state;
 pub mod summarization;
+pub mod vault;

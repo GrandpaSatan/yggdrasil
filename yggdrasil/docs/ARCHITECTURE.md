@@ -65,7 +65,8 @@ graph TB
 | **Mimir** | `crates/mimir` | `mimir` | 9090 | Engram memory CRUD, embedding, dedup, LSH indexing, autonomous auto-ingest with SDR template matching | `yggdrasil.engrams`, `yggdrasil.lsh_buckets`, Qdrant `engrams` collection, in-memory insight template SDRs, per-workstation cooldown map | DONE (Sprint 002, auto-ingest Sprint 044) |
 | **Huginn** | `crates/huginn` | `huginn` | 9092 (health) | File watcher, tree-sitter AST chunking, code indexing | `yggdrasil.indexed_files`, `yggdrasil.code_chunks`, Qdrant `code_chunks` collection | DONE (Sprint 003) |
 | **Muninn** | `crates/muninn` | `muninn` | 9091 | Semantic code retrieval (vector + BM25 fusion) | Read-only from Huginn's tables | DONE (Sprint 004) |
-| **ygg-mcp-server** | `crates/ygg-mcp-server` | `ygg-mcp-server` | N/A (stdio) | MCP server exposing 9 tools (code search, memory, generation, 4 HA tools) and 2 resources to IDE clients via JSON-RPC over stdin/stdout | None (stateless bridge) | DONE (Sprint 006) |
+| **ygg-mcp-server** | `crates/ygg-mcp-server` | `ygg-mcp-server` | N/A (stdio) | MCP local server exposing 2 tools (sync_docs, screenshot) to IDE clients via JSON-RPC over stdin/stdout | None (stateless bridge) | DONE (Sprint 006) |
+| **ygg-mcp-remote** | `crates/ygg-mcp-remote` | `ygg-mcp-remote` | 9093 | MCP remote server exposing 29 tools and 3 resources to IDE clients via StreamableHTTP. Network tools only (code search, memory, LLM, HA, gaming, vault, deploy, config sync). | None (stateless bridge to backend services) | DONE (Sprint 027) |
 
 ## Shared Libraries
 
@@ -76,6 +77,16 @@ graph TB
 | `ygg-embed` | Ollama embedding HTTP client (`EmbedClient`). Single and batch embedding. | mimir, huginn, muninn |
 | `ygg-mcp` | MCP tool/resource definitions, server handler, tool implementations (code search, memory, generation, HA). Library crate. | ygg-mcp-server |
 | `ygg-ha` | Home Assistant REST API client (`HaClient`), automation YAML generation (`AutomationGenerator`). | ygg-mcp, odin |
+| `ygg-config` | Unified configuration loader: JSON/YAML auto-detect, `${ENV_VAR}` expansion, validation, hot-reload via filesystem notifications. | All services |
+| `ygg-voice` | Local audio bridge for voice assistant. Captures microphone, streams to Odin WebSocket, plays TTS. | Standalone client binary |
+| `ygg-server` | Shared HTTP service boilerplate: metrics middleware, graceful shutdown, error types, health checks, telemetry init, systemd sd_notify. | odin, mimir, muninn, huginn, ygg-node |
+| `ygg-gaming` | GPU-pooled cloud gaming orchestrator. Proxmox VM management, GPU assignment, Wake-on-LAN for Thor. | ygg-mcp (gaming_tool) |
+| `ygg-sentinel` | Distributed log monitoring with SDR anomaly detection. Collects logs from mesh nodes, triggers voice alerts. | Standalone daemon |
+| `ygg-node` | Mesh node daemon. mDNS discovery, heartbeats, gate policy, energy management, inter-node HTTP proxy. | Standalone daemon, one per node |
+| `ygg-mesh` | Mesh networking library. Discovery, gate policy, node registry, HTTP proxy. | ygg-node |
+| `ygg-cloud` | Cloud LLM fallback provider abstraction. OpenAI, Claude, Gemini adapters with rate limiting. | odin (fallback routing) |
+| `ygg-energy` | Energy management policy. Wake-on-LAN, power status monitoring, Proxmox integration. | ygg-node |
+| `ygg-installer` | Cross-platform installation tool. Detects OS, builds binaries, configures systemd/launchd/Windows Service. | Standalone CLI |
 
 ## Data Flow: Engram Store
 
@@ -349,6 +360,20 @@ sequenceDiagram
     MCP-->>IDE: JSON-RPC result {content: [{type: text, text: "## Code Search..."}]}
 ```
 
+## Encrypted Vault (Sprint 048)
+
+Mimir provides an AES-256-GCM encrypted secret vault for storing API keys, passwords, SSH keys, and credentials. Secrets are encrypted client-side before storage in PostgreSQL.
+
+### Vault Architecture
+
+- **Master Key:** Loaded from `MIMIR_VAULT_KEY` environment variable (base64-encoded 32-byte AES-256 key)
+- **Encryption:** AES-256-GCM with unique random 96-bit nonce per secret
+- **Storage:** `nonce (12 bytes) || ciphertext` as BYTEA in `yggdrasil.vault` table
+- **Operations:** `set_secret`, `get_secret`, `list_secrets` (metadata only), `delete_secret`
+- **MCP Tool:** `vault_tool` on the remote server exposes get/set/list/delete
+
+Secrets are scoped by namespace (`scope` field) and identified by `key_name`. Upsert semantics on `(key_name, scope)`.
+
 ## Data Flow: HA Automation Generation (Sprint 006)
 
 ```mermaid
@@ -403,7 +428,7 @@ All tables live in the `yggdrasil` schema on PostgreSQL (pgvector Docker contain
 
 ## Configuration
 
-Each service loads its config from `configs/<service>/config.yaml`. Config structs are defined in `ygg_domain::config`. CLI flags can override specific values (e.g., `--database-url`).
+Each service loads its config from `configs/<service>/config.json` (or `.yaml` — format is auto-detected by extension). Config loading uses `ygg-config` which supports `${ENV_VAR}` expansion for secrets. CLI flags can override specific values (e.g., `--database-url`). Example configs are at `configs/<service>/config.example.json`.
 
 ---
 
@@ -421,3 +446,4 @@ Each service loads its config from `configs/<service>/config.yaml`. Config struc
 | 2026-03-22 | Sprint 044: Added Autonomous Memory Pipeline section. Mimir service description updated with auto-ingest responsibility and SDR template matching. Added recall flow (PreToolUse hook -> Mimir /api/v1/recall with include_text), ingest flow (PostToolUse hook -> Mimir /api/v1/auto-ingest -> SDR template scan -> conditional engram storage), insight template table, graceful degradation strategy, and visual indicator documentation. | system-architect |
 | 2026-03-23 | Sprint 045: Voice Pipeline NPU Acceleration. STT (SenseVoiceSmall) moved to Intel AI Boost NPU via ONNX Runtime OpenVINO EP — 2.5x latency reduction (e.g. 5s audio: 665ms CPU → 303ms NPU). TTS (Kokoro v1.0) tested on NPU but incompatible (dynamic STFT shapes), remains on CPU. NPU driver v1.30.0 installed. Both servers rewritten with dual-backend (NPU/CPU) and env-var rollback (STT_DEVICE, TTS_DEVICE). FunASR ONNX export fixed (Less node type mismatch). STT/TTS added to topology diagram and External Services table. | system-architect |
 | 2026-03-18 | Odin crate improvements (simplify sprint): (1) `SkillCache` pre-computes `Arc<dyn Fft<f32>>` at construction — no per-call `FftPlanner`; (2) `match_skill` and `learn` both use two-phase RwLock (read for O(N) scan, write only on hit/insert) with TOCTOU guard via SDR equality re-verify under write lock; (3) `learn` enforces `MAX_SKILLS=512` cap with O(1) LRU `swap_remove` eviction; (4) `process_utterance` reduced to 4 params (reads `http`, `stt_url`, `tts_url`, `omni_url` from `AppState`); (5) `pcm_bytes` allocation deferred past skill cache check (saves ~64 KB on cache hits); (6) `seen_resume` flag set only inside session validation success block; (7) `send_tts()` helper extracted; (8) `to_cloud_messages()` private helper extracted in `handlers.rs` to deduplicate `try_cloud_fallback`/`try_cloud_or_fail`; (9) `task_worker.rs` calls `backends.first()` once via `let b` binding. Added Voice WebSocket Pipeline data flow and SDR Skill Cache sections. Munin Ollama inference (3B+ models) confirmed fixed as of 2026-03-18. | system-architect |
+| 2026-03-26 | Documentation audit and update. Added ygg-mcp-remote to service registry (29 tools, StreamableHTTP). Added 10 shared library crates (ygg-config, ygg-voice, ygg-server, ygg-gaming, ygg-sentinel, ygg-node, ygg-mesh, ygg-cloud, ygg-energy, ygg-installer). Added Encrypted Vault section. Updated config format (JSON default with YAML support via ygg-config). Updated ygg-mcp-server tool count (2 local tools). | system-architect |

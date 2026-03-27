@@ -16,7 +16,7 @@ use mimir::{
         get_core_engrams_handler, get_engram_by_id, get_stats, graph_link, graph_neighbors,
         graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
         recall_engrams, sdr_operations, store_engram, task_cancel, task_complete, task_list,
-        task_pop, task_push, timeline,
+        task_pop, task_push, timeline, vault_handler,
     },
     state::{AppState, load_sdr_rows},
     summarization::SummarizationService,
@@ -105,6 +105,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/graph/unlink", post(graph_unlink))
         .route("/api/v1/graph/neighbors", post(graph_neighbors))
         .route("/api/v1/graph/traverse", post(graph_traverse))
+        // Vault (encrypted secret storage)
+        .route("/api/v1/vault", post(vault_handler))
         // Prometheus scrape endpoint.
         .route(
             "/metrics",

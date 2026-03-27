@@ -67,6 +67,14 @@ pub struct NewEngram {
     /// when a near-duplicate exists.  Ignored on the update-by-ID path.
     #[serde(default)]
     pub force: bool,
+    /// Project isolation key. Routes to project-specific Qdrant payload filter
+    /// and PG project column. None = global scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Scope: "global", "project", or "user:{name}". Defaults to "project" when
+    /// project is set, "global" otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Response after storing an engram.
@@ -81,10 +89,20 @@ pub struct EngramQuery {
     pub text: String,
     #[serde(default = "default_query_limit")]
     pub limit: usize,
+    /// Scope search to a specific project. None = search everything (backward compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// When true (default), also include global-scope engrams in results.
+    #[serde(default = "default_include_global")]
+    pub include_global: bool,
 }
 
 fn default_query_limit() -> usize {
     5
+}
+
+fn default_include_global() -> bool {
+    true
 }
 
 /// Memory system statistics.
@@ -145,6 +163,12 @@ pub struct RecallQuery {
     /// Backward-compatible: callers that omit this field get the original metadata-only response.
     #[serde(default)]
     pub include_text: Option<bool>,
+    /// Scope search to a specific project. None = search everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// When true (default), also include global-scope engrams in results.
+    #[serde(default = "default_include_global")]
+    pub include_global: bool,
 }
 
 /// Response from event-based recall.

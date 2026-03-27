@@ -39,6 +39,18 @@ use crate::session::CompactMessage;
 use crate::state::{AppState, BackendState, CloudPool};
 
 // ─────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────
+
+/// Distinguishes the origin of a `process_chat_text` call so the voice
+/// pipeline can override model selection and tool loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatSource {
+    Http,
+    Voice,
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────
 
@@ -339,6 +351,7 @@ pub async fn process_chat_text(
     state: &AppState,
     text: &str,
     session_id: &str,
+    source: ChatSource,
 ) -> Result<String, OdinError> {
     // ── 1. Append user message to session ─────────────────────────
     state
@@ -379,6 +392,30 @@ pub async fn process_chat_text(
                 }
     }
 
+    // ── 3b. Voice model override ──────────────────────────────────
+    if source == ChatSource::Voice {
+        if let Some(ref voice_cfg) = state.config.voice {
+            if let Some(ref voice_model) = voice_cfg.model {
+                if let Some(resolved) = state.router.resolve_backend_for_model(voice_model) {
+                    tracing::info!(
+                        old_model = %decision.model,
+                        new_model = %voice_model,
+                        "voice: overriding model to voice-specific model"
+                    );
+                    decision.model = resolved.model;
+                    decision.backend_url = resolved.backend_url;
+                    decision.backend_name = resolved.backend_name;
+                    decision.backend_type = resolved.backend_type;
+                } else {
+                    tracing::warn!(
+                        voice_model = %voice_model,
+                        "voice model not found in any backend — falling back to routed model"
+                    );
+                }
+            }
+        }
+    }
+
     tracing::info!(
         intent = %decision.intent,
         model = %decision.model,
@@ -408,7 +445,8 @@ pub async fn process_chat_text(
         let vm_names: Vec<&str> = gc.vms.iter().map(|v| v.name.as_str()).collect();
         format!("Available VMs on Thor: {}", vm_names.join(", "))
     });
-    let system_prompt = rag::build_system_prompt(&rag_context, "voice", gaming_ctx.as_deref());
+    let voice_role = if source == ChatSource::Voice { "voice_split" } else { "voice" };
+    let system_prompt = rag::build_system_prompt(&rag_context, voice_role, gaming_ctx.as_deref());
     let session_snapshot = state.session_store.get_session(session_id);
 
     let packed_messages = if let Some(ref session) = session_snapshot {
@@ -496,11 +534,35 @@ pub async fn process_chat_text(
                 })
                 .collect();
 
-            // All tools available — Odin is the single gateway for all LLM traffic.
-            let tool_defs: Vec<_> = crate::tool_registry::to_tool_definitions(
-                &state.tool_registry,
-                &allowed_tiers,
-            );
+            // Voice pipeline: keyword-based tool selection from the user's query.
+            // Only tools whose keywords match the transcript (+ core tools) are loaded,
+            // keeping context overhead minimal for smaller voice models.
+            // Text/API pipeline: load all tools as before.
+            let tool_defs: Vec<_> = if source == ChatSource::Voice {
+                if let Some(ref names) = state.config.voice.as_ref().and_then(|v| v.tools.as_ref()) {
+                    // Explicit allowlist in config takes priority.
+                    crate::tool_registry::to_tool_definitions_filtered(
+                        &state.tool_registry,
+                        &allowed_tiers,
+                        names,
+                    )
+                } else {
+                    let selected = crate::tool_registry::select_tools_for_query(
+                        &state.tool_registry,
+                        &user_text,
+                        &allowed_tiers,
+                    );
+                    tracing::info!(
+                        query = %user_text,
+                        tools_selected = selected.len(),
+                        tools = ?selected.iter().map(|t| t.function.name.as_str()).collect::<Vec<_>>(),
+                        "voice: keyword tool selection"
+                    );
+                    selected
+                }
+            } else {
+                crate::tool_registry::to_tool_definitions(&state.tool_registry, &allowed_tiers)
+            };
 
             if !tool_defs.is_empty() {
                 // Repack with tool token reserve — tool schemas consume context
@@ -564,11 +626,18 @@ pub async fn process_chat_text(
     };
 
     // ── 8. Update session + engram store ──────────────────────────
-    state
-        .session_store
-        .append_messages(session_id, &[CompactMessage::new("assistant", &effect)]);
+    // Skip storing [NOT_ADDRESSED] responses — they poison session context
+    // and teach the model to keep responding with [NOT_ADDRESSED].
+    let dominated_by_tag = effect.trim() == "[NOT_ADDRESSED]"
+        || effect.trim() == "[DISMISS]"
+        || effect.trim().is_empty();
+    if !dominated_by_tag {
+        state
+            .session_store
+            .append_messages(session_id, &[CompactMessage::new("assistant", &effect)]);
+    }
 
-    if state.config.mimir.store_on_completion {
+    if state.config.mimir.store_on_completion && !dominated_by_tag {
         spawn_engram_store(
             state.http_client.clone(),
             state.mimir_url.clone(),
@@ -2052,6 +2121,92 @@ async fn forward_get_to_mimir(
         .map_err(|e| OdinError::Proxy(format!("mimir body read error ({op}): {e}")))?;
 
     Ok((status, headers, response_body).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Web search (Brave Search API)
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct WebSearchRequest {
+    query: String,
+    count: Option<usize>,
+}
+
+pub async fn web_search_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WebSearchRequest>,
+) -> impl IntoResponse {
+    let config = match state.web_search_config.as_ref() {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "Web search is not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    let count = req.count.unwrap_or(config.max_results).min(10);
+
+    let resp = state
+        .http_client
+        .get("https://api.search.brave.com/res/v1/web/search")
+        .header("X-Subscription-Token", &config.api_key)
+        .header("Accept", "application/json")
+        .query(&[("q", &req.query), ("count", &count.to_string())])
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(body) => {
+                let results = body
+                    .get("web")
+                    .and_then(|w| w.get("results"))
+                    .and_then(|r| r.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|item| {
+                                json!({
+                                    "title": item.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "url": item.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "description": item.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                Json(json!({ "results": results })).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("Failed to parse search response: {e}")})),
+            )
+                .into_response(),
+        },
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            tracing::warn!(%status, body = %text, "Brave Search API error");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("Brave Search API returned {status}: {text}")})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Brave Search API request failed");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("Brave Search API request failed: {e}")})),
+            )
+                .into_response()
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
