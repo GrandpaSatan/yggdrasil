@@ -35,13 +35,13 @@ use crate::{
         HaListEntitiesParams, ImpactAnalysisParams, MemoryGraphParams,
         MemoryIntersectParams, MemoryTimelineParams, NetworkTopologyParams,
         QueryMemoryParams, SearchCodeParams, ServiceHealthParams, StoreMemoryParams,
-        TaskDelegateParams, TaskQueueParams, VaultParams,
+        TaskDelegateParams, TaskQueueParams, VaultParams, WebSearchParams,
         ast_analyze, build_check, config_sync, config_version, context_bridge,
         context_offload, delegate, deploy, diff_review, gaming, generate,
         get_sprint_history, ha_call_service, ha_generate_automation, ha_get_states,
         ha_list_entities, impact_analysis, list_models, memory_graph, memory_intersect,
         memory_timeline, network_topology, query_memory, search_code, service_health,
-        store_memory, task_delegate, task_queue, vault,
+        store_memory, task_delegate, task_queue, vault, web_search,
     },
 };
 
@@ -741,6 +741,23 @@ impl YggdrasilServer {
         Parameters(params): Parameters<NetworkTopologyParams>,
     ) -> String {
         let result = network_topology(&self.client, &self.config, params).await;
+        result
+            .content
+            .into_iter()
+            .next()
+            .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Search the web for current information via Brave Search API.
+    #[tool(description = "Search the web for current information. Returns titles, \
+        URLs, and descriptions of matching web pages. Requires Brave Search API \
+        key configured in Odin.")]
+    async fn web_search_tool(
+        &self,
+        Parameters(params): Parameters<WebSearchParams>,
+    ) -> String {
+        let result = web_search(&self.client, &self.config, params).await;
         result
             .content
             .into_iter()

@@ -1795,6 +1795,643 @@ pub async fn auto_ingest(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/smart-ingest  (Sprint 045 — Memory Sidecar v2)
+// ---------------------------------------------------------------------------
+
+/// LLM-judged memory ingest endpoint.
+///
+/// Replaces template matching with a lightweight LLM (LFM2.5 1.2B) that decides
+/// whether a code change is worth remembering. Falls back to the existing
+/// template-based `auto_ingest` pipeline if the LLM is unavailable.
+///
+/// Pipeline:
+/// 1. Validate content length (>= 50 chars)
+/// 2. Per-workstation cooldown gate (5s)
+/// 3. SHA-256 content dedup gate (300s window)
+/// 4. Call Ollama LLM to classify STORE vs SKIP
+/// 5. On STORE: embed → SDR → PG + Qdrant
+/// 6. On LLM failure: fall back to template matching via auto_ingest logic
+
+#[derive(Debug, Deserialize)]
+pub struct SmartIngestRequest {
+    pub content: String,
+    pub file_path: String,
+    pub workstation: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SmartIngestResponse {
+    pub stored: bool,
+    pub cause: Option<String>,
+    pub effect: Option<String>,
+    pub skipped_reason: Option<String>,
+}
+
+/// Ollama /api/generate response (non-streaming).
+#[derive(Debug, Deserialize)]
+struct OllamaGenerateResponse {
+    response: String,
+}
+
+/// Default model for smart-ingest LLM calls.
+const SMART_INGEST_MODEL: &str = "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M";
+
+/// Call Ollama /api/generate with a custom timeout and model override.
+///
+/// Returns the raw text response on success, or an error string on failure.
+/// This is intentionally separate from saga::ollama_generate to allow
+/// per-endpoint timeout and model overrides without coupling.
+async fn ollama_generate_with_timeout(
+    ollama_url: &str,
+    model: &str,
+    prompt: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("http client build failed: {e}"))?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 128
+        }
+    });
+
+    let resp = client
+        .post(format!("{}/api/generate", ollama_url))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("ollama request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("ollama returned {}", resp.status()));
+    }
+
+    let ollama_resp: OllamaGenerateResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("ollama response parse failed: {e}"))?;
+
+    Ok(ollama_resp.response)
+}
+
+/// Resolve Ollama URL and model from config, with smart-ingest defaults.
+fn resolve_ollama_config(state: &AppState) -> (String, String) {
+    let saga_cfg = state
+        .config
+        .auto_ingest
+        .as_ref()
+        .and_then(|c| c.saga.as_ref());
+
+    let ollama_url = saga_cfg
+        .map(|c| c.ollama_url.clone())
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    // Always override model to LFM2.5 for smart-ingest
+    let model = SMART_INGEST_MODEL.to_string();
+
+    (ollama_url, model)
+}
+
+pub async fn smart_ingest(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SmartIngestRequest>,
+) -> Result<(StatusCode, Json<SmartIngestResponse>), MimirError> {
+    let skip = |reason: &str| -> (StatusCode, Json<SmartIngestResponse>) {
+        (
+            StatusCode::OK,
+            Json(SmartIngestResponse {
+                stored: false,
+                cause: None,
+                effect: None,
+                skipped_reason: Some(reason.into()),
+            }),
+        )
+    };
+
+    // Step 1: Validate content length
+    if body.content.trim().len() < 50 {
+        return Ok(skip("content_too_short"));
+    }
+
+    // Step 2: Per-workstation cooldown gate (5s)
+    if let Some(entry) = state.cooldown_map.get(&body.workstation)
+        && entry.value().elapsed().as_secs() < 5
+    {
+        return Ok(skip("cooldown"));
+    }
+
+    // Step 3: SHA-256 content dedup gate (300s window)
+    let content_hash_hex = format!("{:x}", Sha256::digest(body.content.as_bytes()));
+    if let Some(entry) = state.content_hashes.get(&content_hash_hex)
+        && entry.value().elapsed().as_secs() < 300
+    {
+        return Ok(skip("duplicate"));
+    }
+
+    // Step 4: Call Ollama LLM to classify STORE vs SKIP
+    let (ollama_url, model) = resolve_ollama_config(&state);
+    let content_truncated: String = body.content.chars().take(2000).collect();
+
+    let prompt = format!(
+        "You curate memories for a software engineer. Decide if this code change is worth remembering.\n\n\
+         Rules:\n\
+         - STORE important changes (bugs, architecture, deployment, gotchas)\n\
+         - SKIP trivial changes (formatting, imports, comments)\n\
+         - Include specific details (file names, error messages, flag values)\n\n\
+         Change in {}:\n\
+         {}\n\n\
+         Respond ONE line:\n\
+         STORE: {{cause}} -> {{effect with details}}\n\
+         or\n\
+         SKIP: {{reason}}",
+        body.file_path, content_truncated
+    );
+
+    let llm_timeout = std::time::Duration::from_secs(3);
+    let llm_result = ollama_generate_with_timeout(&ollama_url, &model, &prompt, llm_timeout).await;
+
+    match llm_result {
+        Ok(response) => {
+            let trimmed = response.trim();
+
+            if let Some(store_payload) = trimmed.strip_prefix("STORE:").or_else(|| {
+                // Handle multi-line responses: find the first STORE: line
+                trimmed.lines().find_map(|line| line.trim().strip_prefix("STORE:"))
+            }) {
+                let store_payload = store_payload.trim();
+
+                // Parse "cause -> effect" format
+                let (cause, effect) = if let Some(arrow_pos) = store_payload.find("->") {
+                    let c = store_payload[..arrow_pos].trim().to_string();
+                    let e = store_payload[arrow_pos + 2..].trim().to_string();
+                    (c, e)
+                } else {
+                    // No arrow separator — use the whole payload as both
+                    (store_payload.to_string(), store_payload.to_string())
+                };
+
+                if cause.is_empty() || effect.is_empty() {
+                    tracing::warn!("smart_ingest: LLM returned empty cause/effect, falling back");
+                    return smart_ingest_fallback(state, body, content_hash_hex).await;
+                }
+
+                // Step 5: Store the engram — embed → SDR → PG + Qdrant
+                let result = smart_ingest_store(
+                    &state,
+                    &body,
+                    &cause,
+                    &effect,
+                    &content_hash_hex,
+                )
+                .await?;
+
+                Ok(result)
+            } else if trimmed.contains("SKIP:") || trimmed.lines().any(|l| l.trim().starts_with("SKIP:")) {
+                let reason = trimmed
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("SKIP:"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "llm_skip".to_string());
+
+                tracing::info!(
+                    workstation = %body.workstation,
+                    file_path = %body.file_path,
+                    reason = %reason,
+                    "smart_ingest: LLM decided SKIP"
+                );
+
+                // Update cooldown even on skip
+                state
+                    .cooldown_map
+                    .insert(body.workstation.clone(), std::time::Instant::now());
+
+                Ok(skip(&reason))
+            } else {
+                // LLM returned something we cannot parse — fall back
+                tracing::warn!(
+                    raw = %trimmed,
+                    "smart_ingest: LLM response not STORE/SKIP, falling back"
+                );
+                smart_ingest_fallback(state, body, content_hash_hex).await
+            }
+        }
+        Err(e) => {
+            // LLM failure — fall back to template matching
+            tracing::warn!(
+                error = %e,
+                "smart_ingest: LLM call failed, falling back to template matching"
+            );
+            smart_ingest_fallback(state, body, content_hash_hex).await
+        }
+    }
+}
+
+/// Store an engram from smart-ingest (embed → SDR → PG + Qdrant).
+async fn smart_ingest_store(
+    state: &Arc<AppState>,
+    body: &SmartIngestRequest,
+    cause: &str,
+    effect: &str,
+    content_hash_hex: &str,
+) -> Result<(StatusCode, Json<SmartIngestResponse>), MimirError> {
+    // Embed cause text
+    let embedder = state.embedder.clone();
+    let cause_for_embed = cause.to_string();
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&cause_for_embed))
+            .await
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
+
+    let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
+    let sdr_bytes = sdr::to_bytes(&sdr_val);
+    let pg_content_hash = engram_content_hash(cause, effect);
+    let trigger_label = truncate_to_word_boundary(cause, 80);
+
+    let tags = vec![
+        "auto_ingest".to_string(),
+        "smart_ingest".to_string(),
+        format!("workstation:{}", body.workstation),
+        format!("source:{}", body.source),
+    ];
+
+    let id = engrams::insert_engram_sdr(
+        state.store.pool(),
+        &engrams::EngramSdrParams {
+            cause,
+            effect,
+            sdr_bits: &sdr_bytes,
+            content_hash: &pg_content_hash,
+            tags: &tags,
+            trigger_type: "pattern",
+            trigger_label: &trigger_label,
+            project: None,
+            scope: "global",
+        },
+        MemoryTier::Recall,
+    )
+    .await?;
+
+    // Insert into in-memory SDR index
+    state.sdr_index.insert(id, sdr_val);
+
+    // Upsert to Qdrant (both legacy and v2 collections)
+    let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+    state
+        .vectors
+        .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+        .await?;
+    let payload = build_qdrant_payload(None, "global");
+    state
+        .vectors
+        .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+        .await?;
+
+    // Update cooldown and dedup maps
+    state
+        .cooldown_map
+        .insert(body.workstation.clone(), std::time::Instant::now());
+    state
+        .content_hashes
+        .insert(content_hash_hex.to_string(), std::time::Instant::now());
+
+    tracing::info!(
+        engram_id = %id,
+        workstation = %body.workstation,
+        file_path = %body.file_path,
+        "smart_ingest stored (LLM classified)"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(SmartIngestResponse {
+            stored: true,
+            cause: Some(cause.to_string()),
+            effect: Some(effect.to_string()),
+            skipped_reason: None,
+        }),
+    ))
+}
+
+/// Fallback to template-based classification when LLM is unavailable.
+///
+/// Reuses the same dense cosine matching logic as `auto_ingest` but returns
+/// a `SmartIngestResponse` instead of `AutoIngestResponse`.
+async fn smart_ingest_fallback(
+    state: Arc<AppState>,
+    body: SmartIngestRequest,
+    content_hash_hex: String,
+) -> Result<(StatusCode, Json<SmartIngestResponse>), MimirError> {
+    let cfg = state.config.auto_ingest.as_ref();
+    let threshold = cfg.map(|c| c.template_threshold).unwrap_or(0.3);
+    let max_content = cfg.map(|c| c.max_content_length).unwrap_or(4096);
+
+    let content: String = body.content.chars().take(max_content).collect();
+
+    // Embed content
+    let embedder = state.embedder.clone();
+    let content_for_embed = content.clone();
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&content_for_embed))
+            .await
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
+
+    // Dense cosine template matching
+    let mut best_sim: f64 = 0.0;
+    let mut best_name: Option<String> = None;
+    {
+        let dense = state
+            .template_embeddings
+            .read()
+            .map_err(|_| MimirError::Internal("template_embeddings lock poisoned".into()))?;
+        for (name, template_emb) in dense.iter() {
+            let sim = sdr::dot_similarity(&embedding, template_emb);
+            if sim > best_sim {
+                best_sim = sim;
+                best_name = Some(name.clone());
+            }
+        }
+    }
+
+    let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
+
+    if best_sim >= threshold
+        && let Some(matched_name) = best_name
+    {
+        let cause_snippet: String = content.chars().take(200).collect();
+        let effect_snippet: String = content.chars().take(500).collect();
+        let cause = format!("{}: {}", matched_name, cause_snippet);
+        let effect = format!(
+            "[auto:{}@{}] {}",
+            body.source, body.workstation, effect_snippet
+        );
+        let sdr_bytes = sdr::to_bytes(&sdr_val);
+        let pg_content_hash = engram_content_hash(&cause, &effect);
+        let trigger_label = truncate_to_word_boundary(&cause, 80);
+        let tags = vec![
+            "auto_ingest".to_string(),
+            "smart_ingest_fallback".to_string(),
+            matched_name.clone(),
+            format!("workstation:{}", body.workstation),
+        ];
+
+        let id = engrams::insert_engram_sdr(
+            state.store.pool(),
+            &engrams::EngramSdrParams {
+                cause: &cause,
+                effect: &effect,
+                sdr_bits: &sdr_bytes,
+                content_hash: &pg_content_hash,
+                tags: &tags,
+                trigger_type: "pattern",
+                trigger_label: &trigger_label,
+                project: None,
+                scope: "global",
+            },
+            MemoryTier::Recall,
+        )
+        .await?;
+
+        state.sdr_index.insert(id, sdr_val);
+        let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+        state
+            .vectors
+            .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+            .await?;
+        let payload = build_qdrant_payload(None, "global");
+        state
+            .vectors
+            .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+            .await?;
+
+        state
+            .cooldown_map
+            .insert(body.workstation.clone(), std::time::Instant::now());
+        state
+            .content_hashes
+            .insert(content_hash_hex, std::time::Instant::now());
+
+        tracing::info!(
+            engram_id = %id,
+            template = %matched_name,
+            similarity = %best_sim,
+            "smart_ingest stored (template fallback)"
+        );
+
+        return Ok((
+            StatusCode::CREATED,
+            Json(SmartIngestResponse {
+                stored: true,
+                cause: Some(cause),
+                effect: Some(effect),
+                skipped_reason: None,
+            }),
+        ));
+    }
+
+    // Below threshold
+    Ok((
+        StatusCode::OK,
+        Json(SmartIngestResponse {
+            stored: false,
+            cause: None,
+            effect: None,
+            skipped_reason: Some("below_threshold".into()),
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/consolidate  (Sprint 045 — Memory Sidecar v2)
+// ---------------------------------------------------------------------------
+
+/// Session memory consolidation ("sleep cycle") endpoint.
+///
+/// Queries recent engrams for a workstation, sends them to an LLM for
+/// consolidation into a concise summary, and stores the summary as a new
+/// engram. Designed to be called at the end of a coding session.
+
+#[derive(Debug, Deserialize)]
+pub struct ConsolidateRequest {
+    pub workstation: String,
+    #[serde(default = "default_consolidate_hours")]
+    pub hours: Option<u32>,
+}
+
+fn default_consolidate_hours() -> Option<u32> {
+    Some(12)
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConsolidateResponse {
+    pub summary: String,
+    pub engrams_reviewed: usize,
+    pub consolidated_id: Option<Uuid>,
+}
+
+pub async fn consolidate(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConsolidateRequest>,
+) -> Result<Json<ConsolidateResponse>, MimirError> {
+    let hours = body.hours.unwrap_or(12).clamp(1, 168);
+
+    // Step 1: Query recent engrams from PostgreSQL
+    let workstation_tag = format!("workstation:{}", body.workstation);
+    let rows = sqlx::query_as::<_, ConsolidateRow>(
+        r#"
+        SELECT id, cause, effect
+        FROM yggdrasil.engrams
+        WHERE created_at > now() - make_interval(hours => $1)
+          AND ($2 = ANY(tags) OR 'auto_ingest' = ANY(tags))
+        ORDER BY created_at DESC
+        LIMIT 20
+        "#,
+    )
+    .bind(hours as f64)
+    .bind(&workstation_tag)
+    .fetch_all(state.store.pool())
+    .await
+    .map_err(|e| MimirError::Internal(format!("consolidation query failed: {e}")))?;
+
+    // Step 2: Check minimum count
+    if rows.len() < 2 {
+        return Ok(Json(ConsolidateResponse {
+            summary: "Nothing to consolidate — fewer than 2 recent engrams found.".to_string(),
+            engrams_reviewed: rows.len(),
+            consolidated_id: None,
+        }));
+    }
+
+    let engrams_reviewed = rows.len();
+
+    // Step 3: Build LLM prompt
+    let memories: String = rows
+        .iter()
+        .map(|r| format!("- {} -> {}", r.cause, r.effect))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "Review these memories from a coding session. Consolidate them into a concise summary.\n\
+         Remove duplicates and noise. Keep the 3-5 most important decisions, changes, or gotchas.\n\
+         Output a single paragraph summary.\n\n\
+         Memories:\n\
+         {}\n\n\
+         Summary:",
+        memories
+    );
+
+    // Step 4: Call Ollama (LFM2.5 1.2B, 10s timeout)
+    let (ollama_url, model) = resolve_ollama_config(&state);
+    let llm_timeout = std::time::Duration::from_secs(10);
+
+    let summary = match ollama_generate_with_timeout(&ollama_url, &model, &prompt, llm_timeout).await {
+        Ok(text) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                return Err(MimirError::Internal(
+                    "consolidation LLM returned empty response".into(),
+                ));
+            }
+            trimmed
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "consolidation LLM call failed");
+            return Err(MimirError::Internal(format!(
+                "consolidation LLM unavailable: {e}"
+            )));
+        }
+    };
+
+    // Step 5: Store the consolidated summary as a new engram
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let cause = format!("Session consolidation ({}, {})", body.workstation, today);
+    let effect = summary.clone();
+
+    let embedder = state.embedder.clone();
+    let cause_for_embed = cause.clone();
+    let embedding: Vec<f32> =
+        tokio::task::spawn_blocking(move || embedder.embed(&cause_for_embed))
+            .await
+            .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+            .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
+
+    let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
+    let sdr_bytes = sdr::to_bytes(&sdr_val);
+    let pg_content_hash = engram_content_hash(&cause, &effect);
+    let trigger_label = truncate_to_word_boundary(&cause, 80);
+
+    let tags = vec![
+        "consolidation".to_string(),
+        "session_summary".to_string(),
+        format!("workstation:{}", body.workstation),
+    ];
+
+    let id = engrams::insert_engram_sdr(
+        state.store.pool(),
+        &engrams::EngramSdrParams {
+            cause: &cause,
+            effect: &effect,
+            sdr_bits: &sdr_bytes,
+            content_hash: &pg_content_hash,
+            tags: &tags,
+            trigger_type: "consolidation",
+            trigger_label: &trigger_label,
+            project: None,
+            scope: "global",
+        },
+        MemoryTier::Recall,
+    )
+    .await?;
+
+    // Insert into in-memory SDR index
+    state.sdr_index.insert(id, sdr_val);
+
+    // Upsert to Qdrant (both legacy and v2 collections)
+    let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+    state
+        .vectors
+        .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+        .await?;
+    let payload = build_qdrant_payload(None, "global");
+    state
+        .vectors
+        .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+        .await?;
+
+    tracing::info!(
+        engram_id = %id,
+        workstation = %body.workstation,
+        engrams_reviewed = engrams_reviewed,
+        "consolidation complete"
+    );
+
+    Ok(Json(ConsolidateResponse {
+        summary,
+        engrams_reviewed,
+        consolidated_id: Some(id),
+    }))
+}
+
+/// Row type for consolidation query.
+#[derive(sqlx::FromRow)]
+struct ConsolidateRow {
+    #[allow(dead_code)]
+    id: Uuid,
+    cause: String,
+    effect: String,
+}
+
+// ---------------------------------------------------------------------------
 // Tests for pure helpers
 // ---------------------------------------------------------------------------
 

@@ -268,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
         )),
         omni_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         voice_alert_tx,
+        circuit_breakers: odin::state::CircuitBreakerRegistry::new(),
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -303,11 +304,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/graph/unlink", post(handlers::proxy_graph_unlink))
         .route("/api/v1/graph/neighbors", post(handlers::proxy_graph_neighbors))
         .route("/api/v1/graph/traverse", post(handlers::proxy_graph_traverse))
+        // Vault proxy endpoint (Mimir).
+        .route("/api/v1/vault", post(handlers::proxy_vault))
         // Muninn transparent proxy endpoints (AST analysis).
         .route("/api/v1/symbols", post(handlers::proxy_symbols))
         .route("/api/v1/references", post(handlers::proxy_references))
         // Gaming VM orchestration endpoint.
         .route("/api/v1/gaming", post(handlers::gaming_handler))
+        // Build check endpoint (local cargo commands).
+        .route("/api/v1/build_check", post(handlers::build_check_handler))
+        // Deploy endpoint (cargo build + rsync).
+        .route("/api/v1/deploy", post(handlers::deploy_handler))
         // Web search endpoint (Brave Search API).
         .route("/api/v1/web_search", post(handlers::web_search_handler))
         // Notification and webhook endpoints (HA integration).
@@ -321,6 +328,9 @@ async fn main() -> anyhow::Result<()> {
         // Wake word enrollment (multi-user SDR calibration).
         .route("/api/v1/voice/enroll", get(handlers::wake_word_list))
         .route("/api/v1/voice/enroll/{user_id}", post(handlers::wake_word_enroll).delete(handlers::wake_word_remove))
+        // Mesh topology endpoints (consumed by network_topology MCP tool).
+        .route("/api/v1/mesh/nodes", get(handlers::mesh_nodes_handler))
+        .route("/api/v1/mesh/services", get(handlers::mesh_services_handler))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

@@ -5213,3 +5213,72 @@ pub async fn vault(
         _ => tool_ok(format!("{}", result)),
     }
 }
+
+// ---------------------------------------------------------------------------
+// web_search — Brave Search API via Odin
+// ---------------------------------------------------------------------------
+
+/// Parameters for the `web_search` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WebSearchParams {
+    /// Search query.
+    pub query: String,
+    /// Number of results to return (default 5, max 10).
+    #[serde(default = "default_web_search_count")]
+    pub count: Option<u32>,
+}
+
+fn default_web_search_count() -> Option<u32> {
+    Some(5)
+}
+
+/// Search the web for current information via Brave Search API.
+#[instrument(skip(client, config))]
+pub async fn web_search(
+    client: &Client,
+    config: &McpServerConfig,
+    params: WebSearchParams,
+) -> CallToolResult {
+    let url = format!("{}/api/v1/web_search", config.odin_url);
+    let body = serde_json::json!({
+        "query": params.query,
+        "count": params.count.unwrap_or(5),
+    });
+
+    let resp = match client.post(&url).json(&body).send().await {
+        Ok(r) => r,
+        Err(e) => return tool_error(format!("Web search request failed: {e}")),
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return tool_error(format!("Web search failed (HTTP {status}): {text}"));
+    }
+
+    let result: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return tool_error(format!("Failed to parse web search response: {e}")),
+    };
+
+    // Format results as readable markdown
+    let results = result
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if results.is_empty() {
+        return tool_ok("No results found.".to_string());
+    }
+
+    let mut out = format!("## Web Search: {}\n\n", params.query);
+    for (i, item) in results.iter().enumerate() {
+        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled");
+        let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = item.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!("{}. **{}**\n   {}\n   {}\n\n", i + 1, title, url, desc));
+    }
+
+    tool_ok(out)
+}

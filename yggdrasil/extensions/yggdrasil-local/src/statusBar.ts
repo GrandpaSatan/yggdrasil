@@ -1,0 +1,135 @@
+/**
+ * Dynamic status bar item for Yggdrasil memory operations.
+ *
+ * Shows: "$(database) Ygg: N recalled · N stored"
+ * Click opens the memory dashboard.
+ */
+
+import * as vscode from "vscode";
+import type { YggEvent } from "./eventWatcher";
+
+export interface SessionStats {
+  recallCount: number;
+  storeCount: number;
+  errorCount: number;
+  sessionStart: string | null;
+  lastEvent: string | null;
+  events: YggEvent[];
+}
+
+export class StatusBarManager implements vscode.Disposable {
+  private item: vscode.StatusBarItem;
+  private stats: SessionStats = {
+    recallCount: 0,
+    storeCount: 0,
+    errorCount: 0,
+    sessionStart: null,
+    lastEvent: null,
+    events: [],
+  };
+
+  constructor() {
+    this.item = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      100
+    );
+    this.item.command = "yggdrasil.openDashboard";
+    this.updateText();
+  }
+
+  show(): void {
+    this.item.show();
+  }
+
+  getStats(): SessionStats {
+    return { ...this.stats, events: [...this.stats.events] };
+  }
+
+  onEvent(event: YggEvent): void {
+    // Keep last 50 events for dashboard
+    this.stats.events.push(event);
+    if (this.stats.events.length > 50) {
+      this.stats.events.shift();
+    }
+    this.stats.lastEvent = event.event;
+
+    switch (event.event) {
+      case "init":
+        // New session — reset counters
+        this.stats.recallCount = (event.data.count as number) || 0;
+        this.stats.storeCount = 0;
+        this.stats.errorCount = 0;
+        this.stats.sessionStart = event.ts;
+        break;
+
+      case "recall":
+        this.stats.recallCount += (event.data.count as number) || 0;
+        break;
+
+      case "ingest":
+        if (event.data.stored) {
+          this.stats.storeCount++;
+        }
+        break;
+
+      case "error":
+        this.stats.errorCount++;
+        break;
+
+      case "sleep":
+        // Session end — keep stats visible
+        break;
+
+      case "tool":
+        // MCP tool execution — no counter change
+        break;
+    }
+
+    this.updateText();
+  }
+
+  private updateText(): void {
+    const parts: string[] = [];
+
+    if (this.stats.recallCount > 0) {
+      parts.push(`${this.stats.recallCount} recalled`);
+    }
+    if (this.stats.storeCount > 0) {
+      parts.push(`${this.stats.storeCount} stored`);
+    }
+    if (this.stats.errorCount > 0) {
+      parts.push(`${this.stats.errorCount} errors`);
+    }
+
+    const summary = parts.length > 0 ? parts.join(" · ") : "idle";
+    this.item.text = `$(database) Ygg: ${summary}`;
+
+    // Tooltip with more detail
+    const lines = ["Yggdrasil Memory Monitor"];
+    if (this.stats.sessionStart) {
+      const start = new Date(this.stats.sessionStart);
+      lines.push(`Session: ${start.toLocaleTimeString()}`);
+    }
+    lines.push(`Recalled: ${this.stats.recallCount}`);
+    lines.push(`Stored: ${this.stats.storeCount}`);
+    lines.push(`Errors: ${this.stats.errorCount}`);
+    if (this.stats.lastEvent) {
+      lines.push(`Last: ${this.stats.lastEvent}`);
+    }
+    lines.push("", "Click to open dashboard");
+    this.item.tooltip = lines.join("\n");
+
+    // Color on errors
+    if (this.stats.errorCount > 0) {
+      this.item.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.warningBackground"
+      );
+    } else {
+      this.item.backgroundColor = undefined;
+    }
+  }
+
+  dispose(): void {
+    this.item.dispose();
+  }
+}

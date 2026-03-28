@@ -8,6 +8,7 @@
 /// This runs entirely on-premise — no internet required.
 use std::time::Duration;
 
+use futures::future::join_all;
 use ygg_domain::config::AgentLoopConfig;
 
 use crate::error::OdinError;
@@ -83,6 +84,7 @@ pub async fn run_agent_loop(
             &conversation,
             Some(&filtered_tools),
             Some(backend_context_window as u64),
+            config,
         );
 
         let resp = proxy::generate_chat_with_tools(
@@ -126,80 +128,119 @@ pub async fn run_agent_loop(
             tool_calls: resp.message.tool_calls.clone(),
         });
 
-        // Execute each tool call and append results.
-        for (idx, tc) in tool_calls.iter().enumerate() {
-            if total_tool_calls >= config.max_tool_calls_total {
-                tracing::warn!("max total tool calls reached ({total_tool_calls})");
-                conversation.push(OllamaMessage::new(
-                    "tool",
-                    "Error: maximum tool call limit reached. Please produce a final answer now.",
-                ));
-                break;
-            }
+        // ── Pre-validate and dispatch tool calls in parallel ────────
+        //
+        // Phase 1: validate each call (lookup + tier check) and collect
+        //          either an immediate error message or a ready-to-run future.
+        // Phase 2: execute all valid calls concurrently via join_all.
+        // Phase 3: append results to conversation in original order.
 
+        let remaining_budget = config.max_tool_calls_total.saturating_sub(total_tool_calls);
+        if remaining_budget == 0 {
+            tracing::warn!("max total tool calls reached ({total_tool_calls})");
+            conversation.push(OllamaMessage::new(
+                "tool",
+                "Error: maximum tool call limit reached. Please produce a final answer now.",
+            ));
+            continue;
+        }
+
+        // Validated entries: either an immediate error string or a (spec, args, timeout) tuple.
+        enum Validated<'a> {
+            Ready { spec: &'a ToolSpec, args: &'a serde_json::Value, timeout: Duration, call_id: String },
+            Error(String),
+        }
+
+        let mut validated: Vec<Validated<'_>> = Vec::with_capacity(tool_calls.len());
+        for (idx, tc) in tool_calls.iter().enumerate().take(remaining_budget) {
             let tool_name = &tc.function.name;
-            let tool_call_id = format!("call_{iteration}_{idx}");
+            let call_id = format!("call_{iteration}_{idx}");
 
-            // Look up the tool and verify it's allowed.
-            let spec = match tool_registry::find_tool(registry, tool_name) {
-                Some(s) if allowed_tiers.contains(&s.tier) => s,
+            match tool_registry::find_tool(registry, tool_name) {
+                Some(s) if allowed_tiers.contains(&s.tier) => {
+                    let effective_timeout = s
+                        .timeout_override_secs
+                        .map(Duration::from_secs)
+                        .unwrap_or(tool_timeout);
+                    validated.push(Validated::Ready {
+                        spec: s, args: &tc.function.arguments, timeout: effective_timeout, call_id,
+                    });
+                }
                 Some(_) => {
                     tracing::warn!(tool = tool_name, "tool blocked by tier filter");
-                    conversation.push(OllamaMessage::new(
-                        "tool",
+                    validated.push(Validated::Error(
                         format!("Error: tool '{tool_name}' is not allowed"),
                     ));
-                    total_tool_calls += 1;
-                    continue;
                 }
                 None => {
                     tracing::warn!(tool = tool_name, "tool not found in registry");
-                    conversation.push(OllamaMessage::new(
-                        "tool",
+                    validated.push(Validated::Error(
                         format!("Error: unknown tool '{tool_name}'"),
                     ));
-                    total_tool_calls += 1;
-                    continue;
                 }
-            };
+            }
+        }
 
-            // Use per-tool timeout override if available, otherwise global default.
-            let effective_timeout = spec
-                .timeout_override_secs
-                .map(Duration::from_secs)
-                .unwrap_or(tool_timeout);
+        // Execute valid tool calls in parallel.
+        let futures: Vec<_> = validated.iter().enumerate().map(|(idx, v)| {
+            let tool_name = tool_calls.get(idx).map(|tc| tc.function.name.as_str()).unwrap_or("unknown");
+            async move {
+                match v {
+                    Validated::Ready { spec, args, timeout, call_id } => {
+                        let start = std::time::Instant::now();
+                        let result = tokio::time::timeout(
+                            *timeout,
+                            tool_registry::execute_tool(state, spec, args, *timeout),
+                        ).await;
+                        let elapsed_ms = start.elapsed().as_millis();
 
-            // Execute with timeout.
-            let result = tokio::time::timeout(
-                effective_timeout,
-                tool_registry::execute_tool(state, spec, &tc.function.arguments, effective_timeout),
-            )
-            .await;
-
-            let result_text = match result {
-                Ok(Ok(output)) => {
-                    crate::metrics::record_agent_tool_call(tool_name, "ok");
-                    let truncated = truncate_tool_output(&output, 8000);
-                    tracing::info!(
-                        tool = tool_name,
-                        call_id = tool_call_id,
-                        output_len = output.len(),
-                        "tool executed successfully"
-                    );
-                    truncated
+                        match result {
+                            Ok(Ok(output)) => {
+                                crate::metrics::record_agent_tool_call(tool_name, "ok");
+                                tracing::info!(
+                                    tool = tool_name,
+                                    call_id = call_id.as_str(),
+                                    iteration,
+                                    output_len = output.len(),
+                                    duration_ms = elapsed_ms,
+                                    "tool executed successfully"
+                                );
+                                truncate_tool_output(&output, config.tool_output_max_chars)
+                            }
+                            Ok(Err(e)) => {
+                                crate::metrics::record_agent_tool_call(tool_name, "error");
+                                tracing::warn!(
+                                    tool = tool_name,
+                                    call_id = call_id.as_str(),
+                                    iteration,
+                                    duration_ms = elapsed_ms,
+                                    error = %e,
+                                    "tool execution failed"
+                                );
+                                format!("Error: {e}")
+                            }
+                            Err(_) => {
+                                crate::metrics::record_agent_tool_call(tool_name, "timeout");
+                                tracing::warn!(
+                                    tool = tool_name,
+                                    call_id = call_id.as_str(),
+                                    iteration,
+                                    timeout_secs = timeout.as_secs(),
+                                    "tool execution timed out"
+                                );
+                                format!("Error: tool '{tool_name}' timed out after {}s", timeout.as_secs())
+                            }
+                        }
+                    }
+                    Validated::Error(msg) => msg.clone(),
                 }
-                Ok(Err(e)) => {
-                    crate::metrics::record_agent_tool_call(tool_name, "error");
-                    tracing::warn!(tool = tool_name, error = %e, "tool execution failed");
-                    format!("Error: {e}")
-                }
-                Err(_) => {
-                    crate::metrics::record_agent_tool_call(tool_name, "timeout");
-                    tracing::warn!(tool = tool_name, timeout_secs = effective_timeout.as_secs(), "tool execution timed out");
-                    format!("Error: tool '{tool_name}' timed out after {}s", effective_timeout.as_secs())
-                }
-            };
+            }
+        }).collect();
 
+        let results = join_all(futures).await;
+
+        // Append results in original order to preserve conversation coherence.
+        for result_text in results {
             conversation.push(OllamaMessage::new("tool", result_text));
             total_tool_calls += 1;
         }
@@ -211,7 +252,7 @@ pub async fn run_agent_loop(
         "max iterations reached, forcing final text response"
     );
 
-    let final_request = build_ollama_request(&decision.model, &conversation, None, Some(backend_context_window as u64));
+    let final_request = build_ollama_request(&decision.model, &conversation, None, Some(backend_context_window as u64), config);
     let final_resp = proxy::generate_chat_with_tools(
         &state.http_client,
         &decision.backend_url,
@@ -239,19 +280,20 @@ fn build_ollama_request(
     messages: &[OllamaMessage],
     tools: Option<&[ToolDefinition]>,
     num_ctx: Option<u64>,
+    config: &AgentLoopConfig,
 ) -> OllamaChatRequest {
     OllamaChatRequest {
         model: model.to_string(),
         messages: messages.to_vec(),
         stream: false,
         options: Some(OllamaOptions {
-            temperature: Some(0.3), // Lower temp for tool-use precision
+            temperature: Some(config.temperature),
             num_predict: None,
             num_ctx,
             top_p: None,
             stop: None,
         }),
-        think: Some(false),
+        think: Some(config.enable_thinking),
         tools: tools.map(|t| t.to_vec()),
     }
 }

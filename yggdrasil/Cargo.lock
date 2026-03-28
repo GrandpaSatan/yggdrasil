@@ -5628,6 +5628,7 @@ name = "ygg-domain"
 version = "1.0.0"
 dependencies = [
  "chrono",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

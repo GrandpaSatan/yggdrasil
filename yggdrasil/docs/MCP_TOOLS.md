@@ -1,15 +1,19 @@
 # Yggdrasil MCP Tools Reference
 
-Complete reference for all 31 MCP tools exposed by the Yggdrasil ecosystem.
+Complete reference for all 32 MCP tools exposed by the Yggdrasil ecosystem.
 
 ## Architecture
 
 Tools are split across two servers:
 
-| Server | Binary | Transport | Tools |
-|--------|--------|-----------|-------|
-| `ygg-mcp-remote` | Munin (<munin-ip>:9093) | StreamableHTTP | 29 tools (all network tools) |
-| `ygg-mcp-server` | Local (stdio) | stdio | 2 tools (filesystem-dependent) |
+| Server | Host | Transport | Tools |
+|--------|------|-----------|-------|
+| `ygg-mcp-remote` | Munin :9093 | StreamableHTTP | 32 tools (all network tools + web search) |
+| `yggdrasil-local` | Local (VS Code extension) | stdio | 2 tools (sync_docs, screenshot) + memory dashboard |
+
+**Note:** The local server was migrated from the Rust `ygg-mcp-server` binary to the `yggdrasil-local` VS Code extension in Sprint 050. The extension auto-updates via version comparison on each session start.
+
+Additionally, **30 of the 32 tools are available in Odin's agent loop** for autonomous tool-use by local LLMs. Tool access is controlled by safety tiers (Safe/Restricted).
 
 ---
 
@@ -48,6 +52,7 @@ Tools are split across two servers:
 | 29 | `deploy_tool` | DevOps | **Operational** | Build and deploy service binaries |
 | 30 | `network_topology_tool` | Infra | **Operational** | Mesh network topology query |
 | 31 | `delegate_tool` | LLM | **Operational** | Unified LLM delegation with agentic tool use |
+| 32 | `web_search_tool` | Search | **Operational** | Brave Search API via Odin (requires API key) |
 
 ---
 
@@ -677,6 +682,21 @@ Unified delegation to local LLM with full project context and optional agentic t
 | `max_tokens` | u64 | No | 8192 | Max response tokens |
 
 **When to use:** For complex code generation that benefits from multiple rounds of tool use. Prefer over `task_delegate_tool` when the task may require iterative refinement.
+
+---
+
+### 32. `web_search_tool`
+**Category:** Search | **Server:** Remote
+
+Search the web for current information via the Brave Search API. Returns titles, URLs, and descriptions of matching web pages. Requires `BRAVE_API_KEY` configured in Odin's `web_search` config section.
+
+**Parameters:**
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `query` | string | Yes | — | Search query |
+| `count` | u32 | No | 5 | Number of results (max 10) |
+
+**When to use:** For current information not in memory or codebase — latest documentation, library versions, API references, news, weather.
 
 ---
 

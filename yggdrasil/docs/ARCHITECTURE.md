@@ -21,8 +21,7 @@ graph TB
     subgraph Munin["Munin (<munin-ip>)"]
         Odin["odin :8080\nLLM Orchestrator"]
         Mimir["mimir :9090\nEngram Memory"]
-        McpLocal["ygg-mcp-server (stdio)\n2 local tools"]
-        McpRemote["ygg-mcp-remote :9093\n29 network tools"]
+        McpRemote["ygg-mcp-remote :9093\n32 network tools"]
         STT["STT :9097\nSenseVoiceSmall (NPU)"]
         TTS["TTS :9095\nKokoro v1.0 (CPU)"]
         OllamaM["Ollama :11434\nIPEX-LLM container"]
@@ -49,8 +48,8 @@ graph TB
         Nightjar["nightjar LXC\nDocker / Media"]
     end
 
-    IDE["IDE (Claude Code)"] -->|"MCP stdio"| McpLocal
-    IDE -->|"MCP StreamableHTTP"| McpRemote
+    IDE["IDE (Claude Code)"] -->|"MCP StreamableHTTP"| McpRemote
+    IDE -->|"VS Code Extension"| YggLocal["yggdrasil-local\n(MCP stdio + UI)"]
     McpRemote --> Odin
     McpRemote --> Muninn
     McpRemote --> Chirp
@@ -74,8 +73,8 @@ graph TB
 | **Mimir** | `crates/mimir` | 9090 | Engram CRUD, embedding, SHA-256 dedup, LSH indexing, autonomous auto-ingest with SDR template matching |
 | **Huginn** | `crates/huginn` | 9092 (health) | File watcher, tree-sitter AST chunking, code indexing daemon |
 | **Muninn** | `crates/muninn` | 9091 | Semantic code retrieval (vector + BM25 fusion), read-only |
-| **ygg-mcp-server** | `crates/ygg-mcp-server` | stdio | Local MCP server: 2 tools (`sync_docs`, `screenshot`) |
-| **ygg-mcp-remote** | `crates/ygg-mcp-remote` | 9093 | Remote MCP server: 29 tools + 3 resources over StreamableHTTP (code search, memory, LLM, HA, gaming, vault, deploy, config sync) |
+| **yggdrasil-local** | `extensions/yggdrasil-local` | stdio | VS Code extension + MCP server: 2 tools (`sync_docs`, `screenshot`), status bar, memory dashboard, JSONL event watcher |
+| **ygg-mcp-remote** | `crates/ygg-mcp-remote` | 9093 | Remote MCP server: 32 tools + 3 resources over StreamableHTTP (code search, memory, LLM, HA, gaming, vault, deploy, config sync, web search) |
 
 ## Crate Architecture
 
@@ -99,7 +98,7 @@ graph TB
 
 | Crate | Responsibility | Consumers |
 |-------|---------------|-----------|
-| `ygg-domain` | All type definitions: `Engram`, `CodeChunk`, `MemoryTier`, domain errors. Zero I/O. | All crates |
+| `ygg-domain` | All type definitions: `Engram`, `CodeChunk`, `MemoryTier`, tool catalog (`tools::ALL_TOOLS`), domain errors. Zero I/O. | All crates |
 | `ygg-store` | PostgreSQL connection pool, engram/chunk CRUD, Qdrant client | mimir, huginn, muninn |
 | `ygg-embed` | Ollama embedding HTTP client — single and batch | mimir, huginn, muninn |
 | `ygg-mcp` | MCP tool definitions, server handler, `memory_merge` module | ygg-mcp-server, ygg-mcp-remote |
@@ -203,6 +202,84 @@ Claude Code hook scripts intercept Edit/Write/Bash events and call Mimir for amb
 
 Six insight templates drive auto-ingest selectivity: `bug_fix`, `architecture_decision`, `sprint_lifecycle`, `user_feedback`, `deployment_change`, `gotcha`.
 
+## Odin Agent Loop (Sprint 049)
+
+When a `/v1/chat/completions` request includes a `tools` array and the backend is Ollama, Odin runs an autonomous ReAct loop:
+
+```
+LLM request (with 30 tool definitions, filtered by tier)
+  │
+  ├─ LLM returns tool_calls? → Execute ALL in parallel (futures::join_all)
+  │   ├─ Circuit breaker check (Mimir/Muninn: 3 failures → 30s open)
+  │   ├─ HTTP dispatch with retry (200ms/800ms backoff for 503/429)
+  │   ├─ Per-tool timeout (global default or per-tool override)
+  │   ├─ Truncate output to configurable max chars (default 8000)
+  │   └─ Feed results back as "tool" role messages
+  │
+  ├─ LLM returns text? → Return final response
+  └─ Max iterations hit? → Force text response (no tools)
+```
+
+### Tool Catalog (`ygg-domain::tools`)
+
+The canonical tool catalog lives in `ygg-domain::tools::ALL_TOOLS` — 31 entries with name, description, tier, keywords, timeout override, and voice-always flag. Both Odin's `tool_registry` and MCP's `server.rs` consume this catalog. Odin adds endpoint routing (Mimir/Muninn/OdinSelf/Ha) and JSON parameter schemas; MCP adds the `#[tool_router]` registration.
+
+### Tool Tiers
+
+| Tier | Count | Description |
+|------|-------|-------------|
+| **Safe** | 14 | Read-only: search_code, query_memory, ha_get_states, web_search, etc. |
+| **Restricted** | 16 | Write ops: store_memory, ha_call_service, gaming, deploy, generate, etc. |
+| **Blocked** | 0 | Reserved for future use |
+
+Tier filtering is configurable per deployment via `agent.default_tiers` in the Odin config. Default: `["safe"]`.
+
+### Agent Configuration (`AgentLoopConfig`)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_iterations` | 10 | Loop cycles before forcing text |
+| `max_tool_calls_total` | 30 | Hard cap on total tool executions |
+| `tool_timeout_secs` | 30 | Per-tool HTTP timeout |
+| `total_timeout_secs` | 300 | Absolute deadline for entire loop |
+| `temperature` | 0.3 | LLM temperature for tool-use precision |
+| `tool_output_max_chars` | 8000 | Truncation limit per tool output |
+| `enable_thinking` | false | LLM reasoning/thinking mode |
+
+### Circuit Breaker
+
+Per-endpoint circuit breakers protect Mimir and Muninn. After 3 consecutive failures, the endpoint is short-circuited for 30 seconds (returns instant error). After cooldown, one probe request is allowed (half-open). On success, the breaker closes.
+
+## Yggdrasil Local — VS Code Extension (Sprint 050)
+
+Replaces the Rust `ygg-mcp-server` binary with a TypeScript VS Code extension that serves as both the **local MCP server** and the **visual interface** for memory operations.
+
+### Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| MCP Server | `src/mcp/server.ts` | stdio transport, serves sync_docs + screenshot tools |
+| Status Bar | `src/statusBar.ts` | `$(database) Ygg: N recalled · N stored` |
+| Event Watcher | `src/eventWatcher.ts` | Tails `/tmp/ygg-hooks/memory-events.jsonl` |
+| Output Channel | `src/outputChannel.ts` | "Yggdrasil Memory" with formatted events |
+| Dashboard | `src/dashboard.ts` | Webview panel (Ctrl+Shift+M) with session stats |
+| Notifications | `src/notifications.ts` | Configurable toast notifications |
+
+### Auto-Update
+
+`ygg-memory.sh` runs `check_and_update()` on every SessionStart. It compares `package.json` version against the installed extension version. On mismatch: background `npm install` + `npm run compile` + `vsce package` + `code --install-extension`. Same mechanism handles fresh installs, Rust binary migration, and version bumps. Single source of truth: `package.json` version field.
+
+### JSONL Event Protocol
+
+Hooks and MCP tools write events to `/tmp/ygg-hooks/memory-events.jsonl`:
+
+```jsonl
+{"ts":"...","event":"init","data":{"count":5}}
+{"ts":"...","event":"recall","data":{"count":3,"file":"agent.rs"}}
+{"ts":"...","event":"ingest","data":{"stored":true,"file":"agent.rs","cause":"..."}}
+{"ts":"...","event":"tool","data":{"name":"sync_docs","status":"ok","duration_ms":3200}}
+```
+
 ## Memory Merge (ygg-mcp `memory_merge` module)
 
 Detects diverged Claude Code auto-memory files between workstations (local vs remote) by SHA-256 comparison, then calls Odin's LLM endpoint to intelligently merge both versions. Runs automatically at `config_sync` startup and is exposed as `memory_merge_tool` on the local MCP server.
@@ -260,3 +337,5 @@ Each service loads from `configs/<service>/config.json` (or `.yaml`). The `ygg-c
 | 2026-03-18 | Odin SDR Skill Cache: pre-computed FFT plan, two-phase RwLock, 512-skill LRU, deferred PCM allocation. |
 | 2026-03-26 | Added ygg-mcp-remote (29 tools), encrypted vault, 10 shared library crates, ygg-config YAML support. |
 | 2026-03-27 | Sprint 044b: Full rewrite. Gaming architecture section added — multi-host GamingConfig, VmRole enum (Gaming/Inference/Service), GPU pool algorithm, WoL lifecycle, inference health probes. Thor/Plume nodes added to topology. Memory merge module documented. PostgreSQL relocated to Hades. |
+| 2026-03-28 | Sprint 049: Agent loop hardening — parallel tool execution, canonical tool catalog in ygg-domain::tools, circuit breaker for Mimir/Muninn, retry with backoff, 30 tools in Odin registry (was 20), configurable agent params. Security sanitization. |
+| 2026-03-28 | Sprint 050: Yggdrasil Local VS Code extension — replaces ygg-mcp-server Rust binary. Node.js MCP server (sync_docs + screenshot), status bar, memory dashboard, JSONL event watcher, configurable notifications. Versioned auto-update via check_and_update(). |

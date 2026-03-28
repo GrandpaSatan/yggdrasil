@@ -5,7 +5,7 @@
 # Systemd cannot expand environment variables in User= or ExecStart paths.
 # Copy this file and replace the following placeholders before installing:
 #
-#   INFERENCE_USER   — the Unix user that runs llama-server (e.g. jhernandez)
+#   INFERENCE_USER   — the Unix user that runs llama-server (e.g. llama)
 #   /opt/llama-server — path to your llama.cpp build directory
 #   /opt/models/      — path to your GGUF model directory
 #

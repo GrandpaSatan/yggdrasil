@@ -142,6 +142,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         omni_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         voice_alert_tx: tokio::sync::broadcast::channel::<String>(16).0,
         web_search_config: None,
+        circuit_breakers: odin::state::CircuitBreakerRegistry::new(),
     }
 }
 
@@ -173,6 +174,7 @@ fn default_config() -> AgentLoopConfig {
         tool_timeout_secs: 5,
         total_timeout_secs: 30,
         default_tiers: vec!["safe".to_string()],
+        ..AgentLoopConfig::default()
     }
 }
 
@@ -289,6 +291,7 @@ async fn agent_max_iterations_forces_text() {
         tool_timeout_secs: 5,
         total_timeout_secs: 30,
         default_tiers: vec!["safe".to_string()],
+        ..AgentLoopConfig::default()
     };
 
     let result = run_agent_loop(

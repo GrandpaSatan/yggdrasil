@@ -12,11 +12,11 @@ use tower_http::cors::CorsLayer;
 
 use mimir::{
     handlers::{
-        auto_ingest, context_list, context_retrieve, context_store, embed_text,
+        auto_ingest, consolidate, context_list, context_retrieve, context_store, embed_text,
         get_core_engrams_handler, get_engram_by_id, get_stats, graph_link, graph_neighbors,
         graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
-        recall_engrams, sdr_operations, store_engram, task_cancel, task_complete, task_list,
-        task_pop, task_push, timeline, vault_handler,
+        recall_engrams, sdr_operations, smart_ingest, store_engram, task_cancel, task_complete,
+        task_list, task_pop, task_push, timeline, vault_handler,
     },
     state::{AppState, load_sdr_rows},
     summarization::SummarizationService,
@@ -89,6 +89,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/core", get(get_core_engrams_handler))
         .route("/api/v1/recall", post(recall_engrams))
         .route("/api/v1/auto-ingest", post(auto_ingest))
+        .route("/api/v1/smart-ingest", post(smart_ingest))
+        .route("/api/v1/consolidate", post(consolidate))
         .route("/api/v1/sdr/operations", post(sdr_operations))
         .route("/api/v1/timeline", post(timeline))
         .route("/api/v1/context", post(context_store))

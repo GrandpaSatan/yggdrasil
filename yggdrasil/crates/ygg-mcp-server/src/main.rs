@@ -17,7 +17,6 @@ use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 use ygg_domain::config::McpServerConfig;
 use ygg_mcp::local_server::YggdrasilLocalServer;
-use ygg_mcp::memory_merge;
 
 /// Yggdrasil local MCP server — filesystem tools via stdio.
 #[derive(Debug, Parser)]
@@ -67,30 +66,6 @@ async fn main() -> Result<()> {
         .await
     {
         tracing::warn!(error = %e, "config sync failed — continuing with local config");
-    }
-
-    // Run memory merge before creating the server (non-fatal on failure)
-    if config.remote_ssh.is_some() {
-        let merge_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
-
-        let result = memory_merge::merge_all_project_memories(
-            &merge_client,
-            &config.odin_url,
-            config.remote_ssh.as_deref(),
-        )
-        .await;
-
-        if result.has_changes() {
-            info!(summary = %result.summary(), "startup memory merge complete");
-        }
-        if !result.errors.is_empty() {
-            for err in &result.errors {
-                tracing::warn!(error = %err, "memory merge warning");
-            }
-        }
     }
 
     let server = YggdrasilLocalServer::from_config(&config);

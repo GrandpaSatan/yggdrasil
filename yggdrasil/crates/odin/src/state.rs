@@ -6,7 +6,9 @@
 /// All fields are either `Clone` directly or wrapped in `Arc` so the state
 /// can be cheaply cloned when Axum distributes it to handler tasks.
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
+use dashmap::DashMap;
 use ygg_cloud::adapter::{ChatMessage as CloudChatMessage, ChatRequest as CloudChatRequest, CloudAdapter};
 use ygg_domain::config::{BackendType, OdinConfig};
 use ygg_ha::HaClient;
@@ -14,6 +16,104 @@ use ygg_ha::HaClient;
 use crate::router::SemanticRouter;
 use crate::session::SessionStore;
 use crate::tool_registry::ToolSpec;
+
+// ─────────────────────────────────────────────────────────────────
+// Circuit breaker for tool endpoints
+// ─────────────────────────────────────────────────────────────────
+
+/// Per-endpoint circuit breaker state.
+///
+/// Tracks consecutive failures and trips open after a threshold, returning
+/// instant errors to avoid burning the agent loop's time budget on dead services.
+///
+/// States: Closed (healthy) → Open (tripped) → HalfOpen (probing).
+pub struct CircuitBreaker {
+    /// Consecutive failure count.
+    failures: AtomicU32,
+    /// Whether the circuit is currently open (tripped).
+    open: AtomicBool,
+    /// Timestamp (seconds since UNIX epoch) when the circuit was tripped.
+    tripped_at: std::sync::atomic::AtomicU64,
+}
+
+impl CircuitBreaker {
+    /// Consecutive failures before tripping open.
+    const FAILURE_THRESHOLD: u32 = 3;
+    /// Seconds to wait in open state before allowing a probe request.
+    const COOLDOWN_SECS: u64 = 30;
+
+    pub fn new() -> Self {
+        Self {
+            failures: AtomicU32::new(0),
+            open: AtomicBool::new(false),
+            tripped_at: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Check if a request should be allowed through.
+    /// Returns `true` if the circuit is closed or half-open (probe allowed).
+    pub fn allow_request(&self) -> bool {
+        if !self.open.load(Ordering::Relaxed) {
+            return true; // Closed — healthy
+        }
+        // Open — check if cooldown has elapsed (half-open probe).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let tripped = self.tripped_at.load(Ordering::Relaxed);
+        now.saturating_sub(tripped) >= Self::COOLDOWN_SECS
+    }
+
+    /// Record a successful request. Closes the circuit.
+    pub fn record_success(&self) {
+        self.failures.store(0, Ordering::Relaxed);
+        self.open.store(false, Ordering::Relaxed);
+    }
+
+    /// Record a failed request. Trips the circuit after threshold failures.
+    pub fn record_failure(&self) {
+        let count = self.failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if count >= Self::FAILURE_THRESHOLD && !self.open.load(Ordering::Relaxed) {
+            self.open.store(true, Ordering::Relaxed);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.tripped_at.store(now, Ordering::Relaxed);
+            tracing::warn!(
+                failures = count,
+                "circuit breaker tripped — endpoint will be short-circuited for {}s",
+                Self::COOLDOWN_SECS,
+            );
+        }
+    }
+
+    /// Whether the circuit is currently open (tripped).
+    pub fn is_open(&self) -> bool {
+        self.open.load(Ordering::Relaxed)
+    }
+}
+
+/// Thread-safe map of endpoint base URLs to their circuit breaker state.
+#[derive(Clone)]
+pub struct CircuitBreakerRegistry {
+    inner: Arc<DashMap<String, Arc<CircuitBreaker>>>,
+}
+
+impl CircuitBreakerRegistry {
+    pub fn new() -> Self {
+        Self { inner: Arc::new(DashMap::new()) }
+    }
+
+    /// Get or create a circuit breaker for the given endpoint URL.
+    pub fn get(&self, endpoint: &str) -> Arc<CircuitBreaker> {
+        self.inner
+            .entry(endpoint.to_string())
+            .or_insert_with(|| Arc::new(CircuitBreaker::new()))
+            .clone()
+    }
+}
 
 /// Per-backend runtime state: URL, declared model list, and concurrency gate.
 #[derive(Clone)]
@@ -140,6 +240,8 @@ pub struct AppState {
     pub voice_alert_tx: tokio::sync::broadcast::Sender<String>,
     /// Optional web search config. Present when `config.web_search` is `Some`.
     pub web_search_config: Option<ygg_domain::config::WebSearchConfig>,
+    /// Per-endpoint circuit breakers for tool dispatch resilience.
+    pub circuit_breakers: CircuitBreakerRegistry,
 }
 
 impl AppState {

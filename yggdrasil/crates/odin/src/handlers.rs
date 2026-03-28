@@ -1573,6 +1573,88 @@ async fn check_service_health(client: &reqwest::Client, base_url: &str) -> Strin
 }
 
 // ─────────────────────────────────────────────────────────────────
+// GET /api/v1/mesh/nodes  and  /api/v1/mesh/services
+// ─────────────────────────────────────────────────────────────────
+
+/// Return known mesh nodes compiled from Odin's own config.
+///
+/// This provides a consistent topology view without requiring ygg-node.
+/// Each node entry lists name, URL, type, and model availability.
+pub async fn mesh_nodes_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut nodes = vec![];
+
+    // Odin itself
+    nodes.push(json!({
+        "name": state.config.node_name,
+        "role": "orchestrator",
+        "url": format!("http://{}", state.config.listen_addr),
+        "status": "ok",
+    }));
+
+    // LLM backends
+    for backend in &state.backends {
+        nodes.push(json!({
+            "name": backend.name,
+            "role": "llm_backend",
+            "url": backend.url,
+            "type": format!("{:?}", backend.backend_type),
+            "models": backend.models,
+            "available_permits": backend.semaphore.available_permits(),
+            "context_window": backend.context_window,
+        }));
+    }
+
+    Json(json!({ "nodes": nodes }))
+}
+
+/// Return known services and their health status.
+///
+/// Probes Mimir, Muninn, and all backends with a 2-second timeout each.
+pub async fn mesh_services_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut services = vec![];
+
+    // Mimir
+    let mimir_status = check_service_health(&state.http_client, &state.mimir_url).await;
+    services.push(json!({
+        "name": "mimir",
+        "role": "memory",
+        "url": state.mimir_url,
+        "status": mimir_status,
+    }));
+
+    // Muninn
+    let muninn_status = check_service_health(&state.http_client, &state.muninn_url).await;
+    services.push(json!({
+        "name": "muninn",
+        "role": "code_search",
+        "url": state.muninn_url,
+        "status": muninn_status,
+    }));
+
+    // HA
+    if state.ha_client.is_some() {
+        services.push(json!({
+            "name": "home_assistant",
+            "role": "device_control",
+            "status": "configured",
+        }));
+    }
+
+    // Backends
+    for backend in &state.backends {
+        let status = check_service_health(&state.http_client, &backend.url).await;
+        services.push(json!({
+            "name": backend.name,
+            "role": "llm_backend",
+            "url": backend.url,
+            "status": status,
+        }));
+    }
+
+    Json(json!({ "services": services }))
+}
+
+// ─────────────────────────────────────────────────────────────────
 // POST /api/v1/query  (transparent Mimir proxy)
 // ─────────────────────────────────────────────────────────────────
 
@@ -2303,4 +2385,224 @@ pub async fn wake_word_remove(
 ) -> Json<serde_json::Value> {
     let removed = state.wake_word_registry.remove_user(&user_id).await;
     Json(serde_json::json!({"user_id": user_id, "removed": removed}))
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/vault  (transparent Mimir proxy)
+// ─────────────────────────────────────────────────────────────────
+
+/// Transparent proxy to Mimir's `POST /api/v1/vault`.
+pub async fn proxy_vault(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, OdinError> {
+    let url = format!("{}/api/v1/vault", state.mimir_url);
+    forward_to_mimir(&state.http_client, &url, body, "vault").await
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/build_check  (local cargo commands)
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct BuildCheckRequest {
+    #[serde(default = "default_build_mode")]
+    mode: String,
+    package: Option<String>,
+}
+
+fn default_build_mode() -> String { "check".to_string() }
+
+/// Run cargo check/build/clippy/test locally.
+///
+/// Returns the command output. Requires cargo on the host.
+pub async fn build_check_handler(
+    Json(req): Json<BuildCheckRequest>,
+) -> impl IntoResponse {
+    let mode = req.mode.as_str();
+    let allowed = ["check", "build", "clippy", "test"];
+    if !allowed.contains(&mode) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("invalid mode '{}', allowed: {:?}", mode, allowed)})),
+        ).into_response();
+    }
+
+    let mut args: Vec<&str> = vec![mode];
+    let pkg;
+    if let Some(ref p) = req.package {
+        args.push("-p");
+        pkg = p.clone();
+        args.push(&pkg);
+    }
+    if mode == "clippy" {
+        args.extend_from_slice(&["--", "-W", "clippy::all"]);
+    }
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        tokio::process::Command::new("cargo")
+            .args(&args)
+            .output(),
+    ).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let success = output.status.success();
+            Json(json!({
+                "success": success,
+                "exit_code": output.status.code(),
+                "stdout": stdout.chars().take(8000).collect::<String>(),
+                "stderr": stderr.chars().take(8000).collect::<String>(),
+            })).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to run cargo: {e}")})),
+        ).into_response(),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({"error": "cargo command timed out after 120s"})),
+        ).into_response(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/deploy  (cargo build + rsync)
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct DeployRequest {
+    action: String,
+    service: String,
+    target: Option<String>,
+}
+
+/// Build and/or deploy a Yggdrasil binary.
+///
+/// Actions: "build" (cargo build --release), "deploy" (rsync to target node),
+/// "build_and_deploy" (both sequentially).
+pub async fn deploy_handler(
+    Json(req): Json<DeployRequest>,
+) -> impl IntoResponse {
+    let deploy_user = std::env::var("DEPLOY_USER").unwrap_or_else(|_| "yggdrasil".to_string());
+
+    let allowed_actions = ["build", "deploy", "build_and_deploy", "status"];
+    if !allowed_actions.contains(&req.action.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("invalid action '{}', allowed: {:?}", req.action, allowed_actions)})),
+        ).into_response();
+    }
+
+    match req.action.as_str() {
+        "build" | "build_and_deploy" => {
+            let build_result = tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                tokio::process::Command::new("cargo")
+                    .args(["build", "--release", "--bin", &req.service])
+                    .output(),
+            ).await;
+
+            match build_result {
+                Ok(Ok(output)) if output.status.success() => {
+                    if req.action == "build" {
+                        return Json(json!({
+                            "success": true,
+                            "action": "build",
+                            "service": req.service,
+                        })).into_response();
+                    }
+                    // Fall through to deploy for build_and_deploy
+                }
+                Ok(Ok(output)) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "success": false,
+                        "action": "build",
+                        "error": stderr.chars().take(4000).collect::<String>(),
+                    }))).into_response();
+                }
+                Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error": format!("failed to run cargo: {e}")
+                }))).into_response(),
+                Err(_) => return (StatusCode::GATEWAY_TIMEOUT, Json(json!({
+                    "error": "cargo build timed out after 300s"
+                }))).into_response(),
+            }
+
+            // Deploy step (for build_and_deploy fallthrough or direct deploy)
+            let target = req.target.as_deref().unwrap_or("munin");
+            let binary = format!("target/release/{}", req.service);
+            let dest = format!("/tmp/{}", req.service);
+
+            let rsync_result = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                tokio::process::Command::new("rsync")
+                    .args(["-az", &binary, &format!("{deploy_user}@{target}:{dest}")])
+                    .output(),
+            ).await;
+
+            match rsync_result {
+                Ok(Ok(output)) if output.status.success() => {
+                    Json(json!({
+                        "success": true,
+                        "action": "build_and_deploy",
+                        "service": req.service,
+                        "target": target,
+                        "note": format!("Binary at {dest} on {target}. Run: sudo cp {dest} /opt/yggdrasil/bin/ && sudo systemctl restart yggdrasil-{}", req.service),
+                    })).into_response()
+                }
+                Ok(Ok(output)) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "success": false,
+                        "action": "deploy",
+                        "error": stderr.chars().take(2000).collect::<String>(),
+                    }))).into_response()
+                }
+                _ => (StatusCode::GATEWAY_TIMEOUT, Json(json!({
+                    "error": "rsync timed out"
+                }))).into_response(),
+            }
+        }
+        "deploy" => {
+            let target = req.target.as_deref().unwrap_or("munin");
+            let binary = format!("target/release/{}", req.service);
+            let dest = format!("/tmp/{}", req.service);
+
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                tokio::process::Command::new("rsync")
+                    .args(["-az", &binary, &format!("{deploy_user}@{target}:{dest}")])
+                    .output(),
+            ).await;
+
+            match result {
+                Ok(Ok(output)) if output.status.success() => {
+                    Json(json!({
+                        "success": true,
+                        "action": "deploy",
+                        "service": req.service,
+                        "target": target,
+                        "note": format!("Binary at {dest}. Run: sudo cp {dest} /opt/yggdrasil/bin/ && sudo systemctl restart yggdrasil-{}", req.service),
+                    })).into_response()
+                }
+                Ok(Ok(output)) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                        "success": false,
+                        "error": stderr.chars().take(2000).collect::<String>(),
+                    }))).into_response()
+                }
+                _ => (StatusCode::GATEWAY_TIMEOUT, Json(json!({"error": "rsync timed out"}))).into_response(),
+            }
+        }
+        "status" => {
+            Json(json!({"action": "status", "note": "Use service_health tool to check service status"})).into_response()
+        }
+        _ => unreachable!(),
+    }
 }

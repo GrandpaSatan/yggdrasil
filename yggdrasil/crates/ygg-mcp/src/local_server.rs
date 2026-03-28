@@ -18,7 +18,6 @@ use std::time::Duration;
 use uuid::Uuid;
 use ygg_domain::config::McpServerConfig;
 
-use crate::memory_merge;
 use crate::tools::{ScreenshotParams, SyncDocsParams, screenshot, sync_docs};
 
 // ---------------------------------------------------------------------------
@@ -160,37 +159,6 @@ impl YggdrasilLocalServer {
             .unwrap_or_default()
     }
 
-    /// Merge memory files across workstations using LLM.
-    ///
-    /// Detects diverged auto-memory files between local sync-cache and the
-    /// remote Munin server, then uses Odin's LLM to intelligently merge both
-    /// versions so no information is lost.
-    #[tool(description = "Merge Claude Code auto-memory files across workstations. \
-        Compares local memory (in ~/.claude/.sync-cache/projects/*/memory/) against the \
-        remote Munin server, detects diverged files, and uses Odin's LLM to merge both \
-        versions — preserving all unique information from each workstation.\n\
-        \n\
-        This runs automatically at server startup but can be called on-demand to \
-        force a fresh merge cycle.\n\
-        \n\
-        Returns a summary of actions taken (files merged, copied, or skipped).")]
-    async fn memory_merge_tool(&self) -> String {
-        let result = memory_merge::merge_all_project_memories(
-            &self.client,
-            &self.config.odin_url,
-            self.config.remote_ssh.as_deref(),
-        )
-        .await;
-
-        let mut output = result.summary();
-        if !result.errors.is_empty() {
-            output.push_str(&format!("\n\nWarnings ({}):", result.errors.len()));
-            for err in &result.errors {
-                output.push_str(&format!("\n- {err}"));
-            }
-        }
-        output
-    }
 }
 
 impl YggdrasilLocalServer {

@@ -4,7 +4,7 @@
 -- Add project column to engrams (nullable — NULL means global/unscoped)
 ALTER TABLE yggdrasil.engrams ADD COLUMN IF NOT EXISTS project TEXT;
 
--- Add scope column: 'global', 'project', 'user:jesus' — strict separation from project
+-- Add scope column: 'global', 'project', 'user:<name>' — strict separation from project
 ALTER TABLE yggdrasil.engrams ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'global';
 
 -- Index for project-scoped queries

@@ -152,6 +152,15 @@ pub struct AgentLoopConfig {
     /// Default tool tiers allowed: "safe", "restricted". Blocked is never allowed.
     #[serde(default = "default_agent_tiers")]
     pub default_tiers: Vec<String>,
+    /// Temperature for LLM calls during the agent loop (lower = more precise tool use).
+    #[serde(default = "default_agent_temperature")]
+    pub temperature: f64,
+    /// Maximum characters of tool output before truncation.
+    #[serde(default = "default_agent_tool_output_max_chars")]
+    pub tool_output_max_chars: usize,
+    /// Whether to enable thinking/reasoning mode for the LLM during agent loop.
+    #[serde(default)]
+    pub enable_thinking: bool,
 }
 
 impl Default for AgentLoopConfig {
@@ -162,6 +171,9 @@ impl Default for AgentLoopConfig {
             tool_timeout_secs: default_agent_tool_timeout(),
             total_timeout_secs: default_agent_total_timeout(),
             default_tiers: default_agent_tiers(),
+            temperature: default_agent_temperature(),
+            tool_output_max_chars: default_agent_tool_output_max_chars(),
+            enable_thinking: false,
         }
     }
 }
@@ -171,6 +183,8 @@ fn default_agent_max_tool_calls() -> usize { 30 }
 fn default_agent_tool_timeout() -> u64 { 30 }
 fn default_agent_total_timeout() -> u64 { 300 }
 fn default_agent_tiers() -> Vec<String> { vec!["safe".to_string()] }
+fn default_agent_temperature() -> f64 { 0.3 }
+fn default_agent_tool_output_max_chars() -> usize { 8000 }
 
 /// Session state configuration for Odin's in-memory conversation store.
 #[derive(Debug, Clone, Serialize, Deserialize)]

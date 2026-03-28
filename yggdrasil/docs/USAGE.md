@@ -121,10 +121,10 @@ Huginn is a background daemon — no user-facing API. It watches configured path
 
 ### MCP Servers — Claude Code Integration
 
-The MCP layer is split into two servers (Sprint 027):
+The MCP layer is split into two servers (Sprint 027, updated Sprint 050):
 
-1. **`yggdrasil`** (remote, StreamableHTTP) — 29 network tools + 3 resources. Always-on, shared across IDE windows.
-2. **`yggdrasil-local`** (local, stdio) — Filesystem tools only. One process per IDE window.
+1. **`yggdrasil`** (remote, StreamableHTTP) — 32 network tools + 3 resources. Always-on, shared across IDE windows.
+2. **`yggdrasil-local`** (local, VS Code extension + stdio) — 2 local tools + memory dashboard. Auto-updates via version check on session start.
 
 #### Remote Server — `yggdrasil` (Munin :9093)
 
@@ -156,6 +156,7 @@ The MCP layer is split into two servers (Sprint 027):
 | `deploy_tool` | Build and deploy Yggdrasil service binaries |
 | `network_topology_tool` | Query Yggdrasil mesh network topology |
 | `delegate_tool` | Unified LLM delegation with full context and agentic tool use |
+| `web_search_tool` | Search the web via Brave Search API |
 
 | Resource URI | Description |
 |--------------|-------------|
@@ -163,15 +164,27 @@ The MCP layer is split into two servers (Sprint 027):
 | `yggdrasil://memory/stats` | Mimir engram statistics |
 | `yggdrasil://context/session` | Prefetched active sprint context |
 
-#### Local Server — `yggdrasil-local` (Workstation stdio)
+#### Local Server — `yggdrasil-local` (VS Code Extension)
 
-**Binary:** `ygg-mcp-server` at `target/release/ygg-mcp-server`
+**Extension:** `yggdrasil.yggdrasil-local` (installed via auto-update or `install-memory.sh`)
+**MCP Server:** `extensions/yggdrasil-local/out/mcp/server.js` (Node.js, stdio transport)
 **Config:** `~/.config/yggdrasil/local-mcp.yaml`
-**Claude Code config:** `type: "stdio"`, command points to binary + `--config` flag
+**Claude Code config:** `command: "node"`, args point to `server.js` + `--config` flag
 
 | Tool | Description |
 |------|-------------|
 | `sync_docs_tool` | Sprint lifecycle: setup workspace, update USAGE.md on start, archive on end |
+| `screenshot_tool` | Headless Chromium page capture via Puppeteer |
+
+**Visual Features (VS Code extension):**
+| Feature | Description |
+|---------|-------------|
+| Status Bar | `$(database) Ygg: N recalled · N stored` — click to open dashboard |
+| Output Channel | "Yggdrasil Memory" — timestamped event log |
+| Notifications | Configurable toasts on ingest/error (settings: `yggdrasil.notifications.*`) |
+| Dashboard | Webview panel (Ctrl+Shift+M) — session stats, event timeline |
+
+**Auto-Update:** On each session start, `ygg-memory.sh` compares `package.json` version against installed extension version. On mismatch: background rebuild + reinstall. Bump `package.json` version, push, all workstations update automatically.
 
 ---
 
@@ -210,8 +223,8 @@ sudo systemctl status yggdrasil-huginn yggdrasil-muninn
 cd ~/yggdrasil
 cargo run --release --bin odin -- --config configs/odin/node.yaml
 
-# Run MCP server locally
-cargo run --release --bin ygg-mcp-server -- --config configs/mcp-server/config.yaml
+# Local MCP server is now the VS Code extension (yggdrasil-local)
+# Install/update: ./deploy/workstation/install-memory.sh
 ```
 
 ---
@@ -275,13 +288,15 @@ ssh your-user@<munin-ip> \
 deploy/rollback.sh munin odin  # restores odin.prev binary and restarts
 ```
 
-### Update MCP server binary (workstation)
+### Update local MCP server (workstation)
 
 ```bash
 cd ~/yggdrasil
-cargo build --release --bin ygg-mcp-server
-rsync target/release/ygg-mcp-server ~/.local/bin/ygg-mcp-server
-# Restart Claude Code to reload the MCP server
+# Option 1: Run the installer (builds extension + installs hooks)
+./deploy/workstation/install-memory.sh
+
+# Option 2: Auto-update — just bump extensions/yggdrasil-local/package.json version.
+# All workstations update automatically on next Claude Code session start.
 ```
 
 ---
@@ -414,10 +429,8 @@ sudo systemctl status ssh  # on workstation
       "url": "http://<munin-ip>:9093/mcp"
     },
     "yggdrasil-local": {
-      "type": "stdio",
-      "command": "/path/to/ygg-mcp-server",
-      "args": ["--config", "~/.config/yggdrasil/local-mcp.yaml"],
-      "env": {}
+      "command": "node",
+      "args": ["/path/to/extensions/yggdrasil-local/out/mcp/server.js", "--config", "~/.config/yggdrasil/local-mcp.yaml"]
     }
   }
 }
@@ -479,7 +492,7 @@ SDR-classified autonomous ingest. Content is embedded, fingerprinted into a 256-
   "content": "Edited crates/mimir/src/handlers.rs: replaced old error path with proper Result",
   "source": "Edit",
   "event_type": "post_tool",
-  "workstation": "homelab-pc",
+  "workstation": "my-workstation",
   "file_path": "crates/mimir/src/handlers.rs",
   "project": "yggdrasil"
 }
@@ -520,7 +533,7 @@ curl -s -X POST http://localhost:9090/api/v1/auto-ingest \
     "content": "Fixed DashMap clone bug: use Arc<DashMap> for shared Axum state",
     "source": "Edit",
     "event_type": "post_tool",
-    "workstation": "homelab-pc"
+    "workstation": "my-workstation"
   }'
 ```
 
