@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ygg-memory.sh — Unified memory sidecar for Claude Code (Sprint 045/050)
+# ygg-memory.sh — Unified memory sidecar for Claude Code (Sprint 045)
 # Usage: ygg-memory.sh <init|recall|ingest|sleep>
 # All modes exit 0 — never blocks Claude Code.
 # Emits JSONL events to /tmp/ygg-hooks/memory-events.jsonl for the
@@ -131,10 +131,11 @@ do_init() {
 
 # ── recall: PreToolUse — surface relevant memories before edits ──────
 do_recall() {
-    local file_path query response count context filename
-    file_path=$(echo "${CLAUDE_TOOL_INPUT:-{}}" | jq -r '.file_path // .path // "unknown"' 2>/dev/null)
+    local stdin_data file_path query response count context filename
+    stdin_data=$(cat)
+    file_path=$(echo "$stdin_data" | jq -r '.tool_input.file_path // .tool_input.path // "unknown"' 2>/dev/null)
     filename=$(basename "$file_path")
-    query="${file_path} $(echo "${CLAUDE_TOOL_INPUT:-{}}" | jq -r '(.new_string // .content // "")' 2>/dev/null | head -c 200)"
+    query="${file_path} $(echo "$stdin_data" | jq -r '(.tool_input.new_string // .tool_input.content // "")' 2>/dev/null | head -c 200)"
 
     response=$(curl -sf --max-time 0.5 \
         -H "Content-Type: application/json" \
@@ -158,9 +159,10 @@ do_recall() {
 
 # ── ingest: PostToolUse — LLM judges if change is worth remembering ──
 do_ingest() {
-    local file_path content filename response
-    file_path=$(echo "${CLAUDE_TOOL_INPUT:-{}}" | jq -r '.file_path // .path // "unknown"' 2>/dev/null)
-    content=$(echo "${CLAUDE_TOOL_INPUT:-{}}" | jq -r '(.new_string // .content // "")' 2>/dev/null | head -c 300)
+    local stdin_data file_path content filename response
+    stdin_data=$(cat)
+    file_path=$(echo "$stdin_data" | jq -r '.tool_input.file_path // .tool_input.path // "unknown"' 2>/dev/null)
+    content=$(echo "$stdin_data" | jq -r '(.tool_input.new_string // .tool_input.content // "")' 2>/dev/null | head -c 300)
     filename=$(basename "$file_path")
 
     # Skip trivial changes

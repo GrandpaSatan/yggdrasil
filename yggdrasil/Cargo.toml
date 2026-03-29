@@ -22,6 +22,7 @@ members = [
     "crates/ygg-voice",
     "crates/ygg-gaming",
     "crates/ygg-server",
+    "crates/ygg-test-harness",
 ]
 
 [workspace.package]
@@ -43,6 +44,7 @@ serde_yaml = "0.9"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }

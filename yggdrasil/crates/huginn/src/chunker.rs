@@ -241,7 +241,7 @@ impl Chunker {
         };
 
         let ts_lang: tree_sitter::Language = tree_sitter_md::LANGUAGE.into();
-        let query_src = "(atx_heading heading_content: (inline) @heading_text) @heading";
+        let query_src = "(atx_heading (inline) @heading_text) @heading";
         let query = tree_sitter::Query::new(&ts_lang, query_src)
             .map_err(|e| HuginnError::Parse(format!("markdown query error: {e}")))?;
 
@@ -462,4 +462,26 @@ pub fn build_embed_text(chunk: &CodeChunk) -> (String, bool) {
     };
 
     (format!("{header}{content_slice}"), truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_headings_parsed() {
+        let md = "# Introduction\nSome intro text.\n\n## Details\nMore details here.\n";
+        let mut chunker = Chunker::new().expect("chunker init");
+        let chunks = chunker
+            .chunk_markdown(md, "test.md", "/repo")
+            .expect("chunk_markdown");
+        // Must produce at least 2 heading-based chunks (not the single-fallback).
+        assert!(
+            chunks.len() >= 2,
+            "expected >=2 heading chunks, got {}",
+            chunks.len()
+        );
+        assert_eq!(chunks[0].name, "Introduction");
+        assert_eq!(chunks[1].name, "Details");
+    }
 }

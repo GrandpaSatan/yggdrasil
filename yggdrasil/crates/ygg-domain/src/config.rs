@@ -452,6 +452,45 @@ fn default_summarization_odin_url() -> String {
     "http://localhost:8080".to_string()
 }
 
+/// Database pool configuration for per-service connection tuning.
+///
+/// Default of 10 connections per service keeps total pool usage manageable
+/// when multiple services (Odin, Mimir, Muninn, Huginn, MCP-remote) share
+/// the same PostgreSQL instance. 5 services × 10 = 50, well within PG's
+/// default `max_connections = 100`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+    #[serde(default = "default_db_max_connections")]
+    pub max_connections: u32,
+    #[serde(default = "default_db_acquire_timeout_secs")]
+    pub acquire_timeout_secs: u64,
+    #[serde(default = "default_db_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+}
+
+impl DatabaseConfig {
+    /// Convenience constructor from a bare URL using all defaults.
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            max_connections: default_db_max_connections(),
+            acquire_timeout_secs: default_db_acquire_timeout_secs(),
+            idle_timeout_secs: default_db_idle_timeout_secs(),
+        }
+    }
+}
+
+fn default_db_max_connections() -> u32 {
+    10
+}
+fn default_db_acquire_timeout_secs() -> u64 {
+    10
+}
+fn default_db_idle_timeout_secs() -> u64 {
+    600
+}
+
 /// Huginn indexer configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HuginnConfig {
@@ -581,6 +620,19 @@ pub struct McpServerConfig {
     /// Path to SQL migrations directory (default: "migrations").
     #[serde(default = "default_migrations_path")]
     pub migrations_path: Option<String>,
+    /// Unique workspace identifier for session isolation (e.g. "yggdrasil:window-1").
+    /// When set, sessions are scoped to this workspace. Multiple IDE windows can
+    /// use different workspace_ids to prevent context bleed.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// URL for the Antigravity IDE backend (optional).
+    /// When set, enables IDE-specific integration features.
+    #[serde(default)]
+    pub antigravity_url: Option<String>,
+    /// IDE type: "vscode", "antigravity", "cursor" etc.
+    /// Used for IDE-specific behavior in context_bridge and event hooks.
+    #[serde(default)]
+    pub ide_type: Option<String>,
 }
 
 fn default_migrations_path() -> Option<String> {

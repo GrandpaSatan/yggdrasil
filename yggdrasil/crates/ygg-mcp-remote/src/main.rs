@@ -99,7 +99,8 @@ async fn main() -> Result<()> {
 
         let store_for_api = Arc::new(store.clone());
         let project_id = config.project.clone();
-        let session_manager = Arc::new(PersistentSessionManager::new(store, project_id));
+        let workspace_id = config.workspace_id.clone();
+        let session_manager = Arc::new(PersistentSessionManager::new(store, project_id, workspace_id));
 
         let service: StreamableHttpService<YggdrasilServer, PersistentSessionManager> =
             StreamableHttpService::new(

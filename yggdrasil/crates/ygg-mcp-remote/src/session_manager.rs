@@ -27,6 +27,10 @@ pub struct PersistentSessionManager {
     local: LocalSessionManager,
     store: Store,
     project_id: Option<String>,
+    /// Workspace-scoped session isolation for multi-IDE-window support.
+    /// When set, session context carryover is scoped to this workspace
+    /// rather than the broader project_id.
+    workspace_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -39,11 +43,12 @@ pub enum PersistentSessionManagerError {
 }
 
 impl PersistentSessionManager {
-    pub fn new(store: Store, project_id: Option<String>) -> Self {
+    pub fn new(store: Store, project_id: Option<String>, workspace_id: Option<String>) -> Self {
         Self {
             local: LocalSessionManager::default(),
             store,
             project_id,
+            workspace_id,
         }
     }
 
@@ -92,9 +97,12 @@ impl SessionManager for PersistentSessionManager {
         if let Some(uuid) = Self::parse_session_uuid(&id) {
             let pool = self.store.pool().clone();
             let project_id = self.project_id.clone();
+            let workspace_id = self.workspace_id.clone();
 
-            // Look up previous session context for same project (carry over SDR state)
-            let prev_state = if let Some(ref project) = project_id {
+            // Look up previous session context (scoped by workspace_id if set, else project_id).
+            // workspace_id provides per-IDE-window isolation; project_id is the fallback scope.
+            let scope_key = workspace_id.as_ref().or(project_id.as_ref());
+            let prev_state = if let Some(ref project) = scope_key {
                 match ygg_store::postgres::sessions::get_latest_session_for_project(&pool, project).await {
                     Ok(Some(prev)) => {
                         info!(

@@ -21,6 +21,21 @@ use crate::router::RoutingDecision;
 use crate::state::AppState;
 use crate::tool_registry::{self, ToolSpec, ToolTier};
 
+/// Events emitted during agent loop execution for real-time streaming.
+///
+/// When a `step_tx` channel is provided, the agent loop emits these events
+/// at each significant step. Used by the `/v1/agent/stream` SSE endpoint.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentStepEvent {
+    IterationStart { iteration: usize },
+    ToolCallStart { tool_name: String, call_id: String },
+    ToolCallResult { tool_name: String, call_id: String, duration_ms: u64, truncated_output: String },
+    ToolCallError { tool_name: String, call_id: String, error: String },
+    LlmResponse { iteration: usize, has_tool_calls: bool },
+    Complete { total_iterations: usize, total_tool_calls: usize },
+}
+
 /// Run the agent loop: LLM → tool calls → execute → feed back → repeat.
 ///
 /// Returns a standard `ChatCompletionResponse` with the model's final text
@@ -37,6 +52,26 @@ pub async fn run_agent_loop(
     completion_id: &str,
     config: &AgentLoopConfig,
     backend_context_window: usize,
+) -> Result<ChatCompletionResponse, OdinError> {
+    run_agent_loop_inner(state, messages, tool_defs, registry, allowed_tiers, decision, completion_id, config, backend_context_window, None).await
+}
+
+/// Run the agent loop with optional step event streaming.
+///
+/// When `step_tx` is `Some`, emits `AgentStepEvent`s at each significant step
+/// for real-time SSE streaming via `/v1/agent/stream`.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_agent_loop_inner(
+    state: &AppState,
+    messages: &[ChatMessage],
+    tool_defs: &[ToolDefinition],
+    registry: &[ToolSpec],
+    allowed_tiers: &[ToolTier],
+    decision: &RoutingDecision,
+    completion_id: &str,
+    config: &AgentLoopConfig,
+    backend_context_window: usize,
+    step_tx: Option<tokio::sync::mpsc::Sender<AgentStepEvent>>,
 ) -> Result<ChatCompletionResponse, OdinError> {
     // Convert input ChatMessages → OllamaMessages for the conversation.
     let mut conversation: Vec<OllamaMessage> = messages
@@ -69,6 +104,15 @@ pub async fn run_agent_loop(
     let mut total_tool_calls: usize = 0;
     let mut accumulated_usage = AccumulatedUsage::default();
 
+    // Helper: non-blocking event emit (ignores send failures if channel full/closed).
+    macro_rules! emit {
+        ($event:expr) => {
+            if let Some(ref tx) = step_tx {
+                let _ = tx.try_send($event);
+            }
+        };
+    }
+
     for iteration in 0..config.max_iterations {
         // Check total timeout.
         if tokio::time::Instant::now() >= total_deadline {
@@ -76,6 +120,7 @@ pub async fn run_agent_loop(
             break;
         }
 
+        emit!(AgentStepEvent::IterationStart { iteration });
         crate::metrics::record_agent_iteration();
 
         // Build the Ollama request WITH tool definitions.
@@ -98,8 +143,13 @@ pub async fn run_agent_loop(
 
         // If the model produced NO tool calls → we have our final answer.
         let tool_calls = match resp.message.tool_calls {
-            Some(ref tc) if !tc.is_empty() => tc,
+            Some(ref tc) if !tc.is_empty() => {
+                emit!(AgentStepEvent::LlmResponse { iteration, has_tool_calls: true });
+                tc
+            }
             _ => {
+                emit!(AgentStepEvent::LlmResponse { iteration, has_tool_calls: false });
+                emit!(AgentStepEvent::Complete { total_iterations: iteration + 1, total_tool_calls });
                 tracing::info!(
                     iteration,
                     total_tool_calls,
@@ -240,13 +290,27 @@ pub async fn run_agent_loop(
         let results = join_all(futures).await;
 
         // Append results in original order to preserve conversation coherence.
-        for result_text in results {
+        // Emit step events for each tool result.
+        for (idx, result_text) in results.into_iter().enumerate() {
+            let tool_name = tool_calls.get(idx).map(|tc| tc.function.name.clone()).unwrap_or_default();
+            let call_id = format!("call_{iteration}_{idx}");
+            if result_text.starts_with("Error:") {
+                emit!(AgentStepEvent::ToolCallError {
+                    tool_name, call_id, error: result_text.clone(),
+                });
+            } else {
+                emit!(AgentStepEvent::ToolCallResult {
+                    tool_name, call_id, duration_ms: 0,
+                    truncated_output: result_text.chars().take(200).collect(),
+                });
+            }
             conversation.push(OllamaMessage::new("tool", result_text));
             total_tool_calls += 1;
         }
     }
 
     // Max iterations exhausted — send one final request WITHOUT tools to force text.
+    emit!(AgentStepEvent::Complete { total_iterations: config.max_iterations, total_tool_calls });
     tracing::info!(
         total_tool_calls,
         "max iterations reached, forcing final text response"

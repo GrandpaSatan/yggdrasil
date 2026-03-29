@@ -137,7 +137,7 @@ pub fn extraction_query(lang: Language) -> &'static str {
         Language::Markdown => {
             r#"
 (atx_heading
-  heading_content: (inline) @heading_text) @heading
+  (inline) @heading_text) @heading
 "#
         }
         Language::Yaml | Language::Unknown => "",

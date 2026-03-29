@@ -279,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         // OpenAI-compatible endpoints.
         .route("/v1/chat/completions", post(handlers::chat_handler))
+        .route("/v1/agent/stream", post(handlers::agent_stream_handler))
         .route("/v1/models", get(handlers::models_handler))
         // Mimir transparent proxy endpoints (Fergus client compatibility).
         .route("/api/v1/query", post(handlers::proxy_query))

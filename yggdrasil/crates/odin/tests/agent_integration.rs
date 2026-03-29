@@ -1,15 +1,10 @@
 /// Integration tests for the agent loop.
 ///
-/// Spins up mock Ollama and Mimir servers using axum on random ports,
+/// Uses `ygg_test_harness` mock servers for Ollama and Mimir,
 /// constructs a test AppState, and exercises `run_agent_loop` end-to-end.
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use axum::extract::{Json, State};
-use axum::routing::post;
-use axum::Router;
 use serde_json::json;
-use tokio::net::TcpListener;
 
 use odin::agent::run_agent_loop;
 use odin::openai::{ChatMessage, FunctionDefinition, Role, ToolDefinition};
@@ -21,76 +16,7 @@ use ygg_domain::config::{
     AgentLoopConfig, BackendType, MimirClientConfig, MuninnClientConfig, OdinConfig, RoutingConfig,
     SessionConfig,
 };
-
-// ─────────────────────────────────────────────────────────────────
-// Mock server state
-// ─────────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-struct MockOllama {
-    responses: Arc<Mutex<VecDeque<serde_json::Value>>>,
-}
-
-async fn ollama_handler(
-    State(mock): State<MockOllama>,
-    Json(_body): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let resp = mock
-        .responses
-        .lock()
-        .expect("lock")
-        .pop_front()
-        .unwrap_or_else(|| {
-            // Default: text response, no tool calls.
-            json!({
-                "model": "test-model",
-                "message": { "role": "assistant", "content": "default fallback" },
-                "done": true
-            })
-        });
-    Json(resp)
-}
-
-async fn mimir_handler(Json(_body): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(json!({
-        "results": [{ "cause": "test query", "effect": "test result", "similarity": 0.92 }]
-    }))
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────
-
-/// Start a mock Ollama server, returns (url, response_queue).
-async fn start_mock_ollama(
-    responses: Vec<serde_json::Value>,
-) -> (String, Arc<Mutex<VecDeque<serde_json::Value>>>) {
-    let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
-    let mock = MockOllama {
-        responses: queue.clone(),
-    };
-    let app = Router::new()
-        .route("/api/chat", post(ollama_handler))
-        .with_state(mock);
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind mock ollama");
-    let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(axum::serve(listener, app).into_future());
-    (format!("http://127.0.0.1:{}", addr.port()), queue)
-}
-
-/// Start a mock Mimir server, returns url.
-async fn start_mock_mimir() -> String {
-    let app = Router::new()
-        .route("/api/v1/query", post(mimir_handler));
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind mock mimir");
-    let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(axum::serve(listener, app).into_future());
-    format!("http://127.0.0.1:{}", addr.port())
-}
+use ygg_test_harness::{MockMimirBuilder, MockOllamaBuilder};
 
 /// Build a minimal test AppState pointing at the mock servers.
 fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
@@ -184,13 +110,12 @@ fn default_config() -> AgentLoopConfig {
 
 #[tokio::test]
 async fn agent_text_response_no_tool_calls() {
-    let (ollama_url, _) = start_mock_ollama(vec![json!({
-        "model": "test-model",
-        "message": { "role": "assistant", "content": "Hello! I can help you." },
-        "done": true
-    })])
-    .await;
-    let mimir_url = start_mock_mimir().await;
+    let ollama = MockOllamaBuilder::new()
+        .with_text_response("Hello! I can help you.")
+        .start()
+        .await;
+    let mimir = MockMimirBuilder::new().start().await;
+    let (ollama_url, mimir_url) = (&ollama.url, &mimir.url);
     let state = test_state(&ollama_url, &mimir_url);
 
     let messages = vec![ChatMessage::new(Role::User, "Hi")];
@@ -211,28 +136,13 @@ async fn agent_text_response_no_tool_calls() {
 
 #[tokio::test]
 async fn agent_single_tool_call_then_text() {
-    let (ollama_url, _) = start_mock_ollama(vec![
-        // First response: model calls query_memory
-        json!({
-            "model": "test-model",
-            "message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": { "name": "query_memory", "arguments": { "text": "recent sprints" } }
-                }]
-            },
-            "done": true
-        }),
-        // Second response: model produces text after seeing tool result
-        json!({
-            "model": "test-model",
-            "message": { "role": "assistant", "content": "Based on memory, Sprint 043 added agentic tool-use." },
-            "done": true
-        }),
-    ])
-    .await;
-    let mimir_url = start_mock_mimir().await;
+    let ollama = MockOllamaBuilder::new()
+        .with_tool_call("query_memory", json!({"text": "recent sprints"}))
+        .with_text_response("Based on memory, Sprint 043 added agentic tool-use.")
+        .start()
+        .await;
+    let mimir = MockMimirBuilder::new().start().await;
+    let (ollama_url, mimir_url) = (&ollama.url, &mimir.url);
     let state = test_state(&ollama_url, &mimir_url);
 
     let messages = vec![ChatMessage::new(Role::User, "What was the last sprint?")];
@@ -256,28 +166,16 @@ async fn agent_single_tool_call_then_text() {
 
 #[tokio::test]
 async fn agent_max_iterations_forces_text() {
-    // Model always returns tool_calls — agent must force text after max_iterations.
-    let tool_call_response = json!({
-        "model": "test-model",
-        "message": {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "function": { "name": "query_memory", "arguments": { "text": "loop" } }
-            }]
-        },
-        "done": true
-    });
-
     // 3 tool_call responses + 1 forced text (default fallback in mock).
-    let (ollama_url, _) = start_mock_ollama(vec![
-        tool_call_response.clone(),
-        tool_call_response.clone(),
-        tool_call_response,
-        // After max_iterations, agent sends without tools — mock returns default text.
-    ])
-    .await;
-    let mimir_url = start_mock_mimir().await;
+    let ollama = MockOllamaBuilder::new()
+        .with_tool_call("query_memory", json!({"text": "loop"}))
+        .with_tool_call("query_memory", json!({"text": "loop"}))
+        .with_tool_call("query_memory", json!({"text": "loop"}))
+        // After max_iterations, agent sends without tools — mock returns default fallback.
+        .start()
+        .await;
+    let mimir = MockMimirBuilder::new().start().await;
+    let (ollama_url, mimir_url) = (&ollama.url, &mimir.url);
     let state = test_state(&ollama_url, &mimir_url);
 
     let messages = vec![ChatMessage::new(Role::User, "loop forever")];
@@ -306,28 +204,13 @@ async fn agent_max_iterations_forces_text() {
 
 #[tokio::test]
 async fn agent_unknown_tool_returns_error_to_model() {
-    let (ollama_url, _) = start_mock_ollama(vec![
-        // Model calls a tool that doesn't exist in the registry.
-        json!({
-            "model": "test-model",
-            "message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": { "name": "nonexistent_tool", "arguments": {} }
-                }]
-            },
-            "done": true
-        }),
-        // Model sees the error and produces text.
-        json!({
-            "model": "test-model",
-            "message": { "role": "assistant", "content": "Sorry, that tool is not available." },
-            "done": true
-        }),
-    ])
-    .await;
-    let mimir_url = start_mock_mimir().await;
+    let ollama = MockOllamaBuilder::new()
+        .with_tool_call("nonexistent_tool", json!({}))
+        .with_text_response("Sorry, that tool is not available.")
+        .start()
+        .await;
+    let mimir = MockMimirBuilder::new().start().await;
+    let (ollama_url, mimir_url) = (&ollama.url, &mimir.url);
     let state = test_state(&ollama_url, &mimir_url);
 
     let messages = vec![ChatMessage::new(Role::User, "use nonexistent tool")];

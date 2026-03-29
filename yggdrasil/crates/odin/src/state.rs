@@ -93,6 +93,12 @@ impl CircuitBreaker {
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
     }
+
+    /// Manually set the tripped_at timestamp. Used by integration tests
+    /// to simulate cooldown without real-time waits.
+    pub fn set_tripped_at(&self, epoch_secs: u64) {
+        self.tripped_at.store(epoch_secs, Ordering::Relaxed);
+    }
 }
 
 /// Thread-safe map of endpoint base URLs to their circuit breaker state.

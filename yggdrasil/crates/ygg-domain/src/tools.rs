@@ -336,4 +336,16 @@ mod tests {
         assert!(find_meta("search_code").is_some());
         assert!(find_meta("nonexistent").is_none());
     }
+
+    #[test]
+    fn all_tools_have_schemas() {
+        use crate::tool_params::schema_for_tool;
+        for meta in ALL_TOOLS {
+            assert!(
+                schema_for_tool(meta.name).is_some(),
+                "tool '{}' is missing a parameter schema in schema_for_tool()",
+                meta.name
+            );
+        }
+    }
 }

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use ygg_domain::config::DatabaseConfig;
 
 /// Shared database handle for all PostgreSQL operations.
 #[derive(Clone)]
@@ -14,15 +15,22 @@ pub struct Store {
 }
 
 impl Store {
-    pub async fn connect(database_url: &str) -> Result<Self, error::StoreError> {
+    /// Connect using a `DatabaseConfig` with per-service pool tuning.
+    pub async fn connect_with_config(config: &DatabaseConfig) -> Result<Self, error::StoreError> {
         let pool = PgPoolOptions::new()
-            .max_connections(25)
-            .acquire_timeout(Duration::from_secs(10))
-            .idle_timeout(Duration::from_secs(600))
-            .connect(database_url)
+            .max_connections(config.max_connections)
+            .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+            .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
+            .connect(&config.url)
             .await
             .map_err(|e| error::StoreError::Connection(e.to_string()))?;
         Ok(Self { pool })
+    }
+
+    /// Connect with default pool settings. Prefer `connect_with_config` for
+    /// production services to control per-service connection limits.
+    pub async fn connect(database_url: &str) -> Result<Self, error::StoreError> {
+        Self::connect_with_config(&DatabaseConfig::from_url(database_url)).await
     }
 
     pub fn pool(&self) -> &PgPool {

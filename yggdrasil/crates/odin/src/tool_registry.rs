@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use serde_json::{json, Value as JsonValue};
+use ygg_domain::tool_params::schema_for_tool;
 use ygg_domain::tools as catalog;
 
 use crate::openai::{FunctionDefinition, ToolDefinition};
@@ -39,14 +40,16 @@ fn convert_tier(t: catalog::ToolTier) -> ToolTier {
     }
 }
 
-/// Build a `ToolSpec` by pulling metadata from the canonical catalog.
+/// Build a `ToolSpec` by pulling metadata + parameter schema from the canonical catalog.
 ///
-/// Only the endpoint and parameter schema are Odin-specific; everything
-/// else (name, description, tier, keywords, timeout, voice_always) comes
-/// from `ygg_domain::tools::ALL_TOOLS`.
-fn from_catalog(name: &str, parameters_schema: JsonValue, endpoint: ToolEndpoint) -> ToolSpec {
+/// Only the endpoint routing is Odin-specific; everything else (name,
+/// description, tier, keywords, timeout, voice_always, parameter schema)
+/// comes from `ygg_domain`.
+fn from_catalog(name: &str, endpoint: ToolEndpoint) -> ToolSpec {
     let meta = catalog::find_meta(name)
         .unwrap_or_else(|| panic!("tool '{name}' not found in ygg_domain::tools catalog"));
+    let parameters_schema = schema_for_tool(name)
+        .unwrap_or_else(|| panic!("tool '{name}' has no schema in ygg_domain::tool_params"));
     ToolSpec {
         name: meta.name,
         description: meta.description,
@@ -117,279 +120,38 @@ pub struct ToolSpec {
 pub fn build_registry() -> Vec<ToolSpec> {
     vec![
         // ── Safe tier (read-only) ───────────────────────────────
-        from_catalog("search_code", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Search query" },
-                "languages": { "type": "array", "items": { "type": "string" }, "description": "Filter by language (e.g. [\"rust\", \"python\"])" },
-                "limit": { "type": "integer", "description": "Max results (default 10)" }
-            },
-            "required": ["query"]
-        }), ToolEndpoint::Muninn("/api/v1/search")),
-
-        from_catalog("query_memory", json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string", "description": "Query text to search" },
-                "limit": { "type": "integer", "description": "Max results (default 5)" }
-            },
-            "required": ["text"]
-        }), ToolEndpoint::Mimir("/api/v1/query")),
-
-        from_catalog("memory_intersect", json!({
-            "type": "object",
-            "properties": {
-                "texts": { "type": "array", "items": { "type": "string" }, "minItems": 2, "description": "Texts to intersect (min 2)" },
-                "operation": { "type": "string", "description": "Operation type (default: intersect)" }
-            },
-            "required": ["texts"]
-        }), ToolEndpoint::Mimir("/api/v1/sdr/operations")),
-
-        from_catalog("get_sprint_history", json!({
-            "type": "object",
-            "properties": {
-                "project": { "type": "string", "description": "Project name" },
-                "limit": { "type": "integer", "description": "Max sprints to return" }
-            },
-            "required": ["project"]
-        }), ToolEndpoint::Mimir("/api/v1/sprints/list")),
-
-        from_catalog("memory_timeline", json!({
-            "type": "object",
-            "properties": {
-                "start": { "type": "string", "description": "Start time (ISO 8601)" },
-                "end": { "type": "string", "description": "End time (ISO 8601)" },
-                "limit": { "type": "integer", "description": "Max results" }
-            }
-        }), ToolEndpoint::Mimir("/api/v1/timeline")),
-
-        from_catalog("list_models",
-            json!({ "type": "object", "properties": {} }),
-            ToolEndpoint::OdinSelf("/v1/models"),
-        ),
-
-        from_catalog("service_health",
-            json!({ "type": "object", "properties": {} }),
-            ToolEndpoint::OdinSelf("/health"),
-        ),
-
-        from_catalog("ast_analyze", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Symbol name or pattern" },
-                "filters": { "type": "array", "items": { "type": "string" }, "description": "Filter by symbol type" }
-            },
-            "required": ["query"]
-        }), ToolEndpoint::Muninn("/api/v1/symbols")),
-
-        from_catalog("impact_analysis", json!({
-            "type": "object",
-            "properties": {
-                "symbol": { "type": "string", "description": "Symbol name to trace" },
-                "limit": { "type": "integer", "description": "Max references" }
-            },
-            "required": ["symbol"]
-        }), ToolEndpoint::Muninn("/api/v1/references")),
-
-        from_catalog("ha_get_states", json!({
-            "type": "object",
-            "properties": {
-                "entity_id": { "type": "string", "description": "Specific entity ID for full state details" },
-                "domain": { "type": "string", "description": "Filter by domain (e.g. light, switch, sensor, climate)" }
-            }
-        }), ToolEndpoint::Ha(HaToolKind::GetStates)),
-
-        from_catalog("ha_list_entities", json!({
-            "type": "object",
-            "properties": {
-                "domain": { "type": "string", "description": "Filter by domain (e.g. light, switch)" }
-            }
-        }), ToolEndpoint::Ha(HaToolKind::ListEntities)),
-
-        from_catalog("config_version",
-            json!({ "type": "object", "properties": {} }),
-            ToolEndpoint::OdinSelf("/api/v1/version"),
-        ),
-
-        from_catalog("web_search", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Search query" },
-                "count": { "type": "integer", "description": "Number of results (default 5, max 10)" }
-            },
-            "required": ["query"]
-        }), ToolEndpoint::OdinSelf("/api/v1/web_search")),
+        from_catalog("search_code",        ToolEndpoint::Muninn("/api/v1/search")),
+        from_catalog("query_memory",       ToolEndpoint::Mimir("/api/v1/query")),
+        from_catalog("memory_intersect",   ToolEndpoint::Mimir("/api/v1/sdr/operations")),
+        from_catalog("get_sprint_history", ToolEndpoint::Mimir("/api/v1/sprints/list")),
+        from_catalog("memory_timeline",    ToolEndpoint::Mimir("/api/v1/timeline")),
+        from_catalog("list_models",        ToolEndpoint::OdinSelf("/v1/models")),
+        from_catalog("service_health",     ToolEndpoint::OdinSelf("/health")),
+        from_catalog("ast_analyze",        ToolEndpoint::Muninn("/api/v1/symbols")),
+        from_catalog("impact_analysis",    ToolEndpoint::Muninn("/api/v1/references")),
+        from_catalog("ha_get_states",      ToolEndpoint::Ha(HaToolKind::GetStates)),
+        from_catalog("ha_list_entities",   ToolEndpoint::Ha(HaToolKind::ListEntities)),
+        from_catalog("config_version",     ToolEndpoint::OdinSelf("/api/v1/version")),
+        from_catalog("web_search",         ToolEndpoint::OdinSelf("/api/v1/web_search")),
+        from_catalog("network_topology",   ToolEndpoint::OdinSelf("/api/v1/mesh/nodes")),
 
         // ── Restricted tier (write operations) ──────────────────
-        from_catalog("ha_call_service", json!({
-            "type": "object",
-            "properties": {
-                "domain": { "type": "string", "description": "HA service domain (e.g. light, switch, climate)" },
-                "service": { "type": "string", "description": "Service name (e.g. turn_on, turn_off, toggle)" },
-                "data": { "type": "object", "description": "Service call data (e.g. {\"entity_id\": \"switch.gaming_pc\"})" }
-            },
-            "required": ["domain", "service", "data"]
-        }), ToolEndpoint::Ha(HaToolKind::CallService)),
-
-        from_catalog("gaming", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action to perform", "enum": ["status", "launch", "start", "stop", "list-gpus", "pair"] },
-                "vm_name": { "type": "string", "description": "VM or container name (required for launch/start/stop/pair)" },
-                "pin": { "type": "string", "description": "4-digit Moonlight pairing PIN (required for pair action)" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::OdinSelf("/api/v1/gaming")),
-
-        from_catalog("store_memory", json!({
-            "type": "object",
-            "properties": {
-                "cause": { "type": "string", "description": "The trigger or question" },
-                "effect": { "type": "string", "description": "The outcome or answer" },
-                "tags": { "type": "array", "items": { "type": "string" }, "description": "Categorization tags" }
-            },
-            "required": ["cause", "effect"]
-        }), ToolEndpoint::Mimir("/api/v1/store")),
-
-        from_catalog("context_offload", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action: store, retrieve, or list", "enum": ["store", "retrieve", "list"] },
-                "content": { "type": "string", "description": "Content to store (required for 'store')" },
-                "label": { "type": "string", "description": "Optional label for stored content" },
-                "handle": { "type": "string", "description": "Handle to retrieve (required for 'retrieve')" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::Mimir("/api/v1/context")),
-
-        from_catalog("context_bridge", json!({
-            "type": "object",
-            "properties": {
-                "cause": { "type": "string", "description": "Bridge label (e.g. 'context_bridge:export:sprint-049')" },
-                "effect": { "type": "string", "description": "Context snapshot to export" },
-                "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags (defaults to ['context_bridge'])" }
-            },
-            "required": ["cause", "effect"]
-        }), ToolEndpoint::Mimir("/api/v1/store")),
-
-        from_catalog("task_queue", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Queue action: push, pop, complete, cancel, list" },
-                "content": { "type": "string", "description": "Task content (for push)" },
-                "task_id": { "type": "string", "description": "Task ID (for complete/cancel)" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::Mimir("/api/v1/tasks")),
-
-        from_catalog("memory_graph", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Graph action: link, unlink, neighbors, traverse" },
-                "source_id": { "type": "string", "description": "Source engram UUID" },
-                "target_id": { "type": "string", "description": "Target engram UUID" },
-                "relation": { "type": "string", "description": "Relationship type" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::Mimir("/api/v1/graph")),
-
-        // ── Previously MCP-only tools (Sprint 049 Phase 2B) ─────
-
-        from_catalog("vault", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action: store, retrieve, list, delete", "enum": ["store", "retrieve", "list", "delete"] },
-                "key": { "type": "string", "description": "Secret key name (required for store/retrieve/delete)" },
-                "value": { "type": "string", "description": "Secret value (required for store)" },
-                "scope": { "type": "string", "description": "Scope: global, project, or user:name (default: global)" },
-                "tags": { "type": "string", "description": "Comma-separated tags for categorization" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::Mimir("/api/v1/vault")),
-
-        from_catalog("network_topology", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action: nodes, services, or health", "enum": ["nodes", "services", "health"] },
-                "node_name": { "type": "string", "description": "Filter by node name (optional)" }
-            }
-        }), ToolEndpoint::OdinSelf("/api/v1/mesh/nodes")),
-
-        from_catalog("ha_generate_automation", json!({
-            "type": "object",
-            "properties": {
-                "description": { "type": "string", "description": "Natural language description of the automation (e.g. 'turn off lights at 11pm')" }
-            },
-            "required": ["description"]
-        }), ToolEndpoint::Ha(HaToolKind::GenerateAutomation)),
-
-        from_catalog("config_sync", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action: status, pull, push", "enum": ["status", "pull", "push"] },
-                "file_type": { "type": "string", "description": "Config file type to sync (e.g. 'odin', 'mimir')" }
-            },
-            "required": ["action"]
-        }), ToolEndpoint::OdinSelf("/api/v1/version")),
-
-        from_catalog("build_check", json!({
-            "type": "object",
-            "properties": {
-                "mode": { "type": "string", "description": "Build mode: check, build, clippy, test", "enum": ["check", "build", "clippy", "test"] },
-                "package": { "type": "string", "description": "Specific package to check (e.g. 'odin', 'mimir')" }
-            }
-        }), ToolEndpoint::OdinSelf("/api/v1/build_check")),
-
-        from_catalog("deploy", json!({
-            "type": "object",
-            "properties": {
-                "action": { "type": "string", "description": "Action: build, deploy, build_and_deploy, status", "enum": ["build", "deploy", "build_and_deploy", "status"] },
-                "service": { "type": "string", "description": "Service binary name (e.g. 'odin', 'mimir', 'ygg-node')" },
-                "target": { "type": "string", "description": "Target node hostname (default: munin)" }
-            },
-            "required": ["action", "service"]
-        }), ToolEndpoint::OdinSelf("/api/v1/deploy")),
-
-        from_catalog("generate", json!({
-            "type": "object",
-            "properties": {
-                "prompt": { "type": "string", "description": "Prompt to send to the LLM" },
-                "model": { "type": "string", "description": "Model name (optional, uses default routing)" },
-                "max_tokens": { "type": "integer", "description": "Max tokens to generate (default 4096)" }
-            },
-            "required": ["prompt"]
-        }), ToolEndpoint::OdinSelf("/v1/chat/completions")),
-
-        from_catalog("delegate", json!({
-            "type": "object",
-            "properties": {
-                "instructions": { "type": "string", "description": "Task instructions for the local LLM" },
-                "agent_type": { "type": "string", "description": "Agent type: executor, docs, qa, review, general" },
-                "model": { "type": "string", "description": "Model override (optional)" },
-                "language": { "type": "string", "description": "Language hint (optional)" }
-            },
-            "required": ["instructions"]
-        }), ToolEndpoint::OdinSelf("/v1/chat/completions")),
-
-        from_catalog("task_delegate", json!({
-            "type": "object",
-            "properties": {
-                "task": { "type": "string", "description": "Task description to delegate" },
-                "model": { "type": "string", "description": "Model override (optional)" },
-                "constraints": { "type": "array", "items": { "type": "string" }, "description": "Constraints list" }
-            },
-            "required": ["task"]
-        }), ToolEndpoint::OdinSelf("/v1/chat/completions")),
-
-        from_catalog("diff_review", json!({
-            "type": "object",
-            "properties": {
-                "content": { "type": "string", "description": "Git diff or code to review" },
-                "focus": { "type": "string", "description": "Review focus: all, security, performance, correctness" },
-                "description": { "type": "string", "description": "Optional context about the changes" }
-            },
-            "required": ["content"]
-        }), ToolEndpoint::OdinSelf("/v1/chat/completions")),
+        from_catalog("ha_call_service",        ToolEndpoint::Ha(HaToolKind::CallService)),
+        from_catalog("ha_generate_automation", ToolEndpoint::Ha(HaToolKind::GenerateAutomation)),
+        from_catalog("gaming",             ToolEndpoint::OdinSelf("/api/v1/gaming")),
+        from_catalog("store_memory",       ToolEndpoint::Mimir("/api/v1/store")),
+        from_catalog("context_offload",    ToolEndpoint::Mimir("/api/v1/context")),
+        from_catalog("context_bridge",     ToolEndpoint::Mimir("/api/v1/store")),
+        from_catalog("task_queue",         ToolEndpoint::Mimir("/api/v1/tasks")),
+        from_catalog("memory_graph",       ToolEndpoint::Mimir("/api/v1/graph")),
+        from_catalog("vault",              ToolEndpoint::Mimir("/api/v1/vault")),
+        from_catalog("config_sync",        ToolEndpoint::OdinSelf("/api/v1/version")),
+        from_catalog("build_check",        ToolEndpoint::OdinSelf("/api/v1/build_check")),
+        from_catalog("deploy",             ToolEndpoint::OdinSelf("/api/v1/deploy")),
+        from_catalog("generate",           ToolEndpoint::OdinSelf("/v1/chat/completions")),
+        from_catalog("delegate",           ToolEndpoint::OdinSelf("/v1/chat/completions")),
+        from_catalog("task_delegate",      ToolEndpoint::OdinSelf("/v1/chat/completions")),
+        from_catalog("diff_review",        ToolEndpoint::OdinSelf("/v1/chat/completions")),
     ]
 }
 
@@ -567,8 +329,16 @@ fn is_retryable_error(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout()
 }
 
-/// Retry backoff delays: 200ms, then 800ms.
+/// Retry backoff base delays: 200ms, then 800ms.
+/// Actual delay is jittered to 50%–150% of base to prevent thundering herd.
 const RETRY_DELAYS_MS: [u64; 2] = [200, 800];
+
+/// Compute a jittered delay from a base value (50%–150% of base).
+fn jittered_delay(base_ms: u64) -> Duration {
+    use rand::Rng;
+    let jitter = rand::thread_rng().gen_range(0.5..1.5);
+    Duration::from_millis((base_ms as f64 * jitter) as u64)
+}
 
 async fn http_post(
     client: &reqwest::Client,
@@ -595,7 +365,7 @@ async fn http_post(
                 }
                 if attempt < RETRY_DELAYS_MS.len() && is_retryable_status(status) {
                     tracing::debug!(url, attempt, %status, "retryable HTTP status, backing off");
-                    tokio::time::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    tokio::time::sleep(jittered_delay(RETRY_DELAYS_MS[attempt])).await;
                     last_err = format!("HTTP {status}: {text}");
                     continue;
                 }
@@ -604,7 +374,7 @@ async fn http_post(
             Err(e) => {
                 if attempt < RETRY_DELAYS_MS.len() && is_retryable_error(&e) {
                     tracing::debug!(url, attempt, error = %e, "retryable connection error, backing off");
-                    tokio::time::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    tokio::time::sleep(jittered_delay(RETRY_DELAYS_MS[attempt])).await;
                     last_err = format!("HTTP request failed: {e}");
                     continue;
                 }
@@ -639,7 +409,7 @@ async fn http_get(
                 }
                 if attempt < RETRY_DELAYS_MS.len() && is_retryable_status(status) {
                     tracing::debug!(url, attempt, %status, "retryable HTTP status, backing off");
-                    tokio::time::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    tokio::time::sleep(jittered_delay(RETRY_DELAYS_MS[attempt])).await;
                     last_err = format!("HTTP {status}: {text}");
                     continue;
                 }
@@ -648,7 +418,7 @@ async fn http_get(
             Err(e) => {
                 if attempt < RETRY_DELAYS_MS.len() && is_retryable_error(&e) {
                     tracing::debug!(url, attempt, error = %e, "retryable connection error, backing off");
-                    tokio::time::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt])).await;
+                    tokio::time::sleep(jittered_delay(RETRY_DELAYS_MS[attempt])).await;
                     last_err = format!("HTTP request failed: {e}");
                     continue;
                 }
@@ -736,6 +506,23 @@ mod tests {
         assert!(is_tool_allowed(&registry, "store_memory", &[ToolTier::Safe, ToolTier::Restricted]));
         // Unknown tool → never allowed
         assert!(!is_tool_allowed(&registry, "nonexistent", &[ToolTier::Safe]));
+    }
+
+    #[test]
+    fn jittered_delay_stays_within_bounds() {
+        for base in [200u64, 800] {
+            for _ in 0..100 {
+                let d = jittered_delay(base);
+                assert!(
+                    d.as_millis() >= (base / 2) as u128,
+                    "delay {d:?} below 50% of base {base}ms"
+                );
+                assert!(
+                    d.as_millis() <= (base * 3 / 2) as u128,
+                    "delay {d:?} above 150% of base {base}ms"
+                );
+            }
+        }
     }
 }
 

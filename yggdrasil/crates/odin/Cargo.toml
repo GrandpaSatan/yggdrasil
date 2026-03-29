@@ -30,6 +30,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
+tokio-stream = { workspace = true }
 dashmap = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
@@ -40,3 +41,7 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
+ygg-test-harness = { path = "../ygg-test-harness" }
+
+[dependencies.rand]
+workspace = true

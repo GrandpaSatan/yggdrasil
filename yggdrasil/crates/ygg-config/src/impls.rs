@@ -185,6 +185,8 @@ mod tests {
             cloud: None,
             voice: None,
             agent: None,
+            task_worker: None,
+            web_search: None,
         }
     }
 
@@ -257,6 +259,7 @@ mod tests {
                 min_age_secs: 86400,
                 odin_url: "http://localhost:8080".to_string(),
             },
+            auto_ingest: None,
         };
         assert!(config.validate().is_empty());
     }

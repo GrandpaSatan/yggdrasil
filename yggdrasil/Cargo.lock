@@ -2546,6 +2546,7 @@ dependencies = [
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
+ "rand 0.8.5",
  "reqwest 0.12.28",
  "rustfft",
  "sd-notify",
@@ -2554,6 +2555,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tower 0.5.3",
  "tower-http",
  "tracing",
@@ -2565,6 +2567,7 @@ dependencies = [
  "ygg-gaming",
  "ygg-ha",
  "ygg-server",
+ "ygg-test-harness",
 ]
 
 [[package]]
@@ -5866,6 +5869,18 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "ygg-domain",
+]
+
+[[package]]
+name = "ygg-test-harness"
+version = "1.0.0"
+dependencies = [
+ "axum 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
  "ygg-domain",
 ]
 

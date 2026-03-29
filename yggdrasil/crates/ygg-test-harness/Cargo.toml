@@ -1,0 +1,15 @@
+[package]
+name = "ygg-test-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared test utilities: mock servers, fixtures, and helpers for Yggdrasil integration tests"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+ygg-domain = { path = "../ygg-domain" }

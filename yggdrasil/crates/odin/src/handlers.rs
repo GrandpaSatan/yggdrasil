@@ -2606,3 +2606,87 @@ pub async fn deploy_handler(
         _ => unreachable!(),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Agent streaming SSE endpoint
+// ─────────────────────────────────────────────────────────────────
+
+/// POST /v1/agent/stream — runs the agent loop with real-time SSE step events.
+///
+/// Accepts the same body as `/v1/chat/completions` (with `tools` array).
+/// Returns an SSE stream of `AgentStepEvent` JSON objects, with the final
+/// event containing the complete `ChatCompletionResponse`.
+pub async fn agent_stream_handler(
+    State(state): State<crate::state::AppState>,
+    Json(request): Json<crate::openai::ChatCompletionRequest>,
+) -> Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    use axum::response::sse::Event;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+    use tokio_stream::StreamExt;
+
+    let (step_tx, step_rx) = mpsc::channel::<crate::agent::AgentStepEvent>(64);
+    let (result_tx, result_rx) = mpsc::channel::<serde_json::Value>(1);
+
+    // Spawn the agent loop in a background task.
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        let registry = state_clone.tool_registry.clone();
+        let config = state_clone.config.agent.clone().unwrap_or_default();
+        let tools = crate::tool_registry::to_tool_definitions(&registry, &[
+            crate::tool_registry::ToolTier::Safe,
+            crate::tool_registry::ToolTier::Restricted,
+        ]);
+        let tiers = [crate::tool_registry::ToolTier::Safe, crate::tool_registry::ToolTier::Restricted];
+
+        // Route to first Ollama backend.
+        let decision = crate::router::RoutingDecision {
+            intent: "agent".to_string(),
+            model: request.model.unwrap_or_else(|| state_clone.config.routing.default_model.clone()),
+            backend_url: state_clone.backends.first().map(|b| b.url.clone()).unwrap_or_default(),
+            backend_name: "default".to_string(),
+            backend_type: BackendType::Ollama,
+        };
+
+        let completion_id = format!("agent-stream-{}", Uuid::new_v4());
+        let result = crate::agent::run_agent_loop_inner(
+            &state_clone,
+            &request.messages,
+            &tools,
+            &registry,
+            &tiers,
+            &decision,
+            &completion_id,
+            &config,
+            16384,
+            Some(step_tx),
+        )
+        .await;
+
+        match result {
+            Ok(resp) => {
+                let _ = result_tx.send(serde_json::to_value(resp).unwrap_or_default()).await;
+            }
+            Err(e) => {
+                let _ = result_tx.send(json!({"error": e.to_string()})).await;
+            }
+        }
+    });
+
+    // Merge step events and final result into a single SSE stream.
+    let step_stream = ReceiverStream::new(step_rx).map(|event| {
+        Ok(Event::default()
+            .event("step")
+            .json_data(event)
+            .unwrap_or_else(|_| Event::default().data("error")))
+    });
+
+    let result_stream = ReceiverStream::new(result_rx).map(|result| {
+        Ok(Event::default()
+            .event("result")
+            .json_data(result)
+            .unwrap_or_else(|_| Event::default().data("error")))
+    });
+
+    Sse::new(step_stream.chain(result_stream))
+}

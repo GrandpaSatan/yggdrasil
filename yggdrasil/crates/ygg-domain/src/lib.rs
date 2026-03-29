@@ -3,4 +3,5 @@ pub mod config;
 pub mod engram;
 pub mod mesh;
 pub mod sdr;
+pub mod tool_params;
 pub mod tools;
