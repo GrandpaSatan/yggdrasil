@@ -59,7 +59,6 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         session_store: SessionStore::new(SessionConfig::default()),
         cloud_pool: None,
         voice_api_url: None,
-        stt_url: None,
         omni_url: None,
         config,
         tool_registry: Arc::new(build_registry()),

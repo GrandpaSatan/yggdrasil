@@ -94,6 +94,7 @@
     "voice_api_url": "http://localhost:9098",
     "omni_url": "http://localhost:9098"
   },
+  "_voice_note": "Single LFM2.5-Audio-1.5B server handles STT+LLM+TTS on port 9098",
   "llm_router": {
     "enabled": true,
     "ollama_url": "http://${HUGIN_IP}:11434",

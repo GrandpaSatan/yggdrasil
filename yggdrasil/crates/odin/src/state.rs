@@ -225,14 +225,11 @@ pub struct AppState {
     pub session_store: SessionStore,
     /// Cloud provider pool for fallback routing when local backends are at capacity.
     pub cloud_pool: Option<CloudPool>,
-    /// ygg-voice HTTP API URL for STT/TTS proxying (e.g. "http://localhost:9095").
+    /// Voice server URL for TTS endpoint (e.g. "http://localhost:9098").
     /// `None` when voice streaming is disabled.
     pub voice_api_url: Option<String>,
-    /// Dedicated STT service URL (e.g. "http://localhost:9097" for Qwen3-ASR).
-    /// When `None`, STT calls go to `voice_api_url`.
-    pub stt_url: Option<String>,
-    /// MiniCPM-o omni server URL (e.g. "http://localhost:9098").
-    /// When set, voice uses this for STT + LLM reasoning in one call.
+    /// LFM-Audio server URL for full audio chat (e.g. "http://localhost:9098").
+    /// Handles STT + LLM + TTS in a single call.
     pub omni_url: Option<String>,
     /// Static tool registry for the agent loop.  Built once at startup.
     pub tool_registry: Arc<Vec<ToolSpec>>,

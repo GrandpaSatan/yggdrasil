@@ -104,22 +104,21 @@ fn default_cloud_rpm() -> u32 {
     60
 }
 
-/// Voice streaming configuration for WebSocket-based STT/TTS proxying.
+/// Voice streaming configuration for WebSocket-based voice interaction.
+///
+/// Uses a single LFM2.5-Audio server that handles STT + LLM + TTS in one model.
+/// `voice_api_url` points to the TTS-only endpoint on the same server.
+/// `omni_url` points to the full audio-in/audio-out chat endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceStreamConfig {
     /// Whether voice streaming is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Base URL for the TTS HTTP API (e.g. "http://localhost:9095").
+    /// Base URL for the voice server's TTS endpoint (e.g. "http://localhost:9098").
     #[serde(default = "default_voice_api_url")]
     pub voice_api_url: String,
-    /// Base URL for a dedicated STT service (e.g. "http://localhost:9097").
-    /// When absent, STT calls go to `voice_api_url` (ygg-voice serves both).
-    #[serde(default)]
-    pub stt_url: Option<String>,
-    /// Base URL for the MiniCPM-o omni server (e.g. "http://localhost:9098").
-    /// When set, voice pipeline uses this for STT + LLM reasoning instead of
-    /// the separate STT → Ollama agent loop chain. TTS still uses voice_api_url.
+    /// Base URL for the LFM-Audio server's chat endpoint (e.g. "http://localhost:9098").
+    /// Handles audio-in → text + audio-out in a single call.
     #[serde(default)]
     pub omni_url: Option<String>,
     /// Model to use for voice interactions. When set, voice requests bypass
@@ -133,7 +132,7 @@ pub struct VoiceStreamConfig {
 }
 
 fn default_voice_api_url() -> String {
-    "http://localhost:9095".to_string()
+    "http://localhost:9098".to_string()
 }
 
 /// Configuration for Odin's autonomous agent loop.

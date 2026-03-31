@@ -223,7 +223,6 @@ async fn main() -> anyhow::Result<()> {
     // ── Voice streaming ─────────────────────────────────────────────
     let voice_cfg = config.voice.as_ref().filter(|v| v.enabled);
     let voice_api_url = voice_cfg.map(|v| v.voice_api_url.clone());
-    let stt_url = voice_cfg.and_then(|v| v.stt_url.clone());
     let omni_url = voice_cfg.and_then(|v| v.omni_url.clone());
 
     if let Some(ref url) = voice_api_url {
@@ -231,11 +230,8 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::info!("voice streaming disabled (no voice config or not enabled)");
     }
-    if let Some(ref url) = stt_url {
-        tracing::info!(stt_url = %url, "dedicated STT endpoint configured");
-    }
     if let Some(ref url) = omni_url {
-        tracing::info!(omni_url = %url, "MiniCPM-o omni endpoint configured");
+        tracing::info!(omni_url = %url, "LFM-Audio voice endpoint configured");
     }
 
     // ── Hybrid SDR + LLM router (Sprint 052) ──────────────────────
@@ -317,7 +313,6 @@ async fn main() -> anyhow::Result<()> {
         session_store: session_store.clone(),
         cloud_pool,
         voice_api_url,
-        stt_url,
         omni_url,
         web_search_config: config.web_search.clone(),
         config,

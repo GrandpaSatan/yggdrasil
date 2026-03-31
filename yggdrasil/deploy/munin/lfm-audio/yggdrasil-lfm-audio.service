@@ -1,0 +1,19 @@
+[Unit]
+Description=Yggdrasil LFM2.5-Audio Voice Server (ROCm eGPU)
+After=network.target
+Before=yggdrasil-odin.service
+
+[Service]
+Type=simple
+User=jhernandez
+WorkingDirectory=/opt/yggdrasil/deploy/munin/lfm-audio
+ExecStart=/opt/yggdrasil/deploy/munin/lfm-audio/.venv/bin/python3 server.py --device cuda --port 9098
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=600
+Environment=PYTHONUNBUFFERED=1
+Environment=ROCR_VISIBLE_DEVICES=0
+Environment=TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+
+[Install]
+WantedBy=multi-user.target
