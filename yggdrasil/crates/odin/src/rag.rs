@@ -102,24 +102,33 @@ pub async fn fetch_context(state: &AppState, query: &str, intent: &str) -> RagCo
     let (code_result, memory_result) = tokio::join!(
         async {
             if fetch_muninn {
-                fetch_code_context(
+                let start = std::time::Instant::now();
+                let result = fetch_code_context(
                     &state.http_client,
                     &state.muninn_url,
                     query,
                     state.config.muninn.max_context_chunks,
                 )
-                .await
+                .await;
+                crate::metrics::record_rag_fetch_latency("muninn", start.elapsed().as_secs_f64());
+                result
             } else {
                 tracing::debug!(intent = intent, "skipping muninn code context for non-coding intent");
                 None
             }
         },
-        fetch_memory_events(
-            &state.http_client,
-            &state.mimir_url,
-            query,
-            state.config.mimir.query_limit,
-        ),
+        async {
+            let start = std::time::Instant::now();
+            let result = fetch_memory_events(
+                &state.http_client,
+                &state.mimir_url,
+                query,
+                state.config.mimir.query_limit,
+            )
+            .await;
+            crate::metrics::record_rag_fetch_latency("mimir", start.elapsed().as_secs_f64());
+            result
+        },
     );
 
     // For HA intents, inject a domain summary from the HA instance.

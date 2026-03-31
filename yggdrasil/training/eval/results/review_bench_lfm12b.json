@@ -1,0 +1,79 @@
+{
+  "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M": [
+    {
+      "task_id": "missing_error_variant",
+      "task_name": "Missing Error Variant",
+      "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "LGTM|NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 4329,
+      "tok_per_sec": 21.0,
+      "response": "{\n  \"issues\": [\n    {\n      \"severity\": \"high\",\n      \"description\": \"Unhandled case when pg_ok is false, leading to panic\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"Hardcoded SQL query in async context may not be intended\"\n    }\n  ],\n  \"verdict\": \"LGTM|NEEDS_FIXES\"\n}",
+      "error": ""
+    },
+    {
+      "task_id": "hardcoded_ip",
+      "task_name": "Hardcoded IP Address",
+      "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "LGTM|NEEDS_FIXES",
+      "issues_found": 1,
+      "latency_ms": 2998,
+      "tok_per_sec": 18.3,
+      "response": "{\n  \"issues\": [\n    {\"severity\": \"high\", \"description\": \"Default implementation returns a fixed set of nodes instead of allowing dynamic configuration.\"}\n  ],\n  \"verdict\": \"LGTM|NEEDS_FIXES\"\n}",
+      "error": ""
+    },
+    {
+      "task_id": "naming_convention",
+      "task_name": "Naming Convention Violation",
+      "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "LGTM|NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 6576,
+      "tok_per_sec": 11.7,
+      "response": "{\n  \"issues\": [\n    {\"severity\": \"high\", \"description\": \"Function name 'getActiveSessionCount' should use snake_case.\"},\n    {\"severity\": \"low\", \"description\": \"Missing import for tracing in the module.\"}\n  ],\n  \"verdict\": \"LGTM|NEEDS_FIXES\"\n}",
+      "error": ""
+    },
+    {
+      "task_id": "handler_pattern_violation",
+      "task_name": "Handler Pattern Violation",
+      "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "LGTM|NEEDS_FIXES",
+      "issues_found": 1,
+      "latency_ms": 4402,
+      "tok_per_sec": 12.0,
+      "response": "{\n  \"issues\": [\n    {\"severity\": \"high\", \"description\": \"Direct Ollama call violates the proxy boundary rule\"}\n  ],\n  \"verdict\": \"LGTM|NEEDS_FIXES\"\n}",
+      "error": ""
+    },
+    {
+      "task_id": "correct_code",
+      "task_name": "Correct Code (False Positive Test)",
+      "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "has_issue": false,
+      "detected_issue": true,
+      "correct": false,
+      "valid_json": true,
+      "verdict": "LGTM|NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 6246,
+      "tok_per_sec": 12.0,
+      "response": "{\"issues\": [{\"severity\": \"high\", \"description\": \"Hardcoded default port value in default_metrics_port\"}, {\"severity\": \"low\", \"description\": \"No validation on port range in default_duration_buckets\"}], \"verdict\": \"LGTM|NEEDS_FIXES\"}",
+      "error": ""
+    }
+  ]
+}

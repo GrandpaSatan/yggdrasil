@@ -1,0 +1,79 @@
+{
+  "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M": [
+    {
+      "task_id": "missing_error_variant",
+      "task_name": "Missing Error Variant",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 2536,
+      "tok_per_sec": 58.0,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"high\",\n      \"description\": \"The code uses `.unwrap()` on `qdrant_client.collection_info(...)` which can panic if the call fails. This is a potential runtime crash if the client is unavailable or returns an error.\"\n    },\n    {\n      \"severity\": \"medium\",\n      \"description\": \"Hardcoded string comparison `.status == CollectionStatus::Green` is brittle. If the enum variant name changes, this breaks. Consider using a match or a more robust check.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "hardcoded_ip",
+      "task_name": "Hardcoded IP Address",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 1952,
+      "tok_per_sec": 52.2,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"medium\",\n      \"description\": \"Hardcoded node IPs and ports may lead to configuration rigidity. Consider externalizing these values.\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"Default values are hardcoded; this could be improved by allowing configuration overrides.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "naming_convention",
+      "task_name": "Naming Convention Violation",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": false,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 2244,
+      "tok_per_sec": 54.8,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"medium\",\n      \"description\": \"The field 'max_sessions' is not documented. Consider adding documentation comments to clarify its purpose and usage.\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"The method 'getActiveSessionCount' uses 'is_active()' without checking if the method exists or is implemented correctly. Ensure this method is properly defined in the Session struct.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "handler_pattern_violation",
+      "task_name": "Handler Pattern Violation",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 2045,
+      "tok_per_sec": 58.2,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"high\",\n      \"description\": \"The code directly calls Ollama without using the proxy, violating the boundary rule that only `proxy` communicates with Ollama.\"\n    },\n    {\n      \"severity\": \"medium\",\n      \"description\": \"Hardcoded endpoint URL ('http://localhost:11434/api/chat') should be configurable via environment variables or config.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "correct_code",
+      "task_name": "Correct Code (False Positive Test)",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "has_issue": false,
+      "detected_issue": true,
+      "correct": false,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 1,
+      "latency_ms": 1658,
+      "tok_per_sec": 60.3,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"medium\",\n      \"description\": \"The struct uses `#[serde(default)]` but relies on external functions (`default_metrics_port` and `default_duration_buckets`) that are not constants. This can lead to runtime errors if defaults are not properly defined or imported.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    }
+  ]
+}

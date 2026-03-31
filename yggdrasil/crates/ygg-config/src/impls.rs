@@ -187,6 +187,7 @@ mod tests {
             agent: None,
             task_worker: None,
             web_search: None,
+            llm_router: None,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
             url: "not-a-url".to_string(),
             token: "valid-token".to_string(),
             timeout_secs: 10,
+            automation_model: None,
         };
         let errors = ha.validate();
         assert!(errors.iter().any(|e| e.field.contains("url")));

@@ -36,6 +36,11 @@ pub struct OdinConfig {
     /// When present, enables the `web_search` tool in the agent loop.
     #[serde(default)]
     pub web_search: Option<WebSearchConfig>,
+    /// Hybrid SDR + LLM router configuration (Sprint 052).
+    /// When present and enabled, Odin uses a Liquid AI LFM model on Hugin for
+    /// intelligent intent classification, with SDR prototypes as a fast prior.
+    #[serde(default)]
+    pub llm_router: Option<LlmRouterConfig>,
 }
 
 /// Configuration for Odin's autonomous background task worker.
@@ -56,14 +61,15 @@ pub struct TaskWorkerConfig {
     /// Optional project scope filter for task pop.
     #[serde(default)]
     pub project: Option<String>,
-    /// Model to use for task interpretation (default "qwen3.5:4b").
+    /// Model to use for task interpretation.
+    /// Default: LFM2-24B-A2B (updated Sprint 054 — qwen3.5:4b was removed in Sprint 053).
     #[serde(default = "default_tw_model")]
     pub model: String,
 }
 
 fn default_tw_poll_interval() -> u64 { 30 }
 fn default_tw_agent_name() -> String { "fergus".to_string() }
-fn default_tw_model() -> String { "qwen3.5:4b".to_string() }
+fn default_tw_model() -> String { "hf.co/LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M".to_string() }
 
 /// Cloud provider configuration for fallback routing through ygg-cloud.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +560,10 @@ pub struct HaConfig {
     /// HTTP timeout for HA REST API calls in seconds (default: 10).
     #[serde(default = "default_ha_timeout")]
     pub timeout_secs: u64,
+    /// Model to use for HA automation YAML generation (Sprint 054).
+    /// When absent, falls back to the coding-intent model via Odin routing.
+    #[serde(default)]
+    pub automation_model: Option<String>,
 }
 
 fn default_ha_timeout() -> u64 {
@@ -572,6 +582,64 @@ pub struct WebSearchConfig {
 
 fn default_web_search_max_results() -> usize {
     5
+}
+
+/// Hybrid SDR + LLM router configuration (Sprint 052).
+///
+/// Combines a fast SDR-based "System 1" classifier with an LLM-based "System 2"
+/// confirmation step. The SDR prototype scan runs in ~4μs (Hamming distance);
+/// the LLM classification runs in <500ms on a lightweight Liquid AI model.
+///
+/// When both agree, confidence is high. When they disagree, the LLM wins and
+/// the disagreement is logged as training data for nightly self-tuning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRouterConfig {
+    /// Whether the hybrid router is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Ollama base URL for the router model (e.g. "http://localhost:11434").
+    pub ollama_url: String,
+    /// Model name in Ollama (e.g. "LFM2.5-1.2B-Instruct").
+    pub model: String,
+    /// Timeout in milliseconds for the LLM classification call (default: 500).
+    #[serde(default = "default_llm_router_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Minimum LLM confidence score (0.0–1.0) to accept the classification.
+    /// Below this threshold, falls back to keyword router (default: 0.6).
+    #[serde(default = "default_llm_router_min_confidence")]
+    pub min_confidence: f64,
+    /// Hamming similarity threshold for SDR prototype matching (default: 0.70).
+    /// Lower than skill_cache's 0.85 because intent classification is broader.
+    #[serde(default = "default_llm_router_sdr_threshold")]
+    pub sdr_threshold: f64,
+    /// Maximum concurrent LLM classification requests to Hugin (default: 4).
+    #[serde(default = "default_llm_router_max_concurrent")]
+    pub max_concurrent: usize,
+    /// Number of queue worker tasks consuming classification requests (default: 2).
+    #[serde(default = "default_llm_router_workers")]
+    pub workers: usize,
+    /// Maximum queued requests per priority before back-pressure (default: 16).
+    #[serde(default = "default_llm_router_queue_size")]
+    pub queue_size: usize,
+    /// Path to persist SDR intent prototypes (default: "/var/lib/yggdrasil/odin-sdr-prototypes.json").
+    #[serde(default = "default_llm_router_prototypes_path")]
+    pub prototypes_path: String,
+    /// Path for the JSONL request log (default: "/var/lib/yggdrasil/odin-request-log.jsonl").
+    #[serde(default = "default_llm_router_request_log_path")]
+    pub request_log_path: String,
+}
+
+fn default_llm_router_timeout_ms() -> u64 { 500 }
+fn default_llm_router_min_confidence() -> f64 { 0.6 }
+fn default_llm_router_sdr_threshold() -> f64 { 0.70 }
+fn default_llm_router_max_concurrent() -> usize { 4 }
+fn default_llm_router_workers() -> usize { 2 }
+fn default_llm_router_queue_size() -> usize { 16 }
+fn default_llm_router_prototypes_path() -> String {
+    "/var/lib/yggdrasil/odin-sdr-prototypes.json".to_string()
+}
+fn default_llm_router_request_log_path() -> String {
+    "/var/lib/yggdrasil/odin-request-log.jsonl".to_string()
 }
 
 /// MCP server configuration.

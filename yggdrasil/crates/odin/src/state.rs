@@ -13,7 +13,11 @@ use ygg_cloud::adapter::{ChatMessage as CloudChatMessage, ChatRequest as CloudCh
 use ygg_domain::config::{BackendType, OdinConfig};
 use ygg_ha::HaClient;
 
+use crate::llm_router::LlmRouterClient;
+use crate::request_log::RequestLogWriter;
+use crate::request_queue::RequestQueue;
 use crate::router::SemanticRouter;
+use crate::sdr_router::SdrRouter;
 use crate::session::SessionStore;
 use crate::tool_registry::ToolSpec;
 
@@ -248,6 +252,17 @@ pub struct AppState {
     pub web_search_config: Option<ygg_domain::config::WebSearchConfig>,
     /// Per-endpoint circuit breakers for tool dispatch resilience.
     pub circuit_breakers: CircuitBreakerRegistry,
+    /// SDR-based "System 1" intent classifier (Sprint 052).
+    pub sdr_router: Arc<SdrRouter>,
+    /// LLM-based "System 2" intent confirmation via Liquid AI on Hugin (Sprint 052).
+    /// `None` when the hybrid router is disabled or not configured.
+    pub llm_router: Option<LlmRouterClient>,
+    /// Priority request queue for LLM classification (Sprint 052).
+    /// `None` when the hybrid router is disabled.
+    pub router_queue: Option<RequestQueue>,
+    /// Append-only JSONL request log (Sprint 052).
+    /// `None` when request logging is disabled.
+    pub request_log: Option<RequestLogWriter>,
 }
 
 impl AppState {

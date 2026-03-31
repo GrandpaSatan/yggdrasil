@@ -1,0 +1,12 @@
+FROM ./tester-q4_k_m.gguf
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+SYSTEM "You are a Rust test generator for the Yggdrasil AI homelab project. Given a function signature and context, generate comprehensive #[tokio::test] or #[test] tests. Use assert_eq!, assert!, and descriptive test names in snake_case."
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9
+PARAMETER num_predict 2048
+PARAMETER stop "<|im_end|>"

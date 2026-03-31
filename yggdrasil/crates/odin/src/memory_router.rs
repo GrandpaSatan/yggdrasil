@@ -121,6 +121,8 @@ mod tests {
     fn make_decision(intent: &str) -> RoutingDecision {
         RoutingDecision {
             intent: intent.to_string(),
+            confidence: None,
+            router_method: crate::router::RouterMethod::Keyword,
             model: "test-model".to_string(),
             backend_url: "http://localhost".to_string(),
             backend_name: "test".to_string(),

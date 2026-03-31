@@ -1,0 +1,124 @@
+{
+  "qwen3-coder:30b-a3b-q4_K_M": [
+    {
+      "task_id": "axum_handler",
+      "task_name": "Axum Handler",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_state_extractor": true,
+        "has_json_return": true,
+        "has_instrument": true,
+        "has_serialize_derive": true,
+        "has_elapsed": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 135,
+      "latency_ms": 12006,
+      "tok_per_sec": 11.2,
+      "response": "```rust\nuse axum::{extract::State, http::StatusCode, Json};\nuse serde::Serialize;\nuse crate::state::AppState;\nuse tracing::instrument;\n\n#[derive(Serialize)]\npub struct UptimeResponse {\n    uptime_secs: u64,\n    node_name: String,\n}\n\n#[instrument(skip(state))]\npub async fn get_system_uptime(State(state): State<AppState>) -> Result<Json<UptimeResponse>, StatusCode> {\n    let uptime_secs = state.start_time.elapsed().as_secs();\n    let node_name = state.config.node_name.clone();\n    \n    Ok(Json(UptimeResponse {\n        uptime_secs,\n        node_name,\n    }))\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "config_struct",
+      "task_name": "Config Struct",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_derive": true,
+        "has_serde_default": true,
+        "has_option_type": true,
+        "has_vec_type": true,
+        "has_default_fns": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 129,
+      "latency_ms": 6005,
+      "tok_per_sec": 21.5,
+      "response": "```rust\nuse serde::{Deserialize, Serialize};\n\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct NotificationConfig {\n    #[serde(default)]\n    pub enabled: bool,\n    #[serde(default)]\n    pub webhook_url: Option<String>,\n    #[serde(default = \"default_retry_count\")]\n    pub retry_count: u32,\n    #[serde(default = \"default_timeout_secs\")]\n    pub timeout_secs: u64,\n    #[serde(default)]\n    pub channels: Vec<String>,\n}\n\nfn default_retry_count() -> u32 { 3 }\nfn default_timeout_secs() -> u64 { 10 }\n```",
+      "error": ""
+    },
+    {
+      "task_id": "test_generation",
+      "task_name": "Test Generation",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_cfg_test": true,
+        "has_mod_tests": true,
+        "has_test_attr": true,
+        "has_assert": true,
+        "min_test_count": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 206,
+      "latency_ms": 8855,
+      "tok_per_sec": 23.3,
+      "response": "```rust\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn test_basic_substitution() {\n        let input = \"Hello ${USER}\";\n        let result = expand_env_vars(input);\n        assert_eq!(result, \"Hello ${USER}\");\n    }\n\n    #[test]\n    fn test_missing_variable_leaves_intact() {\n        let input = \"${NONEXISTENT_VAR}\";\n        let result = expand_env_vars(input);\n        assert_eq!(result, \"${NONEXISTENT_VAR}\");\n    }\n\n    #[test]\n    fn test_multiple_variables() {\n        let input = \"Path: ${HOME} and user: ${USER}\";\n        let result = expand_env_vars(input);\n        assert_eq!(result, \"Path: ${HOME} and user: ${USER}\");\n    }\n\n    #[test]\n    fn test_no_variables_passthrough() {\n        let input = \"Hello World\";\n        let result = expand_env_vars(input);\n        assert_eq!(result, \"Hello World\");\n    }\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "error_variant",
+      "task_name": "Error Variant",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_config_error": true,
+        "has_rate_limited": true,
+        "has_from_impl": true,
+        "has_thiserror": true,
+        "has_retry_after": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 165,
+      "latency_ms": 7715,
+      "tok_per_sec": 21.4,
+      "response": "```rust\nuse thiserror::Error;\nuse ygg_config::ConfigError;\n\n#[derive(Debug, Error)]\npub enum OdinError {\n    #[error(\"backend unavailable: {0}\")]\n    BackendUnavailable(String),\n    #[error(\"request timeout after {0}s\")]\n    Timeout(u64),\n    #[error(\"model not found: {0}\")]\n    ModelNotFound(String),\n    #[error(\"configuration error: {0}\")]\n    ConfigError(#[from] ConfigError),\n    #[error(\"rate limited, retry after {retry_after_secs} seconds\")]\n    RateLimited { retry_after_secs: u64 },\n}\n\nimpl From<reqwest::Error> for OdinError {\n    fn from(error: reqwest::Error) -> Self {\n        OdinError::BackendUnavailable(error.to_string())\n    }\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "tool_registration",
+      "task_name": "Tool Registration",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_tool_spec": true,
+        "has_safe_tier": true,
+        "has_schema": false,
+        "has_properties": true,
+        "has_keywords": true
+      },
+      "syntax_valid": true,
+      "check_score": 0.8,
+      "total_score": 0.92,
+      "tokens_generated": 480,
+      "latency_ms": 19116,
+      "tok_per_sec": 25.1,
+      "response": "```rust\nuse serde_json::json;\n\npub const DEPLOY_STATUS_TOOL_SPEC: ToolSpec = ToolSpec {\n    name: \"deploy_status_tool\",\n    description: \"Checks deployment status across nodes\",\n    tier: ToolTier::Safe,\n    endpoint: ToolEndpoint::OdinSelf,\n    schema: serde_json::Value::Object(serde_json::Map::from_iter(vec![\n        (\n            \"type\".to_string(),\n            serde_json::Value::String(\"object\".to_string()),\n        ),\n        (\n            \"properties\".to_string(),\n            serde_json::Value::Object(serde_json::Map::from_iter(vec![\n                (\n                    \"node_name\".to_string(),\n                    serde_json::Value::Object(serde_json::Map::from_iter(vec![\n                        (\n                            \"type\".to_string(),\n                            serde_json::Value::String(\"string\".to_string()),\n                        ),\n                        (\n                            \"description\".to_string(),\n                            serde_json::Value::String(\"Name of the node to check\".to_string()),\n                        ),\n                    ])),\n                ),\n                (\n                    \"service_name\".to_string(),\n                    serde_json::Value::Object(serde_json::Map::from_iter(vec![\n                        (\n                            \"type\".to_string(),\n                            serde_json::Value::String(\"string\".to_string()),\n                        ),\n                        (\n                            \"description\".to_string(),\n                            serde_json::Value::String(\"Name of the service to check (optional)\".to_string()),\n                        ),\n                    ])),\n                ),\n            ])),\n        ),\n        (\n            \"required\".to_string(),\n            serde_json::Value::Array(vec![serde_json::Value::String(\"node_name\".to_string())]),\n        ),\n    ])),\n    keywords: &[\"deploy\", \"status\", \"service\", \"version\", \"node\"],\n};\n\npub struct ToolSpec {\n    pub name: &'st",
+      "error": ""
+    },
+    {
+      "task_id": "yaml_extraction",
+      "task_name": "Structured Output Parser",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "passed_checks": {
+        "has_fn_signature": true,
+        "has_regex_or_find": true,
+        "has_none_return": true,
+        "has_some_return": true,
+        "has_trim": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 346,
+      "latency_ms": 13767,
+      "tok_per_sec": 25.1,
+      "response": "```rust\npub fn extract_yaml(response: &str) -> Option<String> {\n    // Try to find YAML in code fence first\n    let fence_pattern = \"```yaml\";\n    if let Some(start) = response.find(fence_pattern) {\n        let start_pos = start + fence_pattern.len();\n        if let Some(end) = response[start_pos..].find(\"```\") {\n            let yaml_content = &response[start_pos..start_pos + end];\n            return Some(yaml_content.trim().to_string());\n        }\n    }\n\n    // If no fence found, look for YAML starting with a key\n    let lines: Vec<&str> = response.lines().collect();\n    let mut yaml_lines = Vec::new();\n    let mut in_yaml = false;\n    \n    for line in lines {\n        if line.trim().is_empty() {\n            continue;\n        }\n        \n        if line.trim().chars().next().map_or(false, |c| c.is_alphabetic()) {\n            // Found a line that starts with a letter, check if it's a YAML key\n            if let Some(colon_pos) = line.find(':') {\n                if colon_pos > 0 {\n                    in_yaml = true;\n                    yaml_lines.push(line);\n                }\n            } else {\n                // No colon, not a YAML key\n                if in_yaml {\n                    break;\n                }\n            }\n        } else if in_yaml {\n            // Continue collecting lines until we hit a non-YAML line\n            yaml_lines.push(line);\n        }\n    }\n    \n    if !yaml_lines.is_empty() {\n        return Some(yaml_lines.join(\"\\n\").trim().to_string());\n    }\n\n    None\n}\n```",
+      "error": ""
+    }
+  ]
+}

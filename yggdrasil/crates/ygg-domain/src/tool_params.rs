@@ -268,6 +268,21 @@ pub struct DelegateParams {
     /// Tool allowlist for agentic mode.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Enable post-generation code review pass (Sprint 054 multi-agent pipeline).
+    /// When true, generated code is sent to the review specialist model for
+    /// convention checking before being returned.
+    #[serde(default)]
+    pub review: Option<bool>,
+    /// Enable post-generation test generation (Sprint 054 multi-agent pipeline).
+    /// When true, a test specialist model generates tests for the output code.
+    #[serde(default)]
+    pub generate_tests: Option<bool>,
+    /// Override model for the review pass. Uses Odin routing default if absent.
+    #[serde(default)]
+    pub review_model: Option<String>,
+    /// Override model for test generation. Uses Odin routing default if absent.
+    #[serde(default)]
+    pub test_model: Option<String>,
 }
 
 /// Parameters for the `diff_review` tool.

@@ -1,8 +1,8 @@
 /// Autonomous background task worker.
 ///
 /// Polls Mimir's task queue at a fixed interval, claims pending tasks via
-/// atomic `pop`, interprets them through the agent loop (qwen3.5:4b + tool
-/// definitions), and reports results back via `complete`.
+/// atomic `pop`, interprets them through the agent loop (model from config +
+/// tool definitions), and reports results back via `complete`.
 ///
 /// Follows the `mimir::summarization::SummarizationService` background
 /// daemon pattern: `tokio::select!` on interval + shutdown channel.
@@ -127,6 +127,8 @@ impl TaskWorker {
                 let b = self.state.backends.first();
                 RoutingDecision {
                     intent: "task_worker".to_string(),
+                    confidence: None,
+                    router_method: crate::router::RouterMethod::Explicit,
                     model: self.config.model.clone(),
                     backend_url: b.map(|b| b.url.clone()).unwrap_or_default(),
                     backend_name: b.map(|b| b.name.clone()).unwrap_or_default(),

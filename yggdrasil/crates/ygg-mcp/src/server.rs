@@ -601,13 +601,13 @@ impl YggdrasilServer {
     ///
     /// Fetches current entity states and available services from HA, builds a
     /// structured context prompt, and sends it to Odin's reasoning model
-    /// (qwen3:30b-a3b on Hugin).  Returns the generated YAML in a code fence.
+    /// (configurable model via ha.automation_model).  Returns the generated YAML in a code fence.
     /// This call is slow (10-60s depending on LLM inference speed).
     /// Returns an error if HA is not configured.
     #[tool(description = "Generate Home Assistant automation YAML from a \
         natural-language description. \
         Example: 'Turn on living room lights at sunset'. \
-        Uses the qwen3:30b-a3b reasoning model — expect 10-60s response time. \
+        Uses a reasoning model routed through Odin — expect 10-60s response time. \
         Always review the generated YAML before adding it to Home Assistant. \
         Requires HA to be configured in the MCP server config.")]
     async fn ha_generate_automation_tool(
@@ -782,11 +782,12 @@ impl YggdrasilServer {
             .unwrap_or_else(|_| Client::new());
 
         let (ha_client, generator) = if let Some(ref ha_cfg) = config.ha {
-            // Automation model: use qwen3:30b-a3b routed through Odin so that Odin's
-            // backend semaphores and engram storage apply.
-            let automation_gen = AutomationGenerator::new(&config.odin_url, "qwen3:30b-a3b");
+            // Automation model: configurable via ha.automation_model, routed through
+            // Odin so that backend semaphores and engram storage apply.
+            let model = ha_cfg.automation_model.as_deref().unwrap_or("qwen3-coder:30b-a3b-q4_K_M");
+            let automation_gen = AutomationGenerator::new(&config.odin_url, model);
             let ha = HaClient::from_config(ha_cfg);
-            tracing::info!(ha_url = %ha_cfg.url, "HA integration enabled");
+            tracing::info!(ha_url = %ha_cfg.url, model = model, "HA integration enabled");
             (Some(ha), Some(automation_gen))
         } else {
             tracing::info!("HA integration disabled (no ha config)");

@@ -1,0 +1,152 @@
+[
+  {
+    "task_type": "CLASSIFY",
+    "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+    "total": 8,
+    "valid_json": 8,
+    "correct": 0,
+    "accuracy": 0.0,
+    "json_rate": 1.0,
+    "latency_avg_ms": 4184.560521749518,
+    "details": [
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: odin/src/handlers.rs\ncontent: Fixed session timeout bu",
+        "expected_cat": "bug_fix",
+        "got_cat": null,
+        "expected_store": true,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: ygg-domain/src/config.rs\ncontent: Added BackendConfig ",
+        "expected_cat": "architecture_decision",
+        "got_cat": null,
+        "expected_store": true,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: sprints/sprint-054.md\ncontent: Sprint 054 started \u2014 LL",
+        "expected_cat": "sprint_lifecycle",
+        "got_cat": null,
+        "expected_store": true,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: src/main.rs\ncontent: Added missing semicolon",
+        "expected_cat": "bug_fix",
+        "got_cat": null,
+        "expected_store": false,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Bash\ncommand: cargo check\ncontent: Compiling yggdrasil v1.0.0\n   ",
+        "expected_cat": "routine",
+        "got_cat": null,
+        "expected_store": false,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: deploy/munin/odin.service\ncontent: Changed OLLAMA_MAX_",
+        "expected_cat": "deployment_change",
+        "got_cat": null,
+        "expected_store": true,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Read\nfile: README.md\ncontent: # Yggdrasil\\nAI homelab orchestrato",
+        "expected_cat": "routine",
+        "got_cat": null,
+        "expected_store": false,
+        "got_store": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ntool: Edit\nfile: odin/src/proxy.rs\ncontent: GOTCHA: Ollama returns newl",
+        "expected_cat": "gotcha",
+        "got_cat": null,
+        "expected_store": true,
+        "got_store": null,
+        "correct": false
+      }
+    ]
+  },
+  {
+    "task_type": "DISTILL",
+    "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+    "total": 2,
+    "valid_json": 2,
+    "correct": 0,
+    "accuracy": 0.0,
+    "json_rate": 1.0,
+    "latency_avg_ms": 3318.799934510025,
+    "details": [
+      {
+        "input": "DISTILL\ncontent: Sprint 053 found that Munin's Ollama uses AMD RX 9060 XT eGPU v",
+        "has_fields": false,
+        "has_expected_tags": false,
+        "got_tags": [],
+        "correct": false
+      },
+      {
+        "input": "DISTILL\ncontent: Discovered that HA automation generator hardcodes qwen3:30b-a3b",
+        "has_fields": false,
+        "has_expected_tags": false,
+        "got_tags": [],
+        "correct": false
+      }
+    ]
+  },
+  {
+    "task_type": "STORE_SKIP",
+    "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+    "total": 6,
+    "valid_json": 6,
+    "correct": 0,
+    "accuracy": 0.0,
+    "json_rate": 1.0,
+    "latency_avg_ms": 1487.5530843322242,
+    "details": [
+      {
+        "input": "CLASSIFY\ncontent: Migrated all nodes from VLAN 25 to VLAN 65 \u2014 new IP range 10.0",
+        "expected": true,
+        "got": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ncontent: qwen3.5:4b removed from fleet \u2014 empty response bug when thinki",
+        "expected": true,
+        "got": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ncontent: Updated import order in handlers.rs",
+        "expected": false,
+        "got": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ncontent: cargo fmt -- all files",
+        "expected": false,
+        "got": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ncontent: git status\nM odin/src/main.rs",
+        "expected": false,
+        "got": null,
+        "correct": false
+      },
+      {
+        "input": "CLASSIFY\ncontent: ls -la /opt/yggdrasil/bin/",
+        "expected": false,
+        "got": null,
+        "correct": false
+      }
+    ]
+  }
+]

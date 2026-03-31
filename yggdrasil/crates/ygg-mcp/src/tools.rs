@@ -2370,7 +2370,7 @@ pub async fn delegate(
         let filtered: Vec<ToolDef> = all_safe_tools
             .into_iter()
             .filter(|(name, _, _)| {
-                params.allowed_tools.as_ref().map_or(true, |list| list.iter().any(|t| t == name))
+                params.allowed_tools.as_ref().is_none_or(|list| list.iter().any(|t| t == name))
             })
             .map(|(name, desc, schema)| ToolDef {
                 tool_type: "function".to_string(),
@@ -2441,12 +2441,48 @@ pub async fn delegate(
         .and_then(|m| m.content)
         .unwrap_or_else(|| "(empty response)".to_string());
 
+    // ── Sprint 054: Multi-agent review + test pipeline (optional) ──
+    let mut review_notes: Option<String> = None;
+    let mut test_code: Option<String> = None;
+
+    let review_enabled = params.review.unwrap_or(false);
+    let test_enabled = params.generate_tests.unwrap_or(false);
+    let odin_url = config.odin_url.trim_end_matches('/').to_string();
+
+    if review_enabled && !text.is_empty() {
+        tracing::info!("delegate: running review pass on generated code");
+        let review_model = params.review_model.as_deref();
+        match delegate_review_pass(client, &odin_url, &text, review_model).await {
+            Ok(notes) => {
+                tracing::info!(notes_len = notes.len(), "review pass complete");
+                review_notes = Some(notes);
+            }
+            Err(e) => {
+                tracing::warn!("review pass failed (non-fatal): {}", e);
+            }
+        }
+    }
+
+    if test_enabled && !text.is_empty() {
+        tracing::info!("delegate: running test generation on generated code");
+        let test_model = params.test_model.as_deref();
+        match delegate_test_pass(client, &odin_url, &text, test_model).await {
+            Ok(tests) => {
+                tracing::info!(tests_len = tests.len(), "test generation complete");
+                test_code = Some(tests);
+            }
+            Err(e) => {
+                tracing::warn!("test generation failed (non-fatal): {}", e);
+            }
+        }
+    }
+
     // Phase 4: Format output
     let model_used = params.model.as_deref().unwrap_or("(default routing)");
 
     if params.structured_output.unwrap_or(false) {
         let files = parse_file_blocks(&text);
-        let file_entries: Vec<serde_json::Value> = files
+        let mut file_entries: Vec<serde_json::Value> = files
             .iter()
             .map(|(path, content)| {
                 serde_json::json!({
@@ -2456,17 +2492,141 @@ pub async fn delegate(
             })
             .collect();
 
-        let result = serde_json::json!({
+        // Append test file if generated
+        if let Some(ref tests) = test_code {
+            file_entries.push(serde_json::json!({
+                "path": "tests/generated_tests.rs",
+                "content": tests,
+            }));
+        }
+
+        let mut result = serde_json::json!({
             "files": file_entries,
             "summary": format!("Generated {} file(s)", file_entries.len()),
             "model_used": model_used,
             "agent_type": agent_type,
         });
 
+        if let Some(ref notes) = review_notes {
+            result["review_notes"] = serde_json::Value::String(notes.clone());
+        }
+
         tool_ok(serde_json::to_string_pretty(&result).unwrap_or_default())
     } else {
-        tool_ok(text)
+        let mut output = text;
+        if let Some(notes) = review_notes {
+            output.push_str("\n\n--- Review Notes ---\n");
+            output.push_str(&notes);
+        }
+        if let Some(tests) = test_code {
+            output.push_str("\n\n--- Generated Tests ---\n");
+            output.push_str(&tests);
+        }
+        tool_ok(output)
     }
+}
+
+/// Send generated code to a review specialist model for convention checking.
+async fn delegate_review_pass(
+    client: &Client,
+    odin_url: &str,
+    code: &str,
+    model: Option<&str>,
+) -> Result<String, String> {
+    let truncated = if code.len() > 6000 { &code[..6000] } else { code };
+    let prompt = format!(
+        "Review this Yggdrasil Rust code for bugs, convention violations, security issues, \
+         and hardcoded values. Respond with a brief list of issues found, or 'LGTM' if clean.\n\n{}",
+        truncated
+    );
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a Rust code reviewer for the Yggdrasil project. Be concise."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": false,
+        "max_tokens": 512,
+    });
+
+    let resp = client
+        .post(format!("{}/v1/chat/completions", odin_url))
+        .json(&body)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|e| format!("review request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("review returned {}", resp.status()));
+    }
+
+    let api: ChatApiResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("review parse failed: {}", e))?;
+
+    Ok(api
+        .choices
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_else(|| "LGTM".to_string()))
+}
+
+/// Send generated code to a test specialist model for test scaffolding.
+async fn delegate_test_pass(
+    client: &Client,
+    odin_url: &str,
+    code: &str,
+    model: Option<&str>,
+) -> Result<String, String> {
+    let truncated = if code.len() > 6000 { &code[..6000] } else { code };
+    let prompt = format!(
+        "Generate Rust tests for this Yggdrasil code. Use #[tokio::test] for async functions, \
+         #[test] for sync. Use assert_eq! and descriptive snake_case test names. \
+         Output ONLY the test code.\n\n{}",
+        truncated
+    );
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a Rust test generator for Yggdrasil. Output only test code."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": false,
+        "max_tokens": 2048,
+    });
+
+    let resp = client
+        .post(format!("{}/v1/chat/completions", odin_url))
+        .json(&body)
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("test gen request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("test gen returned {}", resp.status()));
+    }
+
+    let api: ChatApiResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("test gen parse failed: {}", e))?;
+
+    Ok(api
+        .choices
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------

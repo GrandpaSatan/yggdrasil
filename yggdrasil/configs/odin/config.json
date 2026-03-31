@@ -3,10 +3,10 @@
   "listen_addr": "0.0.0.0:8080",
   "backends": [
     {
-      "name": "munin-cpu",
-      "url": "http://localhost:11435",
+      "name": "munin",
+      "url": "http://localhost:11434",
       "backend_type": "ollama",
-      "models": ["qwen3.5:4b"],
+      "models": ["hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M", "hf.co/LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M"],
       "max_concurrent": 2,
       "context_window": 16384
     },
@@ -17,11 +17,27 @@
       "models": ["qwen3-coder:30b-a3b-q4_K_M"],
       "max_concurrent": 2,
       "context_window": 32768
+    },
+    {
+      "name": "morrigan",
+      "url": "http://morrigan.local:8080",
+      "backend_type": "openai",
+      "models": ["Qwen3.5-27B-Q4_K_M.gguf"],
+      "max_concurrent": 2,
+      "context_window": 16384
+    },
+    {
+      "name": "munin-igpu",
+      "url": "http://localhost:11435",
+      "backend_type": "ollama",
+      "models": ["qwen3-coder:7b"],
+      "max_concurrent": 2,
+      "context_window": 32768
     }
   ],
   "routing": {
-    "default_model": "qwen3.5:4b",
-    "default_backend": "munin-cpu",
+    "default_model": "hf.co/LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M",
+    "default_backend": "munin",
     "rules": [
       {
         "intent": "coding",
@@ -29,9 +45,14 @@
         "backend": "hugin"
       },
       {
+        "intent": "reasoning",
+        "model": "Qwen3.5-27B-Q4_K_M.gguf",
+        "backend": "morrigan"
+      },
+      {
         "intent": "home_automation",
-        "model": "qwen3.5:4b",
-        "backend": "munin-cpu"
+        "model": "hf.co/LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M",
+        "backend": "munin"
       }
     ]
   },
@@ -61,7 +82,7 @@
     "enabled": true,
     "poll_interval_secs": 30,
     "agent_name": "fergus",
-    "model": "qwen3.5:4b"
+    "model": "hf.co/LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M"
   },
   "ha": {
     "url": "http://${CHIRP_IP}:8123",
@@ -72,6 +93,19 @@
     "enabled": true,
     "voice_api_url": "http://localhost:9098",
     "omni_url": "http://localhost:9098"
+  },
+  "llm_router": {
+    "enabled": true,
+    "ollama_url": "http://${HUGIN_IP}:11434",
+    "model": "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+    "timeout_ms": 500,
+    "min_confidence": 0.6,
+    "sdr_threshold": 0.70,
+    "max_concurrent": 4,
+    "workers": 2,
+    "queue_size": 16,
+    "prototypes_path": "/var/lib/yggdrasil/odin-sdr-prototypes.json",
+    "request_log_path": "/var/lib/yggdrasil/odin-request-log.jsonl"
   },
   "cloud": {
     "fallback_enabled": true,

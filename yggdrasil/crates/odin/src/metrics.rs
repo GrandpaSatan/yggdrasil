@@ -71,3 +71,86 @@ pub fn adjust_backend_active(backend: &str, delta: f64) {
     metrics::gauge!("ygg_backend_active_requests", "backend" => backend.to_string())
         .increment(delta);
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Hybrid router metrics (Sprint 052)
+// ─────────────────────────────────────────────────────────────────
+
+/// Record end-to-end request latency from handler entry to response sent.
+pub fn record_e2e_latency(intent: &str, duration_secs: f64) {
+    histogram!(
+        "ygg_e2e_request_duration_seconds",
+        "intent" => intent.to_string()
+    )
+    .record(duration_secs);
+}
+
+/// Record the SDR router's classification confidence.
+pub fn record_sdr_classification(intent: &str, confidence: f64) {
+    histogram!(
+        "ygg_sdr_classification_confidence",
+        "intent" => intent.to_string()
+    )
+    .record(confidence);
+}
+
+/// Record the LLM router's classification latency.
+pub fn record_llm_classification_latency(duration_secs: f64) {
+    histogram!("ygg_llm_classification_duration_seconds").record(duration_secs);
+}
+
+/// Record the final routing confidence (from either SDR or LLM).
+pub fn record_routing_confidence(intent: &str, method: &str, confidence: f64) {
+    histogram!(
+        "ygg_routing_confidence",
+        "intent" => intent.to_string(),
+        "method" => method.to_string()
+    )
+    .record(confidence);
+}
+
+/// Record whether the SDR and LLM routers agreed on intent.
+pub fn record_router_agreement(agreed: bool) {
+    counter!(
+        "ygg_router_agreement_total",
+        "agreed" => agreed.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a fallback to the keyword router with the reason.
+pub fn record_router_fallback(reason: &str) {
+    counter!(
+        "ygg_router_fallback_total",
+        "reason" => reason.to_string()
+    )
+    .increment(1);
+}
+
+/// Record token usage per model and direction.
+pub fn record_token_usage(model: &str, direction: &str, tokens: u64) {
+    counter!(
+        "ygg_token_usage_total",
+        "model" => model.to_string(),
+        "direction" => direction.to_string()
+    )
+    .increment(tokens);
+}
+
+/// Record RAG fetch latency per source (muninn, mimir, ha).
+pub fn record_rag_fetch_latency(source: &str, duration_secs: f64) {
+    histogram!(
+        "ygg_rag_fetch_duration_seconds",
+        "source" => source.to_string()
+    )
+    .record(duration_secs);
+}
+
+/// Record router queue depth per priority tier.
+pub fn record_queue_depth(priority: &str, depth: usize) {
+    metrics::gauge!(
+        "ygg_router_queue_depth",
+        "priority" => priority.to_string()
+    )
+    .set(depth as f64);
+}

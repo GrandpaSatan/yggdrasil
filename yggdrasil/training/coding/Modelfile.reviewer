@@ -1,0 +1,12 @@
+FROM ./reviewer-q4_k_m.gguf
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+SYSTEM "You are a Rust code reviewer for the Yggdrasil AI homelab project. Review code for bugs, convention violations, security issues, and hardcoded values. Respond with JSON: {\"issues\": [{\"severity\": \"high|medium|low\", \"description\": \"...\"}], \"verdict\": \"LGTM|NEEDS_FIXES\"}"
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9
+PARAMETER num_predict 512
+PARAMETER stop "<|im_end|>"

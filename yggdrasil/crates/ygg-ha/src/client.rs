@@ -182,6 +182,7 @@ mod tests {
             url: "http://127.0.0.1:8123".to_string(),
             token: "test-token".to_string(),
             timeout_secs: 5,
+            automation_model: None,
         };
         let client = HaClient::from_config(&config);
         assert_eq!(client.base_url, "http://127.0.0.1:8123");
@@ -196,6 +197,7 @@ mod tests {
             url: "http://127.0.0.1:1".to_string(),
             token: "test".to_string(),
             timeout_secs: 1,
+            automation_model: None,
         };
         let client = HaClient::from_config(&config);
         let result = client.get_states().await;

@@ -45,6 +45,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         agent: Some(AgentLoopConfig::default()),
         task_worker: None,
         web_search: None,
+        llm_router: None,
     };
 
     AppState {
@@ -69,12 +70,18 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         voice_alert_tx: tokio::sync::broadcast::channel::<String>(16).0,
         web_search_config: None,
         circuit_breakers: odin::state::CircuitBreakerRegistry::new(),
+        sdr_router: Arc::new(odin::sdr_router::SdrRouter::with_defaults()),
+        llm_router: None,
+        router_queue: None,
+        request_log: None,
     }
 }
 
 fn test_decision(ollama_url: &str) -> RoutingDecision {
     RoutingDecision {
         intent: "default".to_string(),
+        confidence: None,
+        router_method: odin::router::RouterMethod::Keyword,
         model: "test-model".to_string(),
         backend_url: ollama_url.to_string(),
         backend_name: "mock-ollama".to_string(),

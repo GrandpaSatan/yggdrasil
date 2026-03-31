@@ -1,0 +1,124 @@
+{
+  "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M": [
+    {
+      "task_id": "axum_handler",
+      "task_name": "Axum Handler",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_state_extractor": true,
+        "has_json_return": true,
+        "has_instrument": true,
+        "has_serialize_derive": true,
+        "has_elapsed": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 254,
+      "latency_ms": 6056,
+      "tok_per_sec": 41.9,
+      "response": "```rust\nuse axum::{\n    extract::State,\n    http::StatusCode,\n    response::IntoResponse,\n};\nuse serde::Serialize;\nuse std::time::{Duration, Instant};\nuse thiserror::Error;\nuse tokio::time::SystemTime;\n\n#[derive(Debug, Error)]\npub enum UptimeError {\n    #[error(\"Uptime computation failed\")]\n    ComputationFailed,\n}\n\n#[derive(Serialize)]\npub struct UptimeResponse {\n    uptime_secs: u64,\n    node_name: String,\n}\n\n#[tokio::test]\nasync fn test_uptime_handler() {\n    // test implementation\n}\n\n#[instrument(skip(state))]\nasync fn get_uptime(\n    state: State<AppState>,\n) -> Result<Json<UptimeResponse>, UptimeError> {\n    let uptime_secs = state.start_time.elapsed().unwrap().as_secs();\n    let node_name = state.config.node_name.clone();\n    Ok(Json(UptimeResponse {\n        uptime_secs,\n        node_name,\n    }))\n}",
+      "error": ""
+    },
+    {
+      "task_id": "config_struct",
+      "task_name": "Config Struct",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_derive": true,
+        "has_serde_default": true,
+        "has_option_type": true,
+        "has_vec_type": true,
+        "has_default_fns": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 221,
+      "latency_ms": 16198,
+      "tok_per_sec": 13.6,
+      "response": "```rust\nuse serde::{Deserialize, Serialize};\n\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct NotificationConfig {\n    #[serde(default = \"default_enabled\")]\n    pub enabled: bool,\n    #[serde(default = \"default_webhook_url\")]\n    pub webhook_url: Option<String>,\n    #[serde(default = \"default_retry_count\")]\n    pub retry_count: u32,\n    #[serde(default = \"default_timeout_secs\")]\n    pub timeout_secs: u64,\n    #[serde(default = \"default_channels\")]\n    pub channels: Vec<String>,\n}\n\nfn default_enabled() -> bool { false }\nfn default_webhook_url() -> Option<String> { None }\nfn default_retry_count() -> u32 { 3 }\nfn default_timeout_secs() -> u64 { 10 }\nfn default_channels() -> Vec<String> { vec![] }\n```",
+      "error": ""
+    },
+    {
+      "task_id": "test_generation",
+      "task_name": "Test Generation",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_cfg_test": true,
+        "has_mod_tests": true,
+        "has_test_attr": true,
+        "has_assert": true,
+        "min_test_count": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 356,
+      "latency_ms": 22692,
+      "tok_per_sec": 15.7,
+      "response": "#[cfg(test)]\nmod tests {\n    use super::*;\n    use regex::Regex;\n    use std::env;\n\n    #[test]\n    fn test_basic_substitution() {\n        let input = \"hello $VAR\";\n        let expected = \"hello $VAR\"; // assuming VAR not set\n        assert_eq!(expand_env_vars(input), expected);\n    }\n\n    #[test]\n    fn test_missing_var_passthrough() {\n        let input = \"hello $MISSING\";\n        let expected = \"hello $MISSING\";\n        assert_eq!(expand_env_vars(input), expected);\n    }\n\n    #[test]\n    fn test_multiple_variables() {\n        let input = \"foo $VAR1 bar $VAR2\";\n        let expected = \"foo $VAR1 bar $VAR2\";\n        assert_eq!(expand_env_vars(input), expected);\n    }\n\n    #[test]\n    fn test_valid_env_var_resolved() {\n        env::set_var(\"TEST_VAR\", \"value\");\n        let input = \"use $TEST_VAR\";\n        let expected = \"use value\";\n        assert_eq!(expand_env_vars(input), expected);\n        env::remove_var(\"TEST_VAR\");\n    }\n\n    #[test]\n    fn test_regex_handling() {\n        let input = \"var1 $var2 $MISSING\";\n        let expected = \"var1 $var2 $MISSING\";\n        assert_eq!(expand_env_vars(input), expected);\n    }\n}",
+      "error": ""
+    },
+    {
+      "task_id": "error_variant",
+      "task_name": "Error Variant",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_config_error": true,
+        "has_rate_limited": true,
+        "has_from_impl": false,
+        "has_thiserror": true,
+        "has_retry_after": false
+      },
+      "syntax_valid": true,
+      "check_score": 0.6,
+      "total_score": 0.72,
+      "tokens_generated": 298,
+      "latency_ms": 13958,
+      "tok_per_sec": 21.3,
+      "response": "use thiserror::Error;\nuse ygg_config::ConfigError;\nuse reqwest::Error;\n\n#[derive(Debug, Error)]\npub enum OdinError {\n    #[error(\"backend unavailable: {0}\")]\n    BackendUnavailable(String),\n    #[error(\"request timeout after {0}s\")]\n    Timeout(u64),\n    #[error(\"model not found: {0}\")]\n    ModelNotFound(String),\n    #[error(\"config error: {0}\")]\n    ConfigError(#[from] ConfigError),\n    #[error(\"rate limited: {0} seconds\")]\n    RateLimited(u64),\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use tokio::test;\n\n    #[test]\n    fn test_from_config_error() {\n        let config_err = ConfigError::new();\n        let odin_err: OdinError = config_err.into();\n        assert_eq!(odin_err, OdinError::ConfigError(config_err));\n    }\n\n    #[test]\n    fn test_from_reqwest_error() {\n        let reqwest_err = reqwest::Error::new();\n        let odin_err: OdinError = reqwest_err.into();\n        assert!(matches!(odin_err, OdinError::BackendUnavailable(_)));\n    }\n}",
+      "error": ""
+    },
+    {
+      "task_id": "tool_registration",
+      "task_name": "Tool Registration",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_tool_spec": true,
+        "has_safe_tier": true,
+        "has_schema": true,
+        "has_properties": true,
+        "has_keywords": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 554,
+      "latency_ms": 9594,
+      "tok_per_sec": 57.7,
+      "response": "```rust\nuse serde::{Deserialize, Serialize};\nuse thiserror::Error;\n\n#[derive(Debug, Serialize, Deserialize)]\npub struct DeployStatusRequest {\n    pub node_name: String,\n    pub service_name: Option<String>,\n}\n\n#[derive(Debug, Serialize)]\npub struct DeployStatusResponse {\n    pub status: String,\n    pub version: String,\n    pub uptime: u64,\n}\n\n#[derive(Error, Debug)]\npub enum DeployStatusError {\n    #[error(\"Invalid node name\")]\n    InvalidNode,\n    #[error(\"Missing required parameter\")]\n    MissingRequiredParam,\n}\n\n#[derive(Serialize)]\npub struct ToolSpec {\n    pub name: &'static str,\n    pub description: &'static str,\n    pub tier: ToolTier,\n    pub endpoint: ToolEndpoint,\n    pub schema: serde_json::Value,\n    pub keywords: &'static [&'static str],\n}\n\npub enum ToolTier { Safe, Restricted, Blocked }\npub enum ToolEndpoint { Mimir, Muninn, OdinSelf, Ha(HaToolKind) }\n\nimpl ToolSpec for DeployStatus {\n    pub fn name(&self) -> &'static str { \"deploy_status_tool\" }\n    pub fn description(&self) -> &'static str { \"Checks deployment status across nodes\" }\n    pub fn endpoint(&self) -> &'static ToolEndpoint { OdinSelf }\n    pub fn schema(&self) -> serde_json::Value {\n        json!({\n            \"type\": \"object\",\n            \"properties\": {\n                \"node_name\": { \"type\": \"string\" },\n                \"service_name\": { \"type\": \"string\", \"format\": \"nullable\" }\n            },\n            \"required\": [\"node_name\"]\n        })\n    }\n}\n\n#[tokio::test]\nasync fn test_deploy_status() {\n    tracing::info!(\"Testing DeployStatus tool spec\");\n    let request = DeployStatusRequest {\n        node_name: \"node-1\".to_string(),\n        service_name: Some(\"service-a\".to_string()),\n    };\n    let response = DeployStatusResponse {\n        status: \"OK\".to_string(),\n        version: \"1.0.0\".to_string(),\n        uptime: 3600,\n    };\n    let json = serde_json::to_string(&response).unwrap();\n    assert_eq!(json, r#\"{\"status\":\"OK\",\"version\":\"1.0.0\",\"uptime\":3600}\"#);\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "yaml_extraction",
+      "task_name": "Structured Output Parser",
+      "model": "hf.co/LiquidAI/LFM2-2.6B-Exp-GGUF:Q4_K_M",
+      "passed_checks": {
+        "has_fn_signature": true,
+        "has_regex_or_find": true,
+        "has_none_return": true,
+        "has_some_return": true,
+        "has_trim": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 452,
+      "latency_ms": 7121,
+      "tok_per_sec": 63.5,
+      "response": "```rust\nuse serde::Deserialize;\nuse thiserror::Error;\nuse tokio::test;\n\n#[derive(Debug, Error)]\npub enum YamlExtractorError {\n    #[error(\"No YAML content found\")]\n    NoYaml,\n}\n\n#[derive(Deserialize)]\nstruct YamlExtractor {\n    content: Option<String>,\n}\n\npub fn extract_yaml(response: &str) -> Option<String> {\n    tracing::info!(\"Extracting YAML from response\");\n    let mut yaml = String::new();\n\n    // Try fenced YAML first\n    if let Some(fence) = response.trim().find(\"```yaml\") {\n        let start = fence.trim_start_matches(\"```yaml\");\n        let end = response.find(\"```\")?.unwrap_or(response.len());\n        if let Ok(start_end) = response[start..end].trim_start_matches(\"```\").trim_matches(\"`\") {\n            yaml = response[start_end..end].trim().to_string();\n        }\n    }\n\n    // Try key-based extraction\n    if let Some(start) = response.find(\"{\") {\n        let mut key_match = response[start..].find(\":\");\n        if let Some(k) = key_match {\n            let key = &response[k..k+1];\n            let rest = &response[k+1..];\n            if rest.starts_with(\"\\\"\") && rest.ends_with(\"\\\"\") {\n                yaml = rest[1..rest.len()-1].trim().to_string();\n            }\n        }\n    }\n\n    if yaml.is_empty() {\n        return None;\n    }\n    Some(yaml)\n}\n\n#[tokio::test]\nasync fn test_extract_yaml() {\n    let input = r#\"\n    Sample text\n    ```yaml\n    key: value\n    ```\n    More text\n    { key: \"test\" }\n    \"#;\n    assert_eq!(Some(\"key: value\".to_string()), extract_yaml(input));\n}\n```",
+      "error": ""
+    }
+  ]
+}

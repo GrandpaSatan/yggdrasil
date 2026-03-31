@@ -1,0 +1,28 @@
+[Unit]
+Description=Yggdrasil Ollama iGPU (Intel Arc Vulkan — Sprint 054 specialist models)
+After=network.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+ExecStart=/usr/local/bin/ollama serve
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+# Separate port from main Ollama instance (11434)
+Environment=OLLAMA_HOST=0.0.0.0:11435
+# Separate model directory to avoid conflicts
+Environment=OLLAMA_MODELS=/opt/models/ollama-igpu
+# Force Intel Arc iGPU — disable CUDA and ROCm
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=ROCR_VISIBLE_DEVICES=
+# Vulkan for Intel Arc — let Ollama auto-detect
+Environment=OLLAMA_GPU_DRIVER=vulkan
+# Conservative — iGPU has limited VRAM (~4-8GB shared)
+Environment=OLLAMA_MAX_LOADED_MODELS=2
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_KEEP_ALIVE=24h
+
+[Install]
+WantedBy=multi-user.target

@@ -242,11 +242,15 @@ pub async fn generate_chat(
 
     // Build Usage from Ollama's token counts if available.
     let usage = match (stream_line.prompt_eval_count, stream_line.eval_count) {
-        (Some(prompt), Some(completion)) => Some(Usage {
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: prompt + completion,
-        }),
+        (Some(prompt), Some(completion)) => {
+            crate::metrics::record_token_usage(&stream_line.model, "prompt", prompt);
+            crate::metrics::record_token_usage(&stream_line.model, "completion", completion);
+            Some(Usage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt + completion,
+            })
+        }
         _ => None,
     };
 
@@ -312,11 +316,15 @@ pub async fn generate_chat_with_tools(
         .map_err(|e| OdinError::Upstream(format!("failed to parse Ollama response: {e}")))?;
 
     let usage = match (stream_line.prompt_eval_count, stream_line.eval_count) {
-        (Some(prompt), Some(completion)) => Some(Usage {
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: prompt + completion,
-        }),
+        (Some(prompt), Some(completion)) => {
+            crate::metrics::record_token_usage(&stream_line.model, "prompt", prompt);
+            crate::metrics::record_token_usage(&stream_line.model, "completion", completion);
+            Some(Usage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt + completion,
+            })
+        }
         _ => None,
     };
 

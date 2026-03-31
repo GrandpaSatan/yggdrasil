@@ -1834,8 +1834,8 @@ struct OllamaGenerateResponse {
     response: String,
 }
 
-/// Default model for smart-ingest LLM calls.
-const SMART_INGEST_MODEL: &str = "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M";
+/// Default model for smart-ingest LLM calls (fallback if saga config has no model).
+const DEFAULT_INGEST_MODEL: &str = "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M";
 
 /// Call Ollama /api/generate with a custom timeout and model override.
 ///
@@ -1894,8 +1894,11 @@ fn resolve_ollama_config(state: &AppState) -> (String, String) {
         .map(|c| c.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
 
-    // Always override model to LFM2.5 for smart-ingest
-    let model = SMART_INGEST_MODEL.to_string();
+    // Use saga config model if set, otherwise fall back to default ingest model.
+    let model = saga_cfg
+        .map(|c| c.model.clone())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| DEFAULT_INGEST_MODEL.to_string());
 
     (ollama_url, model)
 }

@@ -1,0 +1,51 @@
+[
+  {
+    "name": "munin",
+    "url": "http://localhost:11434",
+    "type": "ollama",
+    "status": "PASS",
+    "models_found": [
+      "smollm2:135m"
+    ],
+    "latency_ms": 1392,
+    "errors": [
+      "Missing models: ['LFM2.5-1.2B', 'LFM2-24B']"
+    ]
+  },
+  {
+    "name": "hugin",
+    "url": "http://hugin.local:11434",
+    "type": "ollama",
+    "status": "PASS",
+    "models_found": [
+      "qwen2.5-coder:7b",
+      "qwen3-coder:latest",
+      "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M",
+      "qwen3-coder:30b-a3b-q4_K_M"
+    ],
+    "latency_ms": 5647,
+    "errors": []
+  },
+  {
+    "name": "morrigan",
+    "url": "http://morrigan.local:8080",
+    "type": "openai",
+    "status": "PASS",
+    "models_found": [
+      "Qwen3.5-27B-Q4_K_M.gguf"
+    ],
+    "latency_ms": 106,
+    "errors": []
+  },
+  {
+    "name": "munin-igpu",
+    "url": "http://localhost:11435",
+    "type": "ollama",
+    "status": "OFFLINE",
+    "models_found": [],
+    "latency_ms": 0,
+    "errors": [
+      "Connection refused"
+    ]
+  }
+]

@@ -1,28 +1,53 @@
-/// Rule-based semantic router.
+/// Keyword-based semantic router (fallback layer).
 ///
 /// Classifies the user's message into one of three intents (coding, reasoning,
-/// home_assistant) using keyword matching, then maps the intent to a model and
-/// backend URL.  This is a v1 keyword router — Sprint 006+ will upgrade to
-/// embedding-based classification.
+/// home_automation) using keyword matching, then maps the intent to a model and
+/// backend URL.
 ///
-/// Design decisions (from sprint 005 Decision Log):
-/// - Keyword sets are hardcoded, not configurable, because they are an
-///   implementation detail of the routing heuristic.
+/// Since Sprint 052, this is the **fallback** layer.  Primary routing goes
+/// through the hybrid SDR + LLM pipeline (`sdr_router` → `llm_router`).
+/// The keyword router activates only when both the SDR and LLM routers are
+/// unavailable or low-confidence.
+///
+/// Design decisions:
 /// - The rule with the highest keyword match count wins; ties break on rule
 ///   order (first defined wins).
 /// - If no rule matches any keyword the default model/backend is used.
 use std::collections::HashMap;
 
+use serde::Serialize;
 use ygg_domain::config::{BackendConfig, BackendType, RoutingConfig};
 
 // ─────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────
 
+/// How the routing decision was made (Sprint 052).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterMethod {
+    /// Existing keyword match (pre-Sprint 052 behaviour).
+    Keyword,
+    /// SDR prototype was confident and LLM was unavailable.
+    SdrOnly,
+    /// LLM confirmed the SDR suggestion.
+    LlmConfirmed,
+    /// LLM disagreed with SDR and overrode the intent.
+    LlmOverride,
+    /// Client specified the model explicitly.
+    Explicit,
+    /// All routers failed — used keyword fallback.
+    Fallback,
+}
+
 /// The result of classifying a user message.
 #[derive(Debug, Clone)]
 pub struct RoutingDecision {
     pub intent: String,
+    /// Confidence from SDR or LLM classification. `None` for keyword/explicit.
+    pub confidence: Option<f64>,
+    /// Which routing method produced this decision.
+    pub router_method: RouterMethod,
     pub model: String,
     pub backend_url: String,
     pub backend_name: String,
@@ -351,6 +376,8 @@ impl SemanticRouter {
                 );
                 RoutingDecision {
                     intent: rule.intent.clone(),
+                    confidence: None,
+                    router_method: RouterMethod::Keyword,
                     model: rule.model.clone(),
                     backend_url: rule.backend_url.clone(),
                     backend_name: rule.backend_name.clone(),
@@ -365,6 +392,8 @@ impl SemanticRouter {
                 );
                 RoutingDecision {
                     intent: "default".to_string(),
+                    confidence: None,
+                    router_method: RouterMethod::Keyword,
                     model: self.default_model.clone(),
                     backend_url: self.default_backend_url.clone(),
                     backend_name: self.default_backend_name.clone(),
@@ -388,10 +417,33 @@ impl SemanticRouter {
             .unwrap_or_default();
         Some(RoutingDecision {
             intent: "explicit".to_string(),
+            confidence: None,
+            router_method: RouterMethod::Explicit,
             model: model.to_string(),
             backend_url: backend_url.clone(),
             backend_name: backend_name.clone(),
             backend_type,
         })
+    }
+
+    /// Resolve a `RoutingDecision` for a given intent string (Sprint 052).
+    ///
+    /// Used by the hybrid SDR+LLM router to map an LLM-classified intent name
+    /// back to a model/backend pair from the routing rules.
+    /// Returns `None` if no rule matches the intent.
+    #[must_use]
+    pub fn resolve_intent(&self, intent: &str) -> Option<RoutingDecision> {
+        self.rules
+            .iter()
+            .find(|r| r.intent == intent)
+            .map(|rule| RoutingDecision {
+                intent: rule.intent.clone(),
+                confidence: None,
+                router_method: RouterMethod::Keyword, // caller overrides
+                model: rule.model.clone(),
+                backend_url: rule.backend_url.clone(),
+                backend_name: rule.backend_name.clone(),
+                backend_type: rule.backend_type.clone(),
+            })
     }
 }

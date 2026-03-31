@@ -35,6 +35,7 @@ use crate::openai::{
 };
 use crate::proxy;
 use crate::rag;
+use crate::router::{RouterMethod, RoutingDecision};
 use crate::session::CompactMessage;
 use crate::state::{AppState, BackendState, CloudPool};
 
@@ -70,6 +71,114 @@ impl Drop for BackendActiveGuard {
     fn drop(&mut self) {
         crate::metrics::adjust_backend_active(&self.backend, -1.0);
     }
+}
+
+/// Hybrid SDR + LLM intent classification (Sprint 052).
+///
+/// 1. If `query_sdr` is available, run SDR prototype match (~4μs).
+/// 2. If LLM router is available, send classification request with SDR hint.
+/// 3. Merge: LLM wins when available; SDR-only above 0.85; keyword fallback.
+/// 4. Fire-and-forget logging of the routing decision.
+async fn hybrid_classify(
+    state: &AppState,
+    message: &str,
+    query_sdr: Option<&ygg_domain::sdr::Sdr>,
+) -> RoutingDecision {
+    let start = std::time::Instant::now();
+
+    // SDR classification (~4μs).
+    let sdr_result = if let Some(sdr) = query_sdr {
+        state.sdr_router.classify(sdr).await
+    } else {
+        None
+    };
+
+    if let Some(ref cls) = sdr_result {
+        crate::metrics::record_sdr_classification(&cls.intent, cls.confidence);
+    }
+
+    // LLM classification (<500ms) — uses queue if available, direct call otherwise.
+    let llm_result = if let Some(ref client) = state.llm_router {
+        if let Some(ref queue) = state.router_queue {
+            let priority = crate::request_queue::RequestPriority::Interactive;
+            let rx = queue.submit(
+                message.to_string(),
+                query_sdr.copied(),
+                sdr_result.clone(),
+                priority,
+            );
+            // Await with a generous timeout (the queue + LLM timeout handle the real limit).
+            tokio::time::timeout(
+                std::time::Duration::from_millis(2000),
+                rx,
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten()
+        } else {
+            client.classify(message, sdr_result.as_ref()).await
+        }
+    } else {
+        None
+    };
+
+    let router_latency = start.elapsed();
+    if llm_result.is_some() {
+        crate::metrics::record_llm_classification_latency(router_latency.as_secs_f64());
+    }
+
+    // Merge decisions: LLM wins → SDR-only → keyword fallback.
+    let (mut decision, method) = match (&llm_result, &sdr_result) {
+        (Some(llm), Some(sdr)) if llm.agrees_with_sdr => {
+            // LLM confirmed SDR — reinforce the prototype.
+            if let Some(qsdr) = query_sdr {
+                state.sdr_router.reinforce(&llm.intent, qsdr).await;
+            }
+            crate::metrics::record_router_agreement(true);
+            let d = state.router.resolve_intent(&llm.intent)
+                .unwrap_or_else(|| state.router.classify(message));
+            (d, RouterMethod::LlmConfirmed)
+        }
+        (Some(llm), _) => {
+            // LLM overrode SDR (or SDR had no suggestion).
+            if sdr_result.is_some() {
+                crate::metrics::record_router_agreement(false);
+            }
+            let d = state.router.resolve_intent(&llm.intent)
+                .unwrap_or_else(|| state.router.classify(message));
+            (d, RouterMethod::LlmOverride)
+        }
+        (None, Some(sdr)) if sdr.confidence > 0.85 => {
+            // LLM unavailable but SDR is very confident.
+            crate::metrics::record_router_fallback("llm_unavailable");
+            let d = state.router.resolve_intent(&sdr.intent)
+                .unwrap_or_else(|| state.router.classify(message));
+            (d, RouterMethod::SdrOnly)
+        }
+        _ => {
+            // Both unavailable or low confidence — keyword fallback.
+            if state.llm_router.is_some() {
+                crate::metrics::record_router_fallback("low_confidence");
+            }
+            (state.router.classify(message), RouterMethod::Fallback)
+        }
+    };
+
+    // Set confidence and method on the decision.
+    decision.confidence = llm_result.as_ref().map(|l| l.confidence)
+        .or(sdr_result.as_ref().map(|s| s.confidence));
+    decision.router_method = method;
+
+    if let Some(confidence) = decision.confidence {
+        crate::metrics::record_routing_confidence(
+            &decision.intent,
+            &format!("{:?}", method),
+            confidence,
+        );
+    }
+
+    decision
 }
 
 /// Acquire a backend semaphore, rerouting to a fallback if the primary is at capacity.
@@ -360,23 +469,32 @@ pub async fn process_chat_text(
 
     let user_text = text.to_string();
 
-    // ── 2. Route: classify intent via semantic router ─────────────
-    let mut decision = state.router.classify(&user_text);
-
-    // ── 3. Memory-event routing refinement ────────────────────────
-    if let Some(recall) = rag::fetch_memory_events(
+    // ── 2. Fetch memory events (used for routing + SDR) ─────────
+    let recall = rag::fetch_memory_events(
         &state.http_client,
         &state.mimir_url,
         &user_text,
         state.config.mimir.query_limit,
     )
-    .await
-    {
-        memory_router::apply_memory_events(&recall, &mut decision);
+    .await;
 
-        if let Some(hex) = &recall.query_sdr_hex
-            && let Some(query_sdr) = ygg_domain::sdr::from_hex(hex)
-                && let Some(drift) = state.session_store.update_session_sdr(session_id, &query_sdr) {
+    let query_sdr = recall.as_ref()
+        .and_then(|r| r.query_sdr_hex.as_ref())
+        .and_then(|hex| ygg_domain::sdr::from_hex(hex));
+
+    // ── 2b. Hybrid SDR + LLM routing (Sprint 052) ────────────────
+    let mut decision = if state.llm_router.is_some() {
+        hybrid_classify(state, &user_text, query_sdr.as_ref()).await
+    } else {
+        state.router.classify(&user_text)
+    };
+
+    // ── 3. Memory-event routing refinement ────────────────────────
+    if let Some(ref recall) = recall {
+        memory_router::apply_memory_events(recall, &mut decision);
+
+        if let Some(ref sdr) = query_sdr
+            && let Some(drift) = state.session_store.update_session_sdr(session_id, sdr) {
                     tracing::debug!(
                         session_id = %session_id,
                         drift_score = %drift,
@@ -813,6 +931,8 @@ pub async fn chat_handler(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, OdinError> {
+    let e2e_start = std::time::Instant::now();
+
     // ── 1. Validate ──────────────────────────────────────────────
     if request.messages.is_empty() {
         return Err(OdinError::BadRequest("messages must not be empty".to_string()));
@@ -845,30 +965,38 @@ pub async fn chat_handler(
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
-    // ── 5. Initial routing decision ───────────────────────────────
-    let mut decision = if let Some(ref model) = request.model {
-        state.router.resolve_backend_for_model(model).ok_or_else(|| {
-            OdinError::BadRequest(format!("model not found: {model}"))
-        })?
-    } else {
-        state.router.classify(&last_user_message)
-    };
-
-    // ── 6. Memory-event routing refinement (Sprint 015) ───────────
-    if let Some(recall) = rag::fetch_memory_events(
+    // ── 5. Fetch memory events (used for routing refinement + SDR) ──
+    let recall = rag::fetch_memory_events(
         &state.http_client,
         &state.mimir_url,
         &last_user_message,
         state.config.mimir.query_limit,
     )
-    .await
-    {
-        memory_router::apply_memory_events(&recall, &mut decision);
+    .await;
+
+    // Extract query SDR from the recall response (free — already computed by Mimir).
+    let query_sdr = recall.as_ref()
+        .and_then(|r| r.query_sdr_hex.as_ref())
+        .and_then(|hex| ygg_domain::sdr::from_hex(hex));
+
+    // ── 5b. Hybrid SDR + LLM routing (Sprint 052) ────────────────
+    let mut decision = if let Some(ref model) = request.model {
+        state.router.resolve_backend_for_model(model).ok_or_else(|| {
+            OdinError::BadRequest(format!("model not found: {model}"))
+        })?
+    } else if state.llm_router.is_some() {
+        hybrid_classify(&state, &last_user_message, query_sdr.as_ref()).await
+    } else {
+        state.router.classify(&last_user_message)
+    };
+
+    // ── 6. Memory-event routing refinement (Sprint 015) ───────────
+    if let Some(ref recall) = recall {
+        memory_router::apply_memory_events(recall, &mut decision);
 
         // ── 6b. Topic drift tracking via session SDR ─────────────
-        if let Some(hex) = &recall.query_sdr_hex
-            && let Some(query_sdr) = ygg_domain::sdr::from_hex(hex)
-                && let Some(drift) = state.session_store.update_session_sdr(&session_id, &query_sdr) {
+        if let Some(ref sdr) = query_sdr
+            && let Some(drift) = state.session_store.update_session_sdr(&session_id, sdr) {
                     tracing::debug!(
                         session_id = %session_id,
                         drift_score = %drift,
@@ -886,6 +1014,8 @@ pub async fn chat_handler(
 
     tracing::info!(
         intent = %decision.intent,
+        confidence = ?decision.confidence,
+        method = ?decision.router_method,
         model = %decision.model,
         backend = %decision.backend_name,
         session_id = %session_id,
@@ -893,6 +1023,32 @@ pub async fn chat_handler(
     );
 
     crate::metrics::record_routing_intent(&decision.intent);
+
+    // Non-blocking request log (Sprint 052).
+    if let Some(ref log_writer) = state.request_log {
+        let entry = crate::request_log::RequestLogEntry {
+            request_id: format!("chatcmpl-{}", Uuid::new_v4()),
+            timestamp: chrono::Utc::now(),
+            source: "http".into(),
+            user_message: last_user_message.clone(),
+            sdr_intent: None, // TODO: pass through from hybrid_classify
+            sdr_confidence: None,
+            llm_intent: None,
+            llm_confidence: None,
+            llm_agrees_with_sdr: None,
+            final_intent: decision.intent.clone(),
+            router_method: format!("{:?}", decision.router_method),
+            model: decision.model.clone(),
+            backend: decision.backend_name.clone(),
+            e2e_latency_ms: e2e_start.elapsed().as_millis() as u64,
+            router_latency_ms: decision.confidence.map(|_| e2e_start.elapsed().as_millis() as u64),
+            tokens_in: None,
+            tokens_out: None,
+            session_id: session_id.clone(),
+        };
+        let writer = log_writer.clone();
+        tokio::spawn(async move { writer.log(&entry).await });
+    }
 
     // ── 7. Acquire semaphore (with fallback reroute) ─────────────
     let (backend_state, _permit) = acquire_with_fallback(&state, &mut decision)?;
@@ -2642,6 +2798,8 @@ pub async fn agent_stream_handler(
         // Route to first Ollama backend.
         let decision = crate::router::RoutingDecision {
             intent: "agent".to_string(),
+            confidence: None,
+            router_method: crate::router::RouterMethod::Explicit,
             model: request.model.unwrap_or_else(|| state_clone.config.routing.default_model.clone()),
             backend_url: state_clone.backends.first().map(|b| b.url.clone()).unwrap_or_default(),
             backend_name: "default".to_string(),
@@ -2689,4 +2847,42 @@ pub async fn agent_stream_handler(
     });
 
     Sse::new(step_stream.chain(result_stream))
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Sprint 052: Request feedback + log query endpoints
+// ─────────────────────────────────────────────────────────────────
+
+/// `POST /api/v1/request/feedback` — AI-driven quality feedback on a routing decision.
+pub async fn request_feedback_handler(
+    State(state): State<AppState>,
+    Json(req): Json<crate::request_log::FeedbackRequest>,
+) -> Result<StatusCode, OdinError> {
+    let writer = state.request_log.as_ref().ok_or_else(|| {
+        OdinError::BadRequest("request logging is not enabled".to_string())
+    })?;
+
+    let entry = crate::request_log::FeedbackEntry {
+        request_id: req.request_id,
+        timestamp: chrono::Utc::now(),
+        accuracy_rating: req.accuracy_rating,
+        redo_requested: req.redo_requested,
+        feedback_notes: req.feedback_notes,
+    };
+
+    writer.log_feedback(&entry).await;
+    Ok(StatusCode::OK)
+}
+
+/// `GET /api/v1/request/log` — Query recent request log entries.
+pub async fn request_log_query_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<crate::request_log::LogQueryParams>,
+) -> Result<Json<Vec<serde_json::Value>>, OdinError> {
+    let writer = state.request_log.as_ref().ok_or_else(|| {
+        OdinError::BadRequest("request logging is not enabled".to_string())
+    })?;
+
+    let results = writer.query_recent(&params).await;
+    Ok(Json(results))
 }

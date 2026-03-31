@@ -238,6 +238,67 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(omni_url = %url, "MiniCPM-o omni endpoint configured");
     }
 
+    // ── Hybrid SDR + LLM router (Sprint 052) ──────────────────────
+    let sdr_router = Arc::new(odin::sdr_router::SdrRouter::with_defaults());
+    let mut llm_router_client = None;
+    let mut router_queue_handle = None;
+    let mut request_log_writer = None;
+
+    if let Some(ref lr_config) = config.llm_router {
+        if lr_config.enabled {
+            // SDR prototypes: load from disk or bootstrap later.
+            let proto_path = std::path::Path::new(&lr_config.prototypes_path);
+            if proto_path.exists() {
+                match sdr_router.load_from_file(proto_path).await {
+                    Ok(n) => tracing::info!(count = n, "loaded SDR intent prototypes from disk"),
+                    Err(e) => tracing::warn!(error = %e, "failed to load SDR prototypes — will bootstrap"),
+                }
+            }
+
+            // LLM router client.
+            let client = odin::llm_router::LlmRouterClient::new(
+                http_client.clone(),
+                lr_config.ollama_url.clone(),
+                lr_config.model.clone(),
+                lr_config.timeout_ms,
+                lr_config.min_confidence,
+                lr_config.max_concurrent,
+            );
+
+            // Request queue + workers.
+            let (queue, receivers) = odin::request_queue::RequestQueue::new(lr_config.queue_size);
+            let depth = Arc::new([
+                std::sync::atomic::AtomicUsize::new(0),
+                std::sync::atomic::AtomicUsize::new(0),
+                std::sync::atomic::AtomicUsize::new(0),
+            ]);
+            let _worker_handles = odin::request_queue::spawn_workers(
+                lr_config.workers,
+                receivers,
+                client.clone(),
+                depth,
+            );
+
+            // Request log writer.
+            let log_path = std::path::Path::new(&lr_config.request_log_path);
+            match odin::request_log::RequestLogWriter::open(log_path).await {
+                Ok(writer) => {
+                    request_log_writer = Some(writer);
+                    tracing::info!(path = %log_path.display(), "request log opened");
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to open request log — logging disabled"),
+            }
+
+            llm_router_client = Some(client);
+            router_queue_handle = Some(queue);
+            tracing::info!(
+                model = %lr_config.model,
+                url = %lr_config.ollama_url,
+                "hybrid SDR + LLM router enabled"
+            );
+        }
+    }
+
     // ── AppState ──────────────────────────────────────────────────
     let tool_registry = Arc::new(odin::tool_registry::build_registry());
     tracing::info!(tools = tool_registry.len(), "agent tool registry built");
@@ -269,6 +330,10 @@ async fn main() -> anyhow::Result<()> {
         omni_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         voice_alert_tx,
         circuit_breakers: odin::state::CircuitBreakerRegistry::new(),
+        sdr_router,
+        llm_router: llm_router_client,
+        router_queue: router_queue_handle,
+        request_log: request_log_writer,
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -332,6 +397,9 @@ async fn main() -> anyhow::Result<()> {
         // Mesh topology endpoints (consumed by network_topology MCP tool).
         .route("/api/v1/mesh/nodes", get(handlers::mesh_nodes_handler))
         .route("/api/v1/mesh/services", get(handlers::mesh_services_handler))
+        // Sprint 052: Request feedback and log query endpoints.
+        .route("/api/v1/request/feedback", post(handlers::request_feedback_handler))
+        .route("/api/v1/request/log", get(handlers::request_log_query_handler))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.
@@ -383,6 +451,42 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         tracing::info!("task worker not configured");
+    }
+
+    // ── Nightly SDR prototype self-tuning (Sprint 052) ─────────────
+    if let Some(ref lr_config) = state.config.llm_router {
+        if lr_config.enabled {
+            let sdr = state.sdr_router.clone();
+            let proto_path = std::path::PathBuf::from(&lr_config.prototypes_path);
+            tokio::spawn(async move {
+                use chrono::Timelike;
+                loop {
+                    // Sleep until 3AM local time.
+                    let now = chrono::Local::now();
+                    let next_3am = if now.hour() >= 3 {
+                        (now + chrono::Duration::days(1)).date_naive().and_hms_opt(3, 0, 0).unwrap()
+                    } else {
+                        now.date_naive().and_hms_opt(3, 0, 0).unwrap()
+                    };
+                    let next_3am = next_3am.and_local_timezone(chrono::Local).unwrap();
+                    let sleep_dur = (next_3am - now).to_std().unwrap_or(std::time::Duration::from_secs(3600));
+                    tracing::info!(
+                        sleep_secs = sleep_dur.as_secs(),
+                        "nightly SDR self-tune scheduled"
+                    );
+                    tokio::time::sleep(sleep_dur).await;
+
+                    // Save current prototypes to disk.
+                    match sdr.save_to_file(&proto_path).await {
+                        Ok(()) => {
+                            let n = sdr.len().await;
+                            tracing::info!(prototypes = n, "nightly SDR self-tune: prototypes saved");
+                        }
+                        Err(e) => tracing::warn!(error = %e, "nightly SDR self-tune: save failed"),
+                    }
+                }
+            });
+        }
     }
 
     // ── Omni keepalive — prevent GPU idle clock-down ─────────────
@@ -450,6 +554,17 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Err(e) = session_store.save_to_file(&sessions_file) {
         tracing::warn!(error = %e, "failed to save sessions on shutdown");
+    }
+
+    // Save SDR intent prototypes to disk (Sprint 052).
+    if let Some(ref lr_config) = state.config.llm_router {
+        if lr_config.enabled {
+            let proto_path = std::path::Path::new(&lr_config.prototypes_path);
+            match state.sdr_router.save_to_file(proto_path).await {
+                Ok(()) => tracing::info!("SDR intent prototypes saved on shutdown"),
+                Err(e) => tracing::warn!(error = %e, "failed to save SDR prototypes on shutdown"),
+            }
+        }
     }
 
     let _ = shutdown_tx.send(true); // Signal task worker to stop.

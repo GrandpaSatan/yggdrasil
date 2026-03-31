@@ -72,17 +72,17 @@ class GrokCallback(TrainerCallback):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=60,
-                        help="Many epochs for grokking (50-100)")
+    parser.add_argument("--epochs", type=int, default=100,
+                        help="Many epochs for grokking (100+ recommended)")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=5e-5,
-                        help="Low LR for grokking (5e-5 to 1e-4)")
+    parser.add_argument("--lr", type=float, default=2e-4,
+                        help="Constant LR for grokking (2e-4 research-backed)")
     parser.add_argument("--weight-decay", type=float, default=0.5,
                         help="High weight decay for grokking (0.1-1.0)")
-    parser.add_argument("--lora-rank", type=int, default=16,
-                        help="Smaller rank for grokking — forces compression")
-    parser.add_argument("--lora-alpha", type=int, default=32)
+    parser.add_argument("--lora-rank", type=int, default=32,
+                        help="Rank 32 — memorize then compress (Sprint 054 research)")
+    parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--lora-dropout", type=float, default=0.1,
                         help="MC Dropout rate for Bayesian inference")
     args = parser.parse_args()
@@ -167,7 +167,7 @@ def main():
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
-        lr_scheduler_type="cosine",
+        lr_scheduler_type="constant",  # constant LR — don't decay before grokking transition
         warmup_ratio=0.03,
         weight_decay=args.weight_decay,  # High for grokking
         logging_steps=10,
