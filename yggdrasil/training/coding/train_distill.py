@@ -72,6 +72,7 @@ def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
                     "messages": api_messages,
                     "temperature": 0.1,
                     "max_tokens": 1024,
+                    "chat_template_kwargs": {"enable_thinking": False},
                 },
                 timeout=120,
             )
@@ -79,7 +80,11 @@ def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
                 print(f"  [{i+1}/{total}] SKIP (HTTP {resp.status_code})")
                 continue
 
-            teacher_response = resp.json()["choices"][0]["message"]["content"]
+            msg = resp.json()["choices"][0]["message"]
+            teacher_response = msg.get("content") or msg.get("reasoning_content") or ""
+            if not teacher_response.strip():
+                print(f"  [{i+1}/{total}] SKIP (empty response)")
+                continue
 
             # Replace original assistant message with teacher's response
             distilled_messages = list(api_messages) + [
@@ -104,7 +109,7 @@ def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
 
 
 def train_student(data_path: Path, output_dir: Path, base_model: str,
-                  epochs: int = 5, lr: float = 2e-4):
+                  epochs: int = 5, lr: float = 3e-5):
     """Standard SFT training on teacher-distilled data (no grokking)."""
     import torch
     from datasets import Dataset
@@ -145,13 +150,19 @@ def train_student(data_path: Path, output_dir: Path, base_model: str,
 
     model = prepare_model_for_kbit_training(model)
     model = get_peft_model(model, LoraConfig(
-        r=16, lora_alpha=32, target_modules=target_modules,
-        lora_dropout=0, bias="none", task_type="CAUSAL_LM",
+        r=8, lora_alpha=16, target_modules=target_modules,
+        lora_dropout=0.1, bias="none", task_type="CAUSAL_LM",
     ))
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     print(f"Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
+
+    # Split for eval
+    split = max(len(dataset) - len(dataset) // 5, 1)
+    train_ds = dataset.select(range(split))
+    eval_ds = dataset.select(range(split, len(dataset)))
+    print(f"  Train: {len(train_ds)}, Eval: {len(eval_ds)}")
 
     trainer = SFTTrainer(
         model=model,
@@ -161,15 +172,24 @@ def train_student(data_path: Path, output_dir: Path, base_model: str,
             per_device_train_batch_size=4,
             gradient_accumulation_steps=4,
             learning_rate=lr,
-            warmup_steps=5,
-            logging_steps=1,
+            weight_decay=0.1,
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.1,
+            logging_steps=5,
+            eval_strategy="epoch",
             save_strategy="epoch",
+            save_total_limit=2,
             bf16=True,
             optim="adamw_8bit",
+            max_grad_norm=1.0,
             max_length=MAX_SEQ_LEN,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
             report_to="none",
         ),
-        train_dataset=dataset,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
         processing_class=tokenizer,
     )
 
@@ -191,6 +211,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--skip-distill", action="store_true",
                         help="Skip teacher distillation, train on existing distilled data")
+    parser.add_argument("--distill-only", action="store_true",
+                        help="Only distill, don't train")
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -199,6 +221,10 @@ def main():
     if not args.skip_distill:
         data = load_jsonl(str(args.data))
         distill_completions(data, args.teacher_url, args.teacher_model, distilled_path)
+
+    if args.distill_only:
+        print(f"Distill-only mode — skipping training. Data at {distilled_path}")
+        return
 
     if distilled_path.exists():
         train_student(distilled_path, args.output, args.student, args.epochs)
