@@ -95,7 +95,7 @@ impl FlowEngine {
         flows.iter().find(|f| f.name == name)
     }
 
-    /// Execute a flow pipeline.
+    /// Execute a flow pipeline, optionally with convergence looping.
     pub async fn execute(
         &self,
         flow: &FlowConfig,
@@ -105,54 +105,54 @@ impl FlowEngine {
         let mut outputs: HashMap<String, String> = HashMap::new();
         let mut step_timings = Vec::new();
         let mut final_key = String::new();
-
         let timeout = tokio::time::Duration::from_secs(flow.timeout_secs);
 
+        // Build convergence regex if loop is configured
+        let convergence_re = flow.loop_config.as_ref().map(|lc| {
+            regex::Regex::new(&lc.convergence_pattern).unwrap_or_else(|e| {
+                tracing::warn!(pattern = %lc.convergence_pattern, error = %e, "invalid convergence regex, using fallback");
+                regex::Regex::new("LGTM|CONVERGED").unwrap()
+            })
+        });
+
+        // Find the restart step index for looping
+        let restart_idx = flow.loop_config.as_ref().map(|lc| {
+            flow.steps.iter().position(|s| s.name == lc.restart_from_step).unwrap_or(0)
+        });
+
+        // Run all steps once
         for step in &flow.steps {
-            let step_start = Instant::now();
+            self.run_step(step, flow, user_message, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout).await?;
+        }
 
-            // Resolve input for this step
-            let input_text = self.resolve_input(&step.input, user_message, &outputs)?;
+        // If loop is configured, check convergence and repeat
+        if let (Some(lc), Some(re), Some(restart)) = (&flow.loop_config, &convergence_re, restart_idx) {
+            let max_iter = lc.max_iterations;
+            for iteration in 1..max_iter {
+                // Check convergence on the check_step's output
+                let check_output = outputs.get(&lc.check_step).cloned().unwrap_or_default();
+                if re.is_match(&check_output) {
+                    tracing::info!(
+                        flow = %flow.name,
+                        iteration = iteration,
+                        pattern = %lc.convergence_pattern,
+                        "flow converged"
+                    );
+                    break;
+                }
 
-            // Execute with flow-level timeout
-            let remaining = timeout.saturating_sub(start.elapsed());
-            if remaining.is_zero() {
-                return Err(OdinError::Upstream(format!(
-                    "flow '{}' timed out before step '{}'",
-                    flow.name, step.name
-                )));
+                tracing::info!(
+                    flow = %flow.name,
+                    iteration = iteration,
+                    max = max_iter,
+                    "loop iteration (not yet converged)"
+                );
+
+                // Re-run steps from restart_from_step onwards
+                for step in &flow.steps[restart..] {
+                    self.run_step(step, flow, user_message, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout).await?;
+                }
             }
-
-            let result = tokio::time::timeout(remaining, self.call_step(step, &input_text))
-                .await
-                .map_err(|_| {
-                    OdinError::Upstream(format!(
-                        "flow '{}' timed out at step '{}' after {}s",
-                        flow.name, step.name, flow.timeout_secs
-                    ))
-                })??;
-
-            // Defensive truncation
-            let truncated = truncate_preserving_ends(&result, flow.max_step_output_chars);
-
-            step_timings.push(StepTiming {
-                name: step.name.clone(),
-                model: step.model.clone(),
-                elapsed_ms: step_start.elapsed().as_millis() as u64,
-                output_chars: truncated.len(),
-            });
-
-            tracing::info!(
-                flow = %flow.name,
-                step = %step.name,
-                model = %step.model,
-                chars = truncated.len(),
-                ms = step_start.elapsed().as_millis() as u64,
-                "flow step complete"
-            );
-
-            final_key = step.output_key.clone();
-            outputs.insert(step.output_key.clone(), truncated);
         }
 
         Ok(FlowResult {
@@ -161,6 +161,61 @@ impl FlowEngine {
             elapsed_ms: start.elapsed().as_millis() as u64,
             step_timings,
         })
+    }
+
+    /// Execute a single step within a flow, updating outputs and timings.
+    async fn run_step(
+        &self,
+        step: &FlowStep,
+        flow: &FlowConfig,
+        user_message: &str,
+        outputs: &mut HashMap<String, String>,
+        step_timings: &mut Vec<StepTiming>,
+        final_key: &mut String,
+        start: &Instant,
+        timeout: &tokio::time::Duration,
+    ) -> Result<(), OdinError> {
+        let step_start = Instant::now();
+        let input_text = self.resolve_input(&step.input, user_message, outputs)?;
+
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Err(OdinError::Upstream(format!(
+                "flow '{}' timed out before step '{}'",
+                flow.name, step.name
+            )));
+        }
+
+        let result = tokio::time::timeout(remaining, self.call_step(step, &input_text))
+            .await
+            .map_err(|_| {
+                OdinError::Upstream(format!(
+                    "flow '{}' timed out at step '{}' after {}s",
+                    flow.name, step.name, flow.timeout_secs
+                ))
+            })??;
+
+        let truncated = truncate_preserving_ends(&result, flow.max_step_output_chars);
+
+        step_timings.push(StepTiming {
+            name: step.name.clone(),
+            model: step.model.clone(),
+            elapsed_ms: step_start.elapsed().as_millis() as u64,
+            output_chars: truncated.len(),
+        });
+
+        tracing::info!(
+            flow = %flow.name,
+            step = %step.name,
+            model = %step.model,
+            chars = truncated.len(),
+            ms = step_start.elapsed().as_millis() as u64,
+            "flow step complete"
+        );
+
+        *final_key = step.output_key.clone();
+        outputs.insert(step.output_key.clone(), truncated);
+        Ok(())
     }
 
     /// Resolve input text for a step from the flow context.

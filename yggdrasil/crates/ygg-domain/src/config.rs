@@ -662,7 +662,35 @@ pub struct FlowConfig {
     /// Max chars per step output for defensive truncation (default: 8000).
     #[serde(default = "default_flow_max_output")]
     pub max_step_output_chars: usize,
+    /// Optional loop configuration for convergence-based iteration.
+    /// When present, the flow repeats a subset of steps until a convergence
+    /// pattern is matched or max_iterations is reached.
+    #[serde(default)]
+    pub loop_config: Option<LoopConfig>,
 }
+
+/// Convergence-based loop configuration for iterative flows.
+///
+/// Example: code review flow loops generate→review→refine until
+/// the reviewer outputs "LGTM" or max iterations are reached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopConfig {
+    /// Max loop iterations before forced exit (default: 5).
+    #[serde(default = "default_loop_max_iterations")]
+    pub max_iterations: usize,
+    /// Regex pattern that signals convergence (e.g. "LGTM|CONVERGED|PASS").
+    /// Matched against the output of `check_step`.
+    pub convergence_pattern: String,
+    /// Name of the step whose output is checked for convergence.
+    pub check_step: String,
+    /// Name of the step where the loop restarts from.
+    /// Steps before this are only run once (e.g. initial generation).
+    pub restart_from_step: String,
+    /// Key of the step output that feeds back as input on loop restart.
+    pub feedback_key: String,
+}
+
+fn default_loop_max_iterations() -> usize { 5 }
 
 /// What triggers a flow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -674,6 +702,10 @@ pub enum FlowTrigger {
     Modality(String),
     /// Only triggered by explicit API parameter.
     Manual,
+    /// Background flow triggered on cron schedule (e.g. "0 */4 * * *" = every 4 hours).
+    Cron { schedule: String },
+    /// Background flow triggered after N seconds of no incoming requests.
+    Idle { min_idle_secs: u64 },
 }
 
 /// A single step in a flow pipeline.

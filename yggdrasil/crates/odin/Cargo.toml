@@ -28,6 +28,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+regex = "1"
 uuid = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
