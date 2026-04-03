@@ -306,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
         http_client.clone(),
         Arc::new(backends.clone()),
     ));
+    let activity_tracker = odin::flow_scheduler::ActivityTracker::new();
     tracing::info!(flows = config.flows.len(), "flow engine initialized");
 
     let state = AppState {
@@ -336,6 +337,7 @@ async fn main() -> anyhow::Result<()> {
         router_queue: router_queue_handle,
         request_log: request_log_writer,
         flow_engine,
+        activity_tracker: activity_tracker.clone(),
     };
 
     // ── Axum router ───────────────────────────────────────────────

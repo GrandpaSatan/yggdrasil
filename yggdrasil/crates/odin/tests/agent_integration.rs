@@ -78,6 +78,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
             reqwest::Client::new(),
             Arc::new(vec![]),
         )),
+        activity_tracker: odin::flow_scheduler::ActivityTracker::new(),
     }
 }
 

@@ -263,6 +263,8 @@ pub struct AppState {
     /// Multi-model flow execution engine (Sprint 055).
     /// Executes configurable pipelines where specialist models collaborate.
     pub flow_engine: Arc<crate::flow::FlowEngine>,
+    /// Tracks last user activity for idle-triggered background flows.
+    pub activity_tracker: crate::flow_scheduler::ActivityTracker,
 }
 
 impl AppState {
