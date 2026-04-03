@@ -14,7 +14,7 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use ygg_domain::config::McpServerConfig;
 
@@ -102,13 +102,21 @@ impl YggdrasilLocalServer {
         &self,
         Parameters(params): Parameters<SyncDocsParams>,
     ) -> String {
+        let start = Instant::now();
         let result = sync_docs(&self.client, &self.config, params, Some(&self.session_id)).await;
-        result
+        let text = result
             .content
             .into_iter()
             .next()
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let is_error = text.starts_with("Error:");
+        self.emit_event("tool", serde_json::json!({
+            "name": "sync_docs",
+            "status": if is_error { "error" } else { "ok" },
+            "duration_ms": start.elapsed().as_millis() as u64,
+        }));
+        text
     }
 
     /// Capture a screenshot of a web page via headless Chromium.
@@ -134,6 +142,7 @@ impl YggdrasilLocalServer {
         &self,
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> String {
+        let start = Instant::now();
         let browser = match self
             .browser
             .get_or_try_init(init_browser)
@@ -141,6 +150,12 @@ impl YggdrasilLocalServer {
         {
             Ok(b) => b,
             Err(e) => {
+                self.emit_event("tool", serde_json::json!({
+                    "name": "screenshot",
+                    "status": "error",
+                    "error": e.to_string(),
+                    "duration_ms": start.elapsed().as_millis() as u64,
+                }));
                 return format!(
                     "Error: {e}\n\n\
                      Ensure Chrome or Chromium is installed:\n\
@@ -151,12 +166,19 @@ impl YggdrasilLocalServer {
         };
 
         let result = screenshot(browser, params).await;
-        result
+        let text = result
             .content
             .into_iter()
             .next()
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let is_error = text.starts_with("Error:");
+        self.emit_event("tool", serde_json::json!({
+            "name": "screenshot",
+            "status": if is_error { "error" } else { "ok" },
+            "duration_ms": start.elapsed().as_millis() as u64,
+        }));
+        text
     }
 
 }
@@ -181,6 +203,30 @@ impl YggdrasilLocalServer {
             session_id,
             browser: Arc::new(tokio::sync::OnceCell::new()),
         }
+    }
+
+    /// Emit a JSONL event for the VS Code extension's status bar and dashboard.
+    ///
+    /// Writes to `config.events_file` if set. Fire-and-forget — never fails
+    /// the calling tool, never blocks on I/O errors.
+    fn emit_event(&self, event: &str, data: serde_json::Value) {
+        let Some(ref path) = self.config.events_file else {
+            return;
+        };
+        let line = serde_json::json!({
+            "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "event": event,
+            "data": data,
+        });
+        // Best-effort append — never fail
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{}", line)
+            });
     }
 }
 

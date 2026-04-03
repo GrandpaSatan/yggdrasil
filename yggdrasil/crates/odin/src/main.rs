@@ -302,6 +302,12 @@ async fn main() -> anyhow::Result<()> {
     // Broadcast channel for voice alerts (Sentinel → all connected WebSocket voice clients).
     let (voice_alert_tx, _) = tokio::sync::broadcast::channel::<String>(16);
 
+    let flow_engine = Arc::new(odin::flow::FlowEngine::new(
+        http_client.clone(),
+        Arc::new(backends.clone()),
+    ));
+    tracing::info!(flows = config.flows.len(), "flow engine initialized");
+
     let state = AppState {
         http_client,
         router,
@@ -329,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
         llm_router: llm_router_client,
         router_queue: router_queue_handle,
         request_log: request_log_writer,
+        flow_engine,
     };
 
     // ── Axum router ───────────────────────────────────────────────

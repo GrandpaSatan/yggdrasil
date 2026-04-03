@@ -41,6 +41,10 @@ pub struct OdinConfig {
     /// intelligent intent classification, with SDR prototypes as a fast prior.
     #[serde(default)]
     pub llm_router: Option<LlmRouterConfig>,
+    /// Multi-model flow pipelines (Sprint 055).
+    /// When configured, flows take priority over single-model dispatch for matching intents/modalities.
+    #[serde(default)]
+    pub flows: Vec<FlowConfig>,
 }
 
 /// Configuration for Odin's autonomous background task worker.
@@ -641,6 +645,88 @@ fn default_llm_router_request_log_path() -> String {
     "/var/lib/yggdrasil/odin-request-log.jsonl".to_string()
 }
 
+// ─── Flow Engine (Sprint 055) ───────────────────────────────────────
+
+/// A multi-model pipeline that routes a request through specialist models sequentially.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowConfig {
+    /// Flow name, e.g. "code_review", "voice_assist".
+    pub name: String,
+    /// What activates this flow.
+    pub trigger: FlowTrigger,
+    /// Ordered pipeline steps.
+    pub steps: Vec<FlowStep>,
+    /// Total flow timeout in seconds (default: 120).
+    #[serde(default = "default_flow_timeout")]
+    pub timeout_secs: u64,
+    /// Max chars per step output for defensive truncation (default: 8000).
+    #[serde(default = "default_flow_max_output")]
+    pub max_step_output_chars: usize,
+}
+
+/// What triggers a flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowTrigger {
+    /// Triggered by routing intent match (e.g. "coding").
+    Intent(String),
+    /// Triggered by input modality (e.g. "voice", "vision").
+    Modality(String),
+    /// Only triggered by explicit API parameter.
+    Manual,
+}
+
+/// A single step in a flow pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowStep {
+    /// Step name, used as key for output references.
+    pub name: String,
+    /// Backend name (must match a BackendConfig.name).
+    pub backend: String,
+    /// Model name on the backend.
+    pub model: String,
+    /// Override system prompt for this step. None = no system prompt.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Where this step gets its input.
+    pub input: FlowInput,
+    /// Key to store this step's output (referenced by downstream steps).
+    pub output_key: String,
+    /// Max tokens for this step's generation.
+    #[serde(default = "default_flow_step_max_tokens")]
+    pub max_tokens: usize,
+    /// Temperature for this step.
+    #[serde(default = "default_flow_step_temperature")]
+    pub temperature: f64,
+    /// Optional list of tool names this step can use.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    /// Override thinking mode (Some(false) to disable for Gemma 4 / Qwen 3.5).
+    #[serde(default)]
+    pub think: Option<bool>,
+}
+
+/// Input source for a flow step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowInput {
+    /// The original user message text.
+    UserMessage,
+    /// Raw audio input (for voice flows).
+    AudioInput,
+    /// Image data (for vision flows).
+    ImageInput,
+    /// Output from a previous step, referenced by output_key.
+    StepOutput { key: String },
+    /// Format string with placeholders: {user_message}, {step_name.output}.
+    Template { template: String },
+}
+
+fn default_flow_timeout() -> u64 { 120 }
+fn default_flow_max_output() -> usize { 8000 }
+fn default_flow_step_max_tokens() -> usize { 2048 }
+fn default_flow_step_temperature() -> f64 { 0.3 }
+
 /// MCP server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -700,6 +786,11 @@ pub struct McpServerConfig {
     /// Used for IDE-specific behavior in context_bridge and event hooks.
     #[serde(default)]
     pub ide_type: Option<String>,
+    /// Path to JSONL event file for VS Code extension integration.
+    /// When set, tool executions emit events for the extension's status bar and dashboard.
+    /// Example: "/tmp/ygg-hooks/memory-events.jsonl"
+    #[serde(default)]
+    pub events_file: Option<String>,
 }
 
 fn default_migrations_path() -> Option<String> {

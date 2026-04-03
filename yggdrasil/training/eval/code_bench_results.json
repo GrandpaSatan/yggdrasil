@@ -1,0 +1,124 @@
+{
+  "gemma4:26b": [
+    {
+      "task_id": "axum_handler",
+      "task_name": "Axum Handler",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_state_extractor": true,
+        "has_json_return": true,
+        "has_instrument": true,
+        "has_serialize_derive": true,
+        "has_elapsed": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 1705,
+      "latency_ms": 97391,
+      "tok_per_sec": 17.5,
+      "response": "use axum::{extract::State, Json};\nuse serde::Serialize;\nuse tracing::instrument;\nuse crate::state::AppState;\n\n#[derive(Serialize)]\npub struct UptimeResponse {\n    pub uptime_secs: u64,\n    pub node_name: String,\n}\n\n#[instrument(skip(state))]\npub async fn get_uptime(State(state): State<AppState>) -> Json<UptimeResponse> {\n    let uptime_secs = state.start_time.elapsed().as_secs();\n    let node_name = state.config.node_name.clone();\n\n    Json(UptimeResponse {\n        uptime_secs,\n        node_name,\n    })\n}",
+      "error": ""
+    },
+    {
+      "task_id": "config_struct",
+      "task_name": "Config Struct",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_derive": true,
+        "has_serde_default": true,
+        "has_option_type": true,
+        "has_vec_type": true,
+        "has_default_fns": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 1728,
+      "latency_ms": 94163,
+      "tok_per_sec": 18.4,
+      "response": "use serde::{Deserialize, Serialize};\n\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct NotificationConfig {\n    #[serde(default = \"default_enabled\")]\n    pub enabled: bool,\n    pub webhook_url: Option<String>,\n    #[serde(default = \"default_retry_count\")]\n    pub retry_count: u32,\n    #[serde(default = \"default_timeout_secs\")]\n    pub timeout_secs: u64,\n    #[serde(default = \"default_channels\")]\n    pub channels: Vec<String>,\n}\n\nfn default_enabled() -> bool {\n    false\n}\n\nfn default_retry_count() -> u32 {\n    3\n}\n\nfn default_timeout_secs() -> u64 {\n    10\n}\n\nfn default_channels() -> Vec<String> {\n    Vec::new()\n}",
+      "error": ""
+    },
+    {
+      "task_id": "test_generation",
+      "task_name": "Test Generation",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_cfg_test": true,
+        "has_mod_tests": true,
+        "has_test_attr": true,
+        "has_assert": true,
+        "min_test_count": false
+      },
+      "syntax_valid": true,
+      "check_score": 0.8,
+      "total_score": 0.92,
+      "tokens_generated": 2048,
+      "latency_ms": 112692,
+      "tok_per_sec": 18.2,
+      "response": "#[cfg(test)]\nmod tests {\n    use super::*;\n    use std::env;\n\n    #[test]\n    fn test_expand_env_vars_basic_substitution() {\n        env::set_var(\"YGG_TEST_VAR\", \"yggdrasil\");\n        let input = \"Welcome to ${YGG_TEST_VAR}!\";\n        let expected = \"Welcome to yggdrasil!\";\n        assert_eq!(expand_env_vars(input), expected);\n        env::remove",
+      "error": ""
+    },
+    {
+      "task_id": "error_variant",
+      "task_name": "Error Variant",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_config_error": true,
+        "has_rate_limited": true,
+        "has_from_impl": true,
+        "has_thiserror": true,
+        "has_retry_after": true
+      },
+      "syntax_valid": true,
+      "check_score": 1.0,
+      "total_score": 1.0,
+      "tokens_generated": 1604,
+      "latency_ms": 86705,
+      "tok_per_sec": 18.5,
+      "response": "use thiserror::Error;\n\n#[derive(Debug, Error)]\npub enum OdinError {\n    #[error(\"config error: {0}\")]\n    ConfigError(#[from] ygg_config::ConfigError),\n\n    #[error(\"rate limited, retry after {retry_after_secs}s\")]\n    RateLimited { retry_after_secs: u64 },\n\n    #[error(\"backend unavailable: {0}\")]\n    BackendUnavailable(String),\n\n    #[error(\"request timeout after {0}s\")]\n    Timeout(u64),\n\n    #[error(\"model not found: {0}\")]\n    ModelNotFound(String),\n}\n\nimpl From<reqwest::Error> for OdinError {\n    fn from(err: reqwest::Error) -> Self {\n        Self::BackendUnavailable(err.to_string())\n    }\n}",
+      "error": ""
+    },
+    {
+      "task_id": "tool_registration",
+      "task_name": "Tool Registration",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_tool_spec": false,
+        "has_safe_tier": false,
+        "has_schema": false,
+        "has_properties": false,
+        "has_keywords": false
+      },
+      "syntax_valid": true,
+      "check_score": 0.0,
+      "total_score": 0.3,
+      "tokens_generated": 2048,
+      "latency_ms": 113295,
+      "tok_per_sec": 18.1,
+      "response": "",
+      "error": ""
+    },
+    {
+      "task_id": "yaml_extraction",
+      "task_name": "Structured Output Parser",
+      "model": "gemma4:26b",
+      "passed_checks": {
+        "has_fn_signature": false,
+        "has_regex_or_find": false,
+        "has_none_return": false,
+        "has_some_return": false,
+        "has_trim": false
+      },
+      "syntax_valid": true,
+      "check_score": 0.0,
+      "total_score": 0.3,
+      "tokens_generated": 2048,
+      "latency_ms": 112519,
+      "tok_per_sec": 18.2,
+      "response": "",
+      "error": ""
+    }
+  ]
+}

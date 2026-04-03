@@ -160,6 +160,23 @@ cd "$REPO_ROOT"
 cargo build --release --bin ygg-mcp-server 2>&1 | tail -3
 ok "Binary: $LOCAL_BINARY"
 
+# ── Step 2b: Build + install VS Code extension ───────────────────────
+EXT_DIR="$REPO_ROOT/extensions/yggdrasil-local"
+if [[ -f "$EXT_DIR/package.json" ]] && command -v code &>/dev/null && command -v npm &>/dev/null; then
+    log "Building VS Code extension..."
+    (cd "$EXT_DIR" && npm install --no-audit --no-fund 2>&1 | tail -1 && npm run compile 2>&1)
+    (cd "$EXT_DIR" && npx @vscode/vsce package --no-dependencies 2>/dev/null)
+    VSIX=$(ls -t "$EXT_DIR"/*.vsix 2>/dev/null | head -1)
+    if [[ -n "$VSIX" ]]; then
+        code --install-extension "$VSIX" --force 2>/dev/null
+        ok "Extension: yggdrasil-local installed"
+    else
+        warn "Extension: VSIX packaging failed"
+    fi
+else
+    warn "Skipping VS Code extension (code/npm not found or source missing)"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════
 # Step 3: Local MCP config (generated per-workstation)
 # ═══════════════════════════════════════════════════════════════════════
@@ -182,6 +199,7 @@ prefetch_query: "active sprint $PROJECT_NAME"
 project: "$PROJECT_NAME"
 workspace_path: "$PROJECT_DIR"
 remote_url: "http://${MUNIN_IP:-localhost}:9093"
+events_file: "/tmp/ygg-hooks/memory-events.jsonl"
 YAML
 
 ok "Config: $LOCAL_CONFIG"
@@ -335,6 +353,15 @@ if [[ -x "$SYNC_SCRIPT" ]]; then
     fi
 else
     warn "claude-config-sync.sh not found — skipping config sync"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# Step 9: Clean up stale project-level .mcp.json
+# ═══════════════════════════════════════════════════════════════════════
+PROJ_MCP="$PROJECT_DIR/.mcp.json"
+if [[ -f "$PROJ_MCP" ]] && grep -q "out/mcp/server.js" "$PROJ_MCP" 2>/dev/null; then
+    rm "$PROJ_MCP"
+    warn "Removed stale $PROJ_MCP (pointed to dead Node.js server)"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════

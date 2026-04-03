@@ -8,3 +8,4 @@ generate_tok_per_sec: 15.0
 prefetch_query: "active sprint"
 project: ""
 workspace_path: ""
+events_file: "/tmp/ygg-hooks/memory-events.jsonl"

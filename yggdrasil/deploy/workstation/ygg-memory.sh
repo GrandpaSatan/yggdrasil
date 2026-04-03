@@ -32,9 +32,8 @@ emit_event() {
 # Handles all cases: fresh install, migration from Rust binary, version bumps.
 # Runs rebuild in background — never blocks the hook.
 check_and_update() {
-    local ext_dir mcp_json source_version installed_version
+    local ext_dir source_version installed_version
     ext_dir="$(cd "$(dirname "$0")/../.." && pwd)/extensions/yggdrasil-local"
-    mcp_json="$HOME/Documents/Code/.mcp.json"
 
     # Bail if source doesn't exist or toolchain missing
     [ -f "$ext_dir/package.json" ] || return 0
@@ -68,26 +67,10 @@ check_and_update() {
         npm run compile 2>/dev/null || exit 1
 
         # Package and install VS Code extension
-        if command -v code &>/dev/null && [ -f "out/mcp/server.js" ]; then
+        if command -v code &>/dev/null && [ -f "out/extension.js" ]; then
             npx @vscode/vsce package --no-dependencies 2>/dev/null
             local vsix=$(ls -t *.vsix 2>/dev/null | head -1)
             [ -n "$vsix" ] && code --install-extension "$vsix" --force 2>/dev/null
-        fi
-
-        # Fix .mcp.json if still pointing to old Rust binary
-        if [ -f "$mcp_json" ] && grep -q "ygg-mcp-server" "$mcp_json" 2>/dev/null; then
-            local server_js="$ext_dir/out/mcp/server.js"
-            local config_path
-            config_path=$(jq -r '.mcpServers["yggdrasil-local"].args[-1] // ""' "$mcp_json" 2>/dev/null)
-
-            cp "$mcp_json" "$mcp_json.bak.$(date +%s)" 2>/dev/null
-            jq --arg srv "$server_js" --arg cfg "$config_path" '
-                .mcpServers["yggdrasil-local"] = {
-                    "command": "node",
-                    "args": (if $cfg != "" then [$srv, "--config", $cfg] else [$srv] end)
-                }
-            ' "$mcp_json" > "$mcp_json.tmp" && mv "$mcp_json.tmp" "$mcp_json"
-            log "update: .mcp.json migrated to Node.js server"
         fi
 
         log "update: extension updated to $source_version — restart Claude Code to activate"

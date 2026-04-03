@@ -26,8 +26,8 @@ import requests
 
 BARN = os.path.dirname(os.path.abspath(__file__))
 
-TEACHER_MODEL = "Qwen3.5-27B-Q4_K_M.gguf"
-TEACHER_URL = os.environ.get("MORRIGAN_URL", "http://localhost:8080")
+TEACHER_MODEL = os.environ.get("TEACHER_MODEL", "Qwen3.5-27B-Q4_K_M.gguf")
+TEACHER_URL = os.environ.get("TEACHER_URL", "http://localhost:8080")
 STUDENT_MODEL = "LiquidAI/LFM2.5-1.2B-Base"
 MAX_SEQ_LEN = 2048
 
@@ -44,15 +44,17 @@ def load_jsonl(path: str) -> list[dict]:
 
 
 def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
-                        output_path: Path) -> list[dict]:
-    """Query teacher model for each example, replace assistant response."""
+                        output_path: Path, backend: str = "openai") -> list[dict]:
+    """Query teacher model for each example, replace assistant response.
+
+    backend: "openai" for /v1/chat/completions, "ollama" for /api/chat
+    """
     distilled = []
     total = len(data)
 
-    print(f"Distilling {total} examples via {teacher_model}...")
+    print(f"Distilling {total} examples via {teacher_model} ({backend} @ {teacher_url})...")
     for i, example in enumerate(data):
         messages = example["messages"]
-        # Send system + user, get teacher's completion
         system_msg = next((m for m in messages if m["role"] == "system"), None)
         user_msg = next((m for m in messages if m["role"] == "user"), None)
 
@@ -65,28 +67,43 @@ def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
         api_messages.append(user_msg)
 
         try:
-            resp = requests.post(
-                f"{teacher_url}/v1/chat/completions",
-                json={
-                    "model": teacher_model,
-                    "messages": api_messages,
-                    "temperature": 0.1,
-                    "max_tokens": 1024,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-                timeout=120,
-            )
-            if resp.status_code != 200:
-                print(f"  [{i+1}/{total}] SKIP (HTTP {resp.status_code})")
-                continue
+            if backend == "ollama":
+                resp = requests.post(
+                    f"{teacher_url}/api/chat",
+                    json={
+                        "model": teacher_model,
+                        "messages": api_messages,
+                        "stream": False,
+                        "options": {"temperature": 0.1, "num_predict": 1024},
+                    },
+                    timeout=120,
+                )
+                if resp.status_code != 200:
+                    print(f"  [{i+1}/{total}] SKIP (HTTP {resp.status_code})")
+                    continue
+                teacher_response = resp.json().get("message", {}).get("content", "")
+            else:
+                resp = requests.post(
+                    f"{teacher_url}/v1/chat/completions",
+                    json={
+                        "model": teacher_model,
+                        "messages": api_messages,
+                        "temperature": 0.1,
+                        "max_tokens": 1024,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                    timeout=120,
+                )
+                if resp.status_code != 200:
+                    print(f"  [{i+1}/{total}] SKIP (HTTP {resp.status_code})")
+                    continue
+                msg = resp.json()["choices"][0]["message"]
+                teacher_response = msg.get("content") or msg.get("reasoning_content") or ""
 
-            msg = resp.json()["choices"][0]["message"]
-            teacher_response = msg.get("content") or msg.get("reasoning_content") or ""
             if not teacher_response.strip():
                 print(f"  [{i+1}/{total}] SKIP (empty response)")
                 continue
 
-            # Replace original assistant message with teacher's response
             distilled_messages = list(api_messages) + [
                 {"role": "assistant", "content": teacher_response}
             ]
@@ -111,6 +128,9 @@ def distill_completions(data: list[dict], teacher_url: str, teacher_model: str,
 def train_student(data_path: Path, output_dir: Path, base_model: str,
                   epochs: int = 5, lr: float = 3e-5):
     """Standard SFT training on teacher-distilled data (no grokking)."""
+    import os
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     import torch
     from datasets import Dataset
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -169,8 +189,8 @@ def train_student(data_path: Path, output_dir: Path, base_model: str,
         args=SFTConfig(
             output_dir=str(output_dir / "checkpoints"),
             num_train_epochs=epochs,
-            per_device_train_batch_size=4,
-            gradient_accumulation_steps=4,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=8,
             learning_rate=lr,
             weight_decay=0.1,
             lr_scheduler_type="cosine",
@@ -213,14 +233,20 @@ def main():
                         help="Skip teacher distillation, train on existing distilled data")
     parser.add_argument("--distill-only", action="store_true",
                         help="Only distill, don't train")
+    parser.add_argument("--backend", default="openai", choices=["openai", "ollama"],
+                        help="Teacher API backend (openai or ollama)")
+    parser.add_argument("--direct-sft", action="store_true",
+                        help="Train directly on --data without distillation (for pre-formatted data)")
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
     distilled_path = args.output / "distilled_train.jsonl"
 
-    if not args.skip_distill:
+    if args.direct_sft:
+        distilled_path = args.data
+    elif not args.skip_distill:
         data = load_jsonl(str(args.data))
-        distill_completions(data, args.teacher_url, args.teacher_model, distilled_path)
+        distill_completions(data, args.teacher_url, args.teacher_model, distilled_path, args.backend)
 
     if args.distill_only:
         print(f"Distill-only mode — skipping training. Data at {distilled_path}")

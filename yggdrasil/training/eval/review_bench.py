@@ -232,7 +232,8 @@ def query_model(url: str, model: str, code: str, backend: str = "ollama",
                 json={"model": model, "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
-                ], "stream": False, "options": {"temperature": 0.1, "num_predict": 512}},
+                ], "stream": False, "think": False,
+                "options": {"temperature": 0.1, "num_predict": 512}},
                 timeout=timeout,
             )
 
@@ -242,10 +243,12 @@ def query_model(url: str, model: str, code: str, backend: str = "ollama",
 
         data = resp.json()
         if backend == "openai":
-            text = data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            text = msg.get("content") or msg.get("reasoning_content") or ""
             tokens = data.get("usage", {}).get("completion_tokens", 0)
         else:
-            text = data.get("message", {}).get("content", "")
+            msg = data.get("message", {})
+            text = msg.get("content") or msg.get("thinking") or ""
             tokens = data.get("eval_count", 0)
         return text, tokens, latency
     except requests.RequestException as e:

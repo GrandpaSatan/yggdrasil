@@ -260,6 +260,9 @@ pub struct AppState {
     /// Append-only JSONL request log (Sprint 052).
     /// `None` when request logging is disabled.
     pub request_log: Option<RequestLogWriter>,
+    /// Multi-model flow execution engine (Sprint 055).
+    /// Executes configurable pipelines where specialist models collaborate.
+    pub flow_engine: Arc<crate::flow::FlowEngine>,
 }
 
 impl AppState {

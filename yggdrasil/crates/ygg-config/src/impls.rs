@@ -188,6 +188,7 @@ mod tests {
             task_worker: None,
             web_search: None,
             llm_router: None,
+            flows: vec![],
         }
     }
 

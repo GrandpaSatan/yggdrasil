@@ -1,0 +1,79 @@
+{
+  "gemma4:26b": [
+    {
+      "task_id": "missing_error_variant",
+      "task_name": "Missing Error Variant",
+      "model": "gemma4:26b",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 10546,
+      "tok_per_sec": 17.0,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"high\",\n      \"description\": \"The code calls `.unwrap()` on the Qdrant client response. If the Qdrant service is unreachable or the collection does not exist, the entire worker thread/task will panic, potentially causing a Denial of Service (DoS) for the health check endpoint.\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"The health check logic is inconsistent: it gracefully handles PostgreSQL connectivity errors via `.is_ok()`, but panics on Qdrant errors. It should use a similar pattern for Qdrant to ensure the API remains responsive even when dependencies are down.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "hardcoded_ip",
+      "task_name": "Hardcoded IP Address",
+      "model": "gemma4:26b",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "LGTM",
+      "issues_found": 1,
+      "latency_ms": 5530,
+      "tok_per_sec": 15.6,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"low\",\n      \"description\": \"Hardcoded IP addresses and node configurations in the Default implementation. This makes the configuration inflexible and difficult to manage across different environments (e.g., production vs. development).\"\n    }\n  ],\n  \"verdict\": \"LGTM\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "naming_convention",
+      "task_name": "Naming Convention Violation",
+      "model": "gemma4:26b",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 2,
+      "latency_ms": 7400,
+      "tok_per_sec": 17.0,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"low\",\n      \"description\": \"Method name `getActiveSessionCount` violates Rust naming conventions; should be `get_active_session_count` (snake_case).\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"Method name `removeExpired` violates Rust naming conventions; should be `remove_expired` (snake_case).\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "handler_pattern_violation",
+      "task_name": "Handler Pattern Violation",
+      "model": "gemma4:26b",
+      "has_issue": true,
+      "detected_issue": true,
+      "correct": true,
+      "valid_json": true,
+      "verdict": "NEEDS_FIXES",
+      "issues_found": 3,
+      "latency_ms": 11440,
+      "tok_per_sec": 17.7,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"high\",\n      \"description\": \"Violation of architectural boundary rule: The handler communicates directly with Ollama instead of routing through the designated `proxy` service.\"\n    },\n    {\n      \"severity\": \"medium\",\n      \"description\": \"Hardcoded model name 'qwen3-coder:30b' and URL 'http://localhost:11434/api/chat' should be moved to configuration/environment variables.\"\n    },\n    {\n      \"severity\": \"low\",\n      \"description\": \"Potential panic/logic error: Using `.unwrap_or(\\\"\\\")` on the response content might mask upstream API changes or errors that should be handled as a 502 or 500 error.\"\n    }\n  ],\n  \"verdict\": \"NEEDS_FIXES\"\n}\n```",
+      "error": ""
+    },
+    {
+      "task_id": "correct_code",
+      "task_name": "Correct Code (False Positive Test)",
+      "model": "gemma4:26b",
+      "has_issue": false,
+      "detected_issue": true,
+      "correct": false,
+      "valid_json": true,
+      "verdict": "LGTM",
+      "issues_found": 1,
+      "latency_ms": 6785,
+      "tok_per_sec": 15.8,
+      "response": "```json\n{\n  \"issues\": [\n    {\n      \"severity\": \"low\",\n      \"description\": \"The `listen_addr` method hardcodes '0.0.0.0', which binds to all network interfaces. This may be a security concern in certain homelab environments where binding to '127.0.0.1' is preferred by default.\"\n    }\n  ],\n  \"verdict\": \"LGTM\"\n}\n```",
+      "error": ""
+    }
+  ]
+}

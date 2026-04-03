@@ -1,7 +1,7 @@
 {
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil Local",
-  "description": "Local Yggdrasil interface — MCP server + memory monitor + dashboard",
+  "description": "Local Yggdrasil interface — memory monitor + dashboard",
   "version": "0.1.0",
   "publisher": "yggdrasil",
   "license": "MIT",
@@ -69,10 +69,7 @@
     "lint": "eslint src --ext ts",
     "package": "npx @vscode/vsce package --no-dependencies"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "puppeteer-core": "^24.9.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/vscode": "^1.80.0",
     "@types/node": "^20.0.0",

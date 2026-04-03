@@ -46,6 +46,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         task_worker: None,
         web_search: None,
         llm_router: None,
+        flows: vec![],
     };
 
     AppState {
@@ -73,6 +74,10 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         llm_router: None,
         router_queue: None,
         request_log: None,
+        flow_engine: Arc::new(odin::flow::FlowEngine::new(
+            reqwest::Client::new(),
+            Arc::new(vec![]),
+        )),
     }
 }
 

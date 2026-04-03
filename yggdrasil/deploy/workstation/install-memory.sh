@@ -119,7 +119,6 @@ echo "Preserved: HA device verification hook (safety check)"
 
 # ── Versioned extension install/update ────────────────────────────────
 EXT_DIR="$SCRIPT_DIR/../../extensions/yggdrasil-local"
-MCP_JSON="$HOME/Documents/Code/.mcp.json"
 
 if [ -d "$EXT_DIR/package.json" ] || [ -f "$EXT_DIR/package.json" ]; then
     SOURCE_VERSION=$(jq -r '.version // "0.0.0"' "$EXT_DIR/package.json" 2>/dev/null)
@@ -139,7 +138,7 @@ if [ -d "$EXT_DIR/package.json" ] || [ -f "$EXT_DIR/package.json" ]; then
             npm run compile 2>&1
         )
 
-        if [ -f "$EXT_DIR/out/mcp/server.js" ]; then
+        if [ -f "$EXT_DIR/out/extension.js" ]; then
             if command -v code &>/dev/null; then
                 (cd "$EXT_DIR" && npx @vscode/vsce package --no-dependencies 2>/dev/null)
                 VSIX=$(ls -t "$EXT_DIR"/*.vsix 2>/dev/null | head -1)
@@ -147,20 +146,6 @@ if [ -d "$EXT_DIR/package.json" ] || [ -f "$EXT_DIR/package.json" ]; then
                     code --install-extension "$VSIX" --force 2>/dev/null
                     echo "Extension installed: yggdrasil.yggdrasil-local v${SOURCE_VERSION}"
                 fi
-            fi
-
-            # Ensure .mcp.json points to Node.js server
-            if [ -f "$MCP_JSON" ] && grep -q "ygg-mcp-server" "$MCP_JSON" 2>/dev/null; then
-                SERVER_JS="$EXT_DIR/out/mcp/server.js"
-                CONFIG_PATH=$(jq -r '.mcpServers["yggdrasil-local"].args[-1] // ""' "$MCP_JSON" 2>/dev/null)
-                cp "$MCP_JSON" "$MCP_JSON.bak.$(date +%s)"
-                jq --arg srv "$SERVER_JS" --arg cfg "$CONFIG_PATH" '
-                    .mcpServers["yggdrasil-local"] = {
-                        "command": "node",
-                        "args": (if $cfg != "" then [$srv, "--config", $cfg] else [$srv] end)
-                    }
-                ' "$MCP_JSON" > "$MCP_JSON.tmp" && mv "$MCP_JSON.tmp" "$MCP_JSON"
-                echo "Updated .mcp.json → Node.js MCP server"
             fi
         else
             echo "Warning: Extension build failed"
