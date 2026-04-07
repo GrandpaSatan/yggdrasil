@@ -1,0 +1,26 @@
+[Unit]
+Description=Yggdrasil Saga LLM (LFM2-350M, Munin iGPU)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/llama-server \
+    --host 0.0.0.0 \
+    --port 8084 \
+    --model /opt/models/saga/saga-fullft-v2-350m-f16.gguf \
+    --n-gpu-layers 0 \
+    --ctx-size 4096
+Environment="HSA_OVERRIDE_GFX_VERSION=11.0.3"
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

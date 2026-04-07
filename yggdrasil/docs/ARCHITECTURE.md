@@ -144,3 +144,7 @@ Claude Code → ygg-mcp-remote → Odin :8080
 - Added 4 circuit breaker integration tests
 - Implemented retry jitter (50-150% of base delay)
 ```
+
+## Sprint 054 Changes
+
+Internal error from Odin (HTTP 502 Bad Gateway): {"error":{"code":null,"message":"openai backend connection failed: error sending request for url (http://morrigan.local:8080/v1/chat/completions)","type":"server_error"}}

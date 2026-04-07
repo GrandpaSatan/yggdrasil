@@ -370,8 +370,8 @@ pub struct SagaEnrichConfig {
     pub timeout_secs: u64,
 }
 
-fn default_saga_url() -> String { "http://127.0.0.1:8080".to_string() }
-fn default_saga_model() -> String { "LFM2.5-1.2B-Instruct".to_string() }
+fn default_saga_url() -> String { "http://127.0.0.1:11434".to_string() }
+fn default_saga_model() -> String { "saga-350m".to_string() }
 fn default_saga_timeout() -> u64 { 10 }
 
 fn default_template_threshold() -> f64 { 0.35 }

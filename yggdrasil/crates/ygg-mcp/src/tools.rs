@@ -2078,6 +2078,9 @@ pub async fn task_delegate(
         .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
         .unwrap_or_else(|| "(empty response)".to_string());
 
+    // Strip markdown fences wrapping the entire response (common LLM artifact).
+    let generated = strip_outer_code_fence(&generated);
+
     let model_used = params.model.as_deref().unwrap_or("(default routing)");
     let mut out = format!(
         "## Task Delegate Result\n\n**Task:** {}\n**Model:** {}\n**Language:** {}\n**Context sources:** code search + memory\n\n### Generated Code\n\n{}\n",
@@ -2139,6 +2142,29 @@ pub fn parse_file_blocks(content: &str) -> Vec<(String, String)> {
     }
 
     results
+}
+
+/// Strip a single outer markdown code fence wrapping an entire response.
+///
+/// LLMs sometimes wrap generated code in ````rust\n...\n```` even when told not to.
+/// This strips only the outermost fence, preserving any inner fences (e.g. in tests).
+fn strip_outer_code_fence(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        // Skip the language tag on the opening fence line
+        let after_lang = rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or(rest);
+        // Strip closing fence
+        let content = if let Some(end) = after_lang.rfind("\n```") {
+            &after_lang[..end]
+        } else if after_lang.ends_with("```") {
+            &after_lang[..after_lang.len() - 3]
+        } else {
+            return s.to_string(); // No closing fence — return original
+        };
+        content.to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Unified delegate tool — assembles context, calls local LLM, returns
