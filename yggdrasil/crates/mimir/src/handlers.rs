@@ -1808,7 +1808,7 @@ pub async fn auto_ingest(
 /// 1. Validate content length (>= 50 chars)
 /// 2. Per-workstation cooldown gate (5s)
 /// 3. SHA-256 content dedup gate (300s window)
-/// 4. Call Ollama LLM to classify STORE vs SKIP
+/// 4. Call llama-server LLM to classify STORE vs SKIP
 /// 5. On STORE: embed → SDR → PG + Qdrant
 /// 6. On LLM failure: fall back to template matching via auto_ingest logic
 
@@ -1828,71 +1828,80 @@ pub struct SmartIngestResponse {
     pub skipped_reason: Option<String>,
 }
 
-/// Ollama /api/generate response (non-streaming).
+/// OpenAI-compatible /v1/chat/completions response (non-streaming).
 #[derive(Debug, Deserialize)]
-struct OllamaGenerateResponse {
-    response: String,
+pub(crate) struct ChatCompletionResponse {
+    pub(crate) choices: Vec<ChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChatChoice {
+    pub(crate) message: ChatMsg,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChatMsg {
+    pub(crate) content: Option<String>,
 }
 
 /// Default model for smart-ingest LLM calls (fallback if saga config has no model).
 const DEFAULT_INGEST_MODEL: &str = "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M";
 
-/// Call Ollama /api/generate with a custom timeout and model override.
+/// Call an OpenAI-compatible /v1/chat/completions endpoint (Odin, llama-server, etc).
 ///
 /// Returns the raw text response on success, or an error string on failure.
-/// This is intentionally separate from saga::ollama_generate to allow
-/// per-endpoint timeout and model overrides without coupling.
-async fn ollama_generate_with_timeout(
-    ollama_url: &str,
+/// Uses the shared `reqwest::Client` from `AppState` — do NOT create per-call clients.
+pub(crate) async fn llm_chat_completion(
+    client: &reqwest::Client,
+    llm_url: &str,
     model: &str,
     prompt: &str,
-    timeout: std::time::Duration,
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| format!("http client build failed: {e}"))?;
-
     let body = serde_json::json!({
         "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 128
-        }
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 128,
+        "stream": false
     });
 
     let resp = client
-        .post(format!("{}/api/generate", ollama_url))
+        .post(format!("{}/v1/chat/completions", llm_url))
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("ollama request failed: {e}"))?;
+        .map_err(|e| format!("llm request failed: {e:?}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("ollama returned {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("llm returned {status}: {body}"));
     }
 
-    let ollama_resp: OllamaGenerateResponse = resp
+    let chat_resp: ChatCompletionResponse = resp
         .json()
         .await
-        .map_err(|e| format!("ollama response parse failed: {e}"))?;
+        .map_err(|e| format!("llm response parse failed: {e}"))?;
 
-    Ok(ollama_resp.response)
+    chat_resp
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|c| c.message.content)
+        .ok_or_else(|| "empty llm response".to_string())
 }
 
-/// Resolve Ollama URL and model from config, with smart-ingest defaults.
-fn resolve_ollama_config(state: &AppState) -> (String, String) {
+/// Resolve llama-server URL and model from config, with smart-ingest defaults.
+fn resolve_llm_config(state: &AppState) -> (String, String) {
     let saga_cfg = state
         .config
         .auto_ingest
         .as_ref()
         .and_then(|c| c.saga.as_ref());
 
-    let ollama_url = saga_cfg
-        .map(|c| c.ollama_url.clone())
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let llm_url = saga_cfg
+        .map(|c| c.llm_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
 
     // Use saga config model if set, otherwise fall back to default ingest model.
     let model = saga_cfg
@@ -1900,7 +1909,7 @@ fn resolve_ollama_config(state: &AppState) -> (String, String) {
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| DEFAULT_INGEST_MODEL.to_string());
 
-    (ollama_url, model)
+    (llm_url, model)
 }
 
 pub async fn smart_ingest(
@@ -1939,8 +1948,8 @@ pub async fn smart_ingest(
         return Ok(skip("duplicate"));
     }
 
-    // Step 4: Call Ollama LLM to classify STORE vs SKIP
-    let (ollama_url, model) = resolve_ollama_config(&state);
+    // Step 4: Call llama-server LLM to classify STORE vs SKIP
+    let (llm_url, model) = resolve_llm_config(&state);
     let content_truncated: String = body.content.chars().take(2000).collect();
 
     let prompt = format!(
@@ -1958,8 +1967,13 @@ pub async fn smart_ingest(
         body.file_path, content_truncated
     );
 
-    let llm_timeout = std::time::Duration::from_secs(3);
-    let llm_result = ollama_generate_with_timeout(&ollama_url, &model, &prompt, llm_timeout).await;
+    let llm_result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        llm_chat_completion(&state.http_client, &llm_url, &model, &prompt),
+    )
+    .await
+    .map_err(|_| "llm call timed out".to_string())
+    .and_then(|r| r);
 
     match llm_result {
         Ok(response) => {
@@ -2293,7 +2307,7 @@ pub async fn consolidate(
         r#"
         SELECT id, cause, effect
         FROM yggdrasil.engrams
-        WHERE created_at > now() - make_interval(hours => $1)
+        WHERE created_at > now() - ($1 * interval '1 hour')
           AND ($2 = ANY(tags) OR 'auto_ingest' = ANY(tags))
         ORDER BY created_at DESC
         LIMIT 20
@@ -2333,11 +2347,17 @@ pub async fn consolidate(
         memories
     );
 
-    // Step 4: Call Ollama (LFM2.5 1.2B, 10s timeout)
-    let (ollama_url, model) = resolve_ollama_config(&state);
-    let llm_timeout = std::time::Duration::from_secs(10);
+    // Step 4: Call LLM via Odin (10s timeout)
+    let (llm_url, model) = resolve_llm_config(&state);
 
-    let summary = match ollama_generate_with_timeout(&ollama_url, &model, &prompt, llm_timeout).await {
+    let summary = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        llm_chat_completion(&state.http_client, &llm_url, &model, &prompt),
+    )
+    .await
+    .map_err(|_| "llm call timed out".to_string())
+    .and_then(|r| r)
+    {
         Ok(text) => {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {

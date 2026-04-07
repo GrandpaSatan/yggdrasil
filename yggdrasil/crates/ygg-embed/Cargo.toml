@@ -9,8 +9,6 @@ license.workspace = true
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-
-# ONNX Runtime (in-process ML inference)
-ort = { workspace = true }
-tokenizers = { workspace = true }
-ndarray = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

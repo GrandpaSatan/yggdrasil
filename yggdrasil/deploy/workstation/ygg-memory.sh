@@ -6,7 +6,7 @@
 # Yggdrasil Local VS Code extension.
 set -o pipefail
 
-MUNIN_IP="${MUNIN_IP:-10.0.65.9}"
+MUNIN_IP="${MUNIN_IP:-10.0.65.8}"
 MIMIR_URL="http://${MUNIN_IP}:9090"
 OLLAMA_URL="http://${MUNIN_IP}:11434"
 EVENTS_FILE="/tmp/ygg-hooks/memory-events.jsonl"

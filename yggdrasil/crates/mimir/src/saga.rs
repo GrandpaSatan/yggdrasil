@@ -1,8 +1,8 @@
 //! Saga async enrichment for auto-ingested engrams.
 //!
 //! After the fast cosine classification gate stores an engram, this module provides
-//! fire-and-forget enrichment via the Saga LLM (Qwen3 0.6B fine-tuned for memory
-//! classification and distillation, running in Ollama).
+//! fire-and-forget enrichment via the Saga LLM (LFM2.5-1.2B-Instruct fine-tuned
+//! for memory classification and distillation, running on llama-server).
 //!
 //! ## Protocol
 //!
@@ -26,7 +26,7 @@ use uuid::Uuid;
 use ygg_domain::config::SagaEnrichConfig;
 use ygg_store::postgres::engrams;
 
-use crate::handlers::{engram_content_hash, truncate_to_word_boundary};
+use crate::handlers::{engram_content_hash, llm_chat_completion, truncate_to_word_boundary};
 use crate::{sdr, state::AppState};
 
 /// Saga CLASSIFY response.
@@ -47,45 +47,13 @@ struct DistillResponse {
     tags: Vec<String>,
 }
 
-/// Ollama generate response.
-#[derive(Debug, Deserialize)]
-struct OllamaResponse {
-    response: String,
-}
-
-/// Call Ollama generate API and return the raw text response.
-async fn ollama_generate(
+/// Wrapper: call shared `llm_chat_completion` with saga config values.
+async fn saga_llm_call(
     http: &reqwest::Client,
     cfg: &SagaEnrichConfig,
     prompt: &str,
 ) -> Result<String, String> {
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 256
-        }
-    });
-
-    let resp = http
-        .post(format!("{}/api/generate", cfg.ollama_url))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("ollama request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("ollama returned {}", resp.status()));
-    }
-
-    let ollama_resp: OllamaResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("ollama response parse failed: {e}"))?;
-
-    Ok(ollama_resp.response)
+    llm_chat_completion(http, &cfg.llm_url, &cfg.model, prompt).await
 }
 
 /// Strip Qwen3 `<think>...</think>` tags and extract the first JSON object.
@@ -148,7 +116,7 @@ pub async fn enrich_engram(
 
     let mut saga_category = original_category.clone();
 
-    match ollama_generate(&http, &saga_cfg, &classify_prompt).await {
+    match saga_llm_call(&http, &saga_cfg, &classify_prompt).await {
         Ok(text) => {
             if let Some(json_str) = extract_json(&text) {
                 match serde_json::from_str::<ClassifyResponse>(&json_str) {
@@ -205,7 +173,7 @@ pub async fn enrich_engram(
         source, file, &content_truncated
     );
 
-    match ollama_generate(&http, &saga_cfg, &distill_prompt).await {
+    match saga_llm_call(&http, &saga_cfg, &distill_prompt).await {
         Ok(text) => {
             if let Some(json_str) = extract_json(&text) {
                 match serde_json::from_str::<DistillResponse>(&json_str) {

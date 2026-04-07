@@ -358,10 +358,10 @@ pub struct SagaEnrichConfig {
     /// Whether Saga enrichment is enabled (default: true).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Ollama base URL (default: "http://localhost:11434").
-    #[serde(default = "default_saga_url")]
-    pub ollama_url: String,
-    /// Saga model name in Ollama (default: "saga:0.6b").
+    /// LLM base URL for smart-ingest classification (default: Odin at "http://127.0.0.1:8080").
+    #[serde(default = "default_saga_url", alias = "ollama_url")]
+    pub llm_url: String,
+    /// Model name for OpenAI-compatible `/v1/chat/completions` requests.
     #[serde(default = "default_saga_model")]
     pub model: String,
     /// Timeout per Saga inference call in seconds (default: 10).
@@ -369,8 +369,8 @@ pub struct SagaEnrichConfig {
     pub timeout_secs: u64,
 }
 
-fn default_saga_url() -> String { "http://localhost:11434".to_string() }
-fn default_saga_model() -> String { "saga:0.6b".to_string() }
+fn default_saga_url() -> String { "http://127.0.0.1:8080".to_string() }
+fn default_saga_model() -> String { "LFM2.5-1.2B-Instruct".to_string() }
 fn default_saga_timeout() -> u64 { 10 }
 
 fn default_template_threshold() -> f64 { 0.35 }
