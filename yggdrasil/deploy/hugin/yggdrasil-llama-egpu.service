@@ -1,0 +1,26 @@
+[Unit]
+Description=Yggdrasil llama.cpp (Hugin eGPU — RX 9060 XT 16GB)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/llama-server \
+  --host 0.0.0.0 --port 8082 \
+  --model /opt/models/egpu/model.gguf \
+  --n-gpu-layers 99 --ctx-size 32768 --flash-attn on
+Environment="HIP_VISIBLE_DEVICES=0"
+Environment="HSA_OVERRIDE_GFX_VERSION=12.0.0"
+Environment="ROCR_VISIBLE_DEVICES=0"
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=Yggdrasil llama.cpp Embedding Server (all-MiniLM-L6-v2)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/llama-server \
+  --host 0.0.0.0 --port 8083 \
+  --model /opt/models/embed/all-MiniLM-L6-v2.gguf \
+  --n-gpu-layers 0 --embedding --pooling mean
+Environment="HIP_VISIBLE_DEVICES=-1"
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=Yggdrasil llama.cpp (Hugin iGPU — Radeon 890M)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/llama-server \
+  --host 0.0.0.0 --port 8081 \
+  --model /opt/models/igpu/model.gguf \
+  --n-gpu-layers 99 --ctx-size 16384 --flash-attn on
+Environment="HIP_VISIBLE_DEVICES=1"
+Environment="HSA_OVERRIDE_GFX_VERSION=11.5.0"
+Environment="ROCR_VISIBLE_DEVICES=1"
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

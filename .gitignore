@@ -50,6 +50,13 @@ qareports/
 
 # Misc notes
 noteforuser.md
+docs/stupid.md
+
+# Local MCP config (contains machine-specific URLs)
+.mcp.json
+
+# Root-level sprint files (ephemeral, archived to memory)
+sprints/
 
 # Claude Code local config (per-workstation, may contain IPs)
 .claude/
