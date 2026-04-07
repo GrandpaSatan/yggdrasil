@@ -67,3 +67,5 @@ yggdrasil/training/saga/data/
 *.bak
 NEXT_STEPS.md
 random_thought.txt
+yggdrasil/deploy/munin/vision-server/server.py
+yggdrasil/deploy/munin/vision-server/yggdrasil-vision.service
