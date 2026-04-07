@@ -51,14 +51,15 @@ qareports/
 # Misc notes
 noteforuser.md
 
-# Agent memory (session-specific, may contain topology)
-.claude/agent-memory/
+# Claude Code local config (per-workstation, may contain IPs)
+.claude/
+.mcp.json
+
+# Python bytecode
+__pycache__/
 
 # Training data (contains real IPs, usernames, topology from engrams)
 yggdrasil/training/saga/data/
-
-# Scheduled tasks lock
-.claude/scheduled_tasks.lock
 
 # Temporary files
 /tmp/
