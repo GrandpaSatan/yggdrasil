@@ -500,7 +500,7 @@ pub async fn query_engrams(
                 let hours_since_access = (now - engram.last_accessed).num_seconds().max(0) as f64 / 3600.0;
                 let recency = (-0.01 * hours_since_access).exp();
                 let importance = ((engram.access_count as f64) + 1.0).ln().min(1.0);
-                engram.similarity = (0.6 * raw_sim) + (0.2 * recency) + (0.2 * importance);
+                engram.similarity = (0.5 * raw_sim) + (0.15 * recency) + (0.15 * importance) + (0.2 * engram.confidence);
                 results.push(engram);
             }
             Err(e) => {
@@ -559,8 +559,7 @@ pub async fn recall_engrams(
     let query_sdr = sdr::binarize(&embedding[..sdr::SDR_BITS]);
     let sdr_f32 = sdr::to_bipolar_f32(&query_sdr);
 
-    // Steps 3 & 4: Run System 1 (in-memory Hamming) and System 2 (Qdrant) in parallel
-    // Uses project-scoped search on both systems when project is set.
+    // Steps 3-4: Run System 1 (Hamming), System 2 (Qdrant), System 3 (BM25) in parallel
     let limit = body.limit;
     let filter = build_project_filter(body.project.as_deref(), body.include_global);
 
@@ -570,19 +569,29 @@ pub async fn recall_engrams(
         state.sdr_index.query(&query_sdr, limit)
     };
 
-    let sys2 = state
-        .vectors
-        .search_filtered(crate::state::V2_SDR_COLLECTION, sdr_f32, limit as u64, filter)
-        .await?;
+    // System 2 (Qdrant vector) and System 3 (PG fulltext) run concurrently
+    let query_text_for_bm25 = body.text.clone();
+    let pool = state.store.pool().clone();
+    let (sys2, sys3) = tokio::join!(
+        state
+            .vectors
+            .search_filtered(crate::state::V2_SDR_COLLECTION, sdr_f32, limit as u64, filter),
+        engrams::fulltext_search(&pool, &query_text_for_bm25, limit),
+    );
+    let sys2 = sys2?;
+    let sys3 = sys3.unwrap_or_default();
 
-    // Step 5: Merge by UUID — take max similarity when both systems return same ID.
+    // Step 5: Merge all three systems by UUID — take max similarity.
     //
-    // System 1 returns normalized Hamming similarity in [0.0, 1.0].
-    // System 2 returns raw Qdrant dot-product scores (0 to ~popcount for binary vectors).
-    // Normalize System 2 by dividing by query popcount so both are in [0.0, 1.0].
-    // For ~50% density SDRs: hamming_similarity ≈ dot / popcount.
+    // System 1: normalized Hamming similarity in [0.0, 1.0].
+    // System 2: raw Qdrant dot-product, normalized by query popcount → [0.0, 1.0].
+    // System 3: ts_rank BM25 score, normalized by max rank → [0.0, 1.0].
     let query_pop = sdr::popcount(&query_sdr) as f64;
     let normalizer = if query_pop > 0.0 { query_pop } else { 1.0 };
+
+    // Find max BM25 rank for normalization
+    let max_bm25 = sys3.iter().map(|(_, r)| *r).fold(0.0f64, f64::max);
+    let bm25_normalizer = if max_bm25 > 0.0 { max_bm25 } else { 1.0 };
 
     let mut merged: HashMap<Uuid, f64> = HashMap::new();
     for (id, sim) in sys1 {
@@ -598,6 +607,17 @@ pub async fn recall_engrams(
                 }
             })
             .or_insert(normalized);
+    }
+    // System 3 (BM25): keyword matches boost existing scores or add new candidates
+    for (id, rank) in sys3 {
+        let normalized = (rank / bm25_normalizer).clamp(0.0, 1.0);
+        merged
+            .entry(id)
+            .and_modify(|s| {
+                // BM25 match boosts the score (keyword + semantic = stronger signal)
+                *s = (*s + 0.15 * normalized).min(1.0);
+            })
+            .or_insert(normalized * 0.8); // keyword-only match gets slight penalty
     }
 
     // Sort by similarity descending, take extra candidates for composite re-ranking
@@ -617,14 +637,14 @@ pub async fn recall_engrams(
     let now = chrono::Utc::now();
     let mut events: Vec<EngramEvent> = event_rows
         .into_iter()
-        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, last_accessed)| {
+        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, last_accessed, confidence)| {
             let raw_sim = sim_map.get(&id).copied().unwrap_or(0.0);
 
-            // Composite scoring: blend similarity with recency and access frequency
+            // Composite scoring: blend similarity, recency, importance, and confidence
             let hours_since_access = (now - last_accessed).num_seconds().max(0) as f64 / 3600.0;
             let recency = (-0.01 * hours_since_access).exp(); // decay over ~100 hours
             let importance = ((access_count as f64) + 1.0).ln().min(1.0); // log scale, capped at 1.0
-            let composite = (0.6 * raw_sim) + (0.2 * recency) + (0.2 * importance);
+            let composite = (0.5 * raw_sim) + (0.15 * recency) + (0.15 * importance) + (0.2 * confidence);
 
             EngramEvent {
                 id,
@@ -942,7 +962,7 @@ pub async fn sdr_operations(
 
     let events: Vec<EngramEvent> = event_rows
         .into_iter()
-        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, _last_accessed)| {
+        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, _last_accessed, _confidence)| {
             let similarity = sim_map.get(&id).copied().unwrap_or(0.0);
             EngramEvent {
                 id,
@@ -980,11 +1000,14 @@ async fn bump_access_counts(
     if ids.is_empty() {
         return Ok(());
     }
+    // Sprint 055: Also bump confidence (+0.02, capped at 1.0) on each access.
+    // Frequently recalled engrams gain confidence over time.
     sqlx::query(
         r#"
         UPDATE yggdrasil.engrams
         SET access_count = access_count + 1,
-            last_accessed = NOW()
+            last_accessed = NOW(),
+            confidence = LEAST(1.0, confidence + 0.02)
         WHERE id = ANY($1)
         "#,
     )

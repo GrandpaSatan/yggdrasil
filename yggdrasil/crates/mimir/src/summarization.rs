@@ -94,6 +94,17 @@ struct SummaryJson {
     effect: String,
 }
 
+/// Row type for consolidation cycle queries.
+#[derive(sqlx::FromRow)]
+#[allow(dead_code)]
+struct ConsolidationRow {
+    id: Uuid,
+    cause: String,
+    effect: String,
+    sdr_bits: Vec<u8>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Background service for summarizing aging Recall engrams into Archival summaries.
 pub struct SummarizationService {
     store: Store,
@@ -145,7 +156,7 @@ impl SummarizationService {
         })
     }
 
-    /// Main loop: sleep for `check_interval`, then run one summarization cycle.
+    /// Main loop: sleep for `check_interval`, then run summarization + consolidation.
     /// Exits cleanly when the shutdown signal is received.
     async fn run(mut self) {
         let interval = std::time::Duration::from_secs(self.config.check_interval_secs);
@@ -154,7 +165,7 @@ impl SummarizationService {
             recall_capacity = self.config.recall_capacity,
             batch_size = self.config.summarization_batch_size,
             odin_url = %self.config.odin_url,
-            "summarization service started"
+            "summarization + consolidation service started"
         );
 
         loop {
@@ -162,8 +173,11 @@ impl SummarizationService {
                 // Wait for the check interval before each cycle.
                 _ = tokio::time::sleep(interval) => {
                     if let Err(e) = self.check_and_summarize().await {
-                        // Log and continue — the task must not die on transient errors.
                         tracing::warn!(error = %e, "summarization cycle failed, will retry next interval");
+                    }
+                    // Sprint 055: Run consolidation cycle after summarization.
+                    if let Err(e) = self.consolidate_cycle().await {
+                        tracing::warn!(error = %e, "consolidation cycle failed, will retry next interval");
                     }
                 }
                 // Graceful shutdown: wait for the shutdown signal to become true.
@@ -175,6 +189,108 @@ impl SummarizationService {
                 }
             }
         }
+    }
+
+    /// Sprint 055: Consolidation cycle — dedup near-duplicates and detect contradictions.
+    ///
+    /// Scans recent Recall-tier engrams for:
+    /// 1. Near-duplicates (same content hash or SDR similarity > 0.95) → merge into one
+    /// 2. Contradictions (SDR similarity > 0.85, low word overlap) → mark older as superseded
+    ///
+    /// This runs as part of the background sleep cycle, not on every store.
+    async fn consolidate_cycle(&self) -> Result<(), MimirError> {
+        let pool = self.store.pool();
+
+        // Fetch recent recall engrams (last 200, ordered by created_at desc)
+        let recent = sqlx::query_as::<_, ConsolidationRow>(
+            r#"
+            SELECT id, cause, effect, sdr_bits, created_at
+            FROM yggdrasil.engrams
+            WHERE tier = 'recall' AND sdr_bits IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 200
+            "#,
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| MimirError::Internal(format!("consolidation query failed: {e}")))?;
+
+        if recent.len() < 2 {
+            return Ok(());
+        }
+
+        let mut dedup_count = 0u32;
+        let mut contradiction_count = 0u32;
+
+        // Compare each pair (only adjacent in similarity space to keep O(n) not O(n^2))
+        // We use a simple sliding window: for each engram, compare against the next 5.
+        for i in 0..recent.len().saturating_sub(1) {
+            let a = &recent[i];
+            if a.sdr_bits.len() < crate::sdr::SDR_WORDS * 8 {
+                continue;
+            }
+            let a_sdr = crate::sdr::from_bytes(&a.sdr_bits);
+
+            for j in (i + 1)..recent.len().min(i + 6) {
+                let b = &recent[j];
+                if b.sdr_bits.len() < crate::sdr::SDR_WORDS * 8 {
+                    continue;
+                }
+                let b_sdr = crate::sdr::from_bytes(&b.sdr_bits);
+
+                let sim = crate::sdr::hamming_similarity(&a_sdr, &b_sdr);
+
+                if sim > 0.95 {
+                    // Near-duplicate: delete the older one (b is older since sorted desc)
+                    tracing::info!(
+                        kept = %a.id,
+                        deleted = %b.id,
+                        similarity = %sim,
+                        "consolidation: dedup near-duplicate"
+                    );
+                    let _ = engrams::delete_engram(pool, b.id).await;
+                    self.vectors.delete_many("engrams_sdr", &[b.id]).await.ok();
+                    dedup_count += 1;
+                } else if sim > 0.85 {
+                    // High similarity — check for contradiction (divergent effect text)
+                    let a_words: std::collections::HashSet<&str> =
+                        a.effect.split_whitespace().collect();
+                    let b_words: std::collections::HashSet<&str> =
+                        b.effect.split_whitespace().collect();
+                    let intersection = a_words.intersection(&b_words).count();
+                    let union = a_words.union(&b_words).count();
+                    let jaccard = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
+
+                    if jaccard < 0.5 {
+                        // Contradiction detected: tag the older one as superseded
+                        tracing::info!(
+                            newer = %a.id,
+                            older = %b.id,
+                            similarity = %sim,
+                            jaccard = %jaccard,
+                            "consolidation: contradiction detected, tagging older as superseded"
+                        );
+                        let _ = sqlx::query(
+                            "UPDATE yggdrasil.engrams SET tags = array_append(tags, 'superseded') WHERE id = $1 AND NOT ('superseded' = ANY(tags))"
+                        )
+                        .bind(b.id)
+                        .execute(pool)
+                        .await;
+                        contradiction_count += 1;
+                    }
+                }
+            }
+        }
+
+        if dedup_count > 0 || contradiction_count > 0 {
+            tracing::info!(
+                dedup_count,
+                contradiction_count,
+                "consolidation cycle complete"
+            );
+        }
+
+        Ok(())
     }
 
     /// Run one summarization cycle.

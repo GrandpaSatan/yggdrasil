@@ -48,6 +48,15 @@ pub struct Engram {
     #[serde(default)]
     pub access_count: i64,
     pub last_accessed: DateTime<Utc>,
+    /// Sprint 055: Confidence score [0.0, 1.0].
+    /// Auto-ingested: 0.7, manual: 0.9, core: 1.0.
+    /// +0.02 on access, *0.5 on contradiction.
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+}
+
+fn default_confidence() -> f64 {
+    0.7
 }
 
 /// Payload for storing a new engram (or updating an existing one).

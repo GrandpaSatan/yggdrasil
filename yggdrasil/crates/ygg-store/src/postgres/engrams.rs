@@ -24,7 +24,7 @@ pub async fn get_engram(pool: &PgPool, id: Uuid) -> Result<Engram, StoreError> {
     let row = sqlx::query(
         r#"
         SELECT id, cause, effect, tier, tags,
-               created_at, access_count, last_accessed
+               created_at, access_count, last_accessed, confidence
         FROM yggdrasil.engrams
         WHERE id = $1
         "#,
@@ -44,6 +44,7 @@ pub async fn get_engram(pool: &PgPool, id: Uuid) -> Result<Engram, StoreError> {
         created_at: row.get::<DateTime<Utc>, _>("created_at"),
         access_count: row.get::<i64, _>("access_count"),
         last_accessed: row.get::<DateTime<Utc>, _>("last_accessed"),
+        confidence: row.get::<f32, _>("confidence") as f64,
     })
 }
 
@@ -76,7 +77,7 @@ pub async fn fetch_engrams_by_ids(
     let rows = sqlx::query(
         r#"
         SELECT id, cause, effect, tier, tags,
-               created_at, access_count, last_accessed
+               created_at, access_count, last_accessed, confidence
         FROM yggdrasil.engrams
         WHERE id = ANY($1)
         "#,
@@ -99,6 +100,7 @@ pub async fn fetch_engrams_by_ids(
                 created_at: r.get::<DateTime<Utc>, _>("created_at"),
                 access_count: r.get::<i64, _>("access_count"),
                 last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
+                confidence: r.get::<f32, _>("confidence") as f64,
             }
         })
         .collect())
@@ -154,13 +156,13 @@ pub async fn get_core_engrams(pool: &PgPool) -> Result<Vec<ygg_domain::engram::E
             id: r.get("id"),
             cause: r.get("cause"),
             effect: r.get("effect"),
-            // Marker value: Core engrams are always included, similarity is not computed.
             similarity: 1.0,
             tier: parse_tier(r.get::<String, _>("tier").as_str()),
             tags: r.get::<Vec<String>, _>("tags"),
             created_at: r.get::<DateTime<Utc>, _>("created_at"),
             access_count: r.get::<i64, _>("access_count"),
             last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
+            confidence: 1.0, // Core engrams always max confidence
         })
         .collect())
 }
@@ -206,6 +208,7 @@ pub async fn get_oldest_recall_engrams(
             created_at: r.get::<DateTime<Utc>, _>("created_at"),
             access_count: r.get::<i64, _>("access_count"),
             last_accessed: r.get::<DateTime<Utc>, _>("last_accessed"),
+            confidence: 0.7, // default for recall tier
         })
         .collect())
 }
@@ -266,11 +269,24 @@ pub async fn insert_engram_sdr(
     let id = Uuid::new_v4();
     let tier_str = tier.as_str();
 
+    // Sprint 055: Set initial confidence based on tier.
+    // Core = 1.0, manual store = 0.9 (indicated by tags), auto-ingest = 0.7.
+    let confidence: f32 = match tier {
+        MemoryTier::Core => 1.0,
+        _ => {
+            if params.tags.iter().any(|t| t == "auto_ingest" || t == "smart_ingest") {
+                0.7
+            } else {
+                0.9 // manual store via store_memory_tool
+            }
+        }
+    };
+
     sqlx::query(
         r#"
         INSERT INTO yggdrasil.engrams
-            (id, cause, effect, sdr_bits, content_hash, tier, tags, trigger_type, trigger_label, project, scope)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            (id, cause, effect, sdr_bits, content_hash, tier, tags, trigger_type, trigger_label, project, scope, confidence)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         "#,
     )
     .bind(id)
@@ -284,6 +300,7 @@ pub async fn insert_engram_sdr(
     .bind(params.trigger_label)
     .bind(params.project)
     .bind(params.scope)
+    .bind(confidence)
     .execute(pool)
     .await
     .map_err(|e| {
@@ -338,14 +355,14 @@ pub async fn update_engram_sdr(
 pub async fn fetch_engram_events(
     pool: &PgPool,
     ids: &[Uuid],
-) -> Result<Vec<(Uuid, String, Vec<String>, String, String, DateTime<Utc>, i64, DateTime<Utc>)>, StoreError> {
+) -> Result<Vec<(Uuid, String, Vec<String>, String, String, DateTime<Utc>, i64, DateTime<Utc>, f64)>, StoreError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let rows = sqlx::query(
         r#"
-        SELECT id, tier, tags, trigger_type, trigger_label, created_at, access_count, last_accessed
+        SELECT id, tier, tags, trigger_type, trigger_label, created_at, access_count, last_accessed, confidence
         FROM yggdrasil.engrams
         WHERE id = ANY($1)
         "#,
@@ -368,6 +385,7 @@ pub async fn fetch_engram_events(
                 r.get::<DateTime<Utc>, _>("created_at"),
                 r.get::<i64, _>("access_count"),
                 r.get::<DateTime<Utc>, _>("last_accessed"),
+                r.get::<f32, _>("confidence") as f64,
             )
         })
         .collect())
@@ -406,6 +424,56 @@ pub async fn get_core_engram_events(
             )
         })
         .collect())
+}
+
+/// Full-text keyword search using PostgreSQL tsvector + GIN index (Sprint 055).
+///
+/// Returns `(id, rank)` pairs sorted by ts_rank descending. The rank is a float
+/// representing BM25-style relevance. Used as System 3 in the recall pipeline
+/// alongside System 1 (Hamming) and System 2 (Qdrant vector).
+///
+/// Falls back gracefully: if the `tsv` column doesn't exist yet (migration not run),
+/// returns an empty result set rather than erroring.
+pub async fn fulltext_search(
+    pool: &PgPool,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(Uuid, f64)>, StoreError> {
+    // Convert the query to a tsquery using plainto_tsquery (handles plain text, no operators needed)
+    let rows = sqlx::query(
+        r#"
+        SELECT id, ts_rank(tsv, plainto_tsquery('english', $1)) AS rank
+        FROM yggdrasil.engrams
+        WHERE tsv @@ plainto_tsquery('english', $1)
+        ORDER BY rank DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(query)
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await;
+
+    match rows {
+        Ok(rows) => Ok(rows
+            .into_iter()
+            .map(|r| {
+                let id: Uuid = r.get("id");
+                let rank: f32 = r.get("rank");
+                (id, rank as f64)
+            })
+            .collect()),
+        Err(e) => {
+            // Graceful fallback if tsv column doesn't exist yet
+            let msg = e.to_string();
+            if msg.contains("tsv") || msg.contains("does not exist") {
+                tracing::debug!("fulltext_search: tsv column not available, skipping");
+                Ok(Vec::new())
+            } else {
+                Err(StoreError::Query(msg))
+            }
+        }
+    }
 }
 
 /// Query engrams with temporal and tag filters for the timeline endpoint.
