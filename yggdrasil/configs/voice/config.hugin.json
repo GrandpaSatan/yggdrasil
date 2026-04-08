@@ -1,0 +1,7 @@
+{
+  "odin_url": "http://10.0.65.8:8080",
+  "audio_device": "default",
+  "sample_rate": 16000,
+  "odin_ws_url": "ws://10.0.65.8:8080/v1/voice",
+  "listen_addr": "0.0.0.0:9095"
+}

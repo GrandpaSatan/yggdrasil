@@ -46,6 +46,11 @@ pub struct ChatMessage {
     pub role: Role,
     #[serde(deserialize_with = "deserialize_content")]
     pub content: String,
+    /// Base64-encoded images or audio blobs for multimodal requests.
+    /// Clients send these alongside text; the perceive flow forwards them
+    /// to Ollama's `images` field for models like Gemma 4 E4B.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
     /// Tool calls requested by the assistant (present when finish_reason is "tool_calls").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -57,7 +62,7 @@ pub struct ChatMessage {
 impl ChatMessage {
     /// Create a plain text message (no tool calls).
     pub fn new(role: Role, content: impl Into<String>) -> Self {
-        Self { role, content: content.into(), tool_calls: None, tool_call_id: None }
+        Self { role, content: content.into(), images: None, tool_calls: None, tool_call_id: None }
     }
 
     /// Create a tool-result message.
@@ -65,6 +70,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.into(),
+            images: None,
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
         }
@@ -324,6 +330,10 @@ pub struct OllamaChatRequest {
 pub struct OllamaMessage {
     pub role: String,
     pub content: String,
+    /// Base64-encoded images or audio for multimodal models (e.g. Gemma 4 E4B).
+    /// Ollama uses the same `images` field for both image and audio data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
     /// Tool calls returned by Ollama when the model invokes functions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OllamaToolCall>>,
@@ -332,7 +342,17 @@ pub struct OllamaMessage {
 impl OllamaMessage {
     /// Create a plain text Ollama message (no tool calls).
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: role.into(), content: content.into(), tool_calls: None }
+        Self { role: role.into(), content: content.into(), images: None, tool_calls: None }
+    }
+
+    /// Create a multimodal Ollama message with base64-encoded images/audio.
+    pub fn with_images(role: impl Into<String>, content: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: if images.is_empty() { None } else { Some(images) },
+            tool_calls: None,
+        }
     }
 }
 

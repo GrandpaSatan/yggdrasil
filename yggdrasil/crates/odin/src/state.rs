@@ -265,6 +265,8 @@ pub struct AppState {
     pub flow_engine: Arc<crate::flow::FlowEngine>,
     /// Tracks last user activity for idle-triggered background flows.
     pub activity_tracker: crate::flow_scheduler::ActivityTracker,
+    /// Per-camera notification cooldown tracker (Sprint 057).
+    pub camera_cooldown: Arc<crate::camera::CooldownTracker>,
 }
 
 impl AppState {

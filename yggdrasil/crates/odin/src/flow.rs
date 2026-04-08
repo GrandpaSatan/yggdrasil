@@ -102,10 +102,15 @@ impl FlowEngine {
     /// When `state` is `Some`, tool-enabled steps (those with `step.tools`) run
     /// a mini agent loop via `agent::run_agent_loop()`.  When `None` (tests),
     /// tool-enabled steps fall back to single-turn chat.
+    ///
+    /// `images` carries base64-encoded multimodal data (images or audio) for
+    /// steps with `AudioInput` or `ImageInput` input types. Ollama uses the
+    /// same `images` field for both modalities.
     pub async fn execute(
         &self,
         flow: &FlowConfig,
         user_message: &str,
+        images: Option<&[String]>,
         state: Option<&AppState>,
     ) -> Result<FlowResult, OdinError> {
         let start = Instant::now();
@@ -129,7 +134,7 @@ impl FlowEngine {
 
         // Run all steps once
         for step in &flow.steps {
-            self.run_step(step, flow, user_message, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout, state).await?;
+            self.run_step(step, flow, user_message, images, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout, state).await?;
         }
 
         // If loop is configured, check convergence and repeat
@@ -157,7 +162,7 @@ impl FlowEngine {
 
                 // Re-run steps from restart_from_step onwards
                 for step in &flow.steps[restart..] {
-                    self.run_step(step, flow, user_message, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout, state).await?;
+                    self.run_step(step, flow, user_message, images, &mut outputs, &mut step_timings, &mut final_key, &start, &timeout, state).await?;
                 }
             }
         }
@@ -176,6 +181,7 @@ impl FlowEngine {
         step: &FlowStep,
         flow: &FlowConfig,
         user_message: &str,
+        images: Option<&[String]>,
         outputs: &mut HashMap<String, String>,
         step_timings: &mut Vec<StepTiming>,
         final_key: &mut String,
@@ -186,6 +192,12 @@ impl FlowEngine {
         let step_start = Instant::now();
         let input_text = self.resolve_input(&step.input, user_message, outputs)?;
 
+        // Only pass multimodal data for steps that consume raw input
+        let step_images = match step.input {
+            FlowInput::AudioInput | FlowInput::ImageInput | FlowInput::UserMessage => images,
+            _ => None,
+        };
+
         let remaining = timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
             return Err(OdinError::Upstream(format!(
@@ -194,7 +206,7 @@ impl FlowEngine {
             )));
         }
 
-        let result = tokio::time::timeout(remaining, self.call_step(step, &input_text, state))
+        let result = tokio::time::timeout(remaining, self.call_step(step, &input_text, step_images, state))
             .await
             .map_err(|_| {
                 OdinError::Upstream(format!(
@@ -275,6 +287,7 @@ impl FlowEngine {
         &self,
         step: &FlowStep,
         input: &str,
+        images: Option<&[String]>,
         state: Option<&AppState>,
     ) -> Result<String, OdinError> {
         // ── Agentic path: step has tools and we have AppState ──────
@@ -283,7 +296,7 @@ impl FlowEngine {
         }
 
         // ── Standard single-turn path ──────────────────────────────
-        self.call_step_single(step, input).await
+        self.call_step_single(step, input, images).await
     }
 
     /// Agentic step: runs a mini agent loop with tool calling.
@@ -319,7 +332,7 @@ impl FlowEngine {
                 tools = ?tool_names,
                 "agentic step: no matching tools found in registry, falling back to single-turn"
             );
-            return self.call_step_single(step, input).await;
+            return self.call_step_single(step, input, None).await;
         }
 
         // Build messages for the agent loop.
@@ -384,7 +397,7 @@ impl FlowEngine {
     }
 
     /// Standard single-turn chat step (no tools).
-    async fn call_step_single(&self, step: &FlowStep, input: &str) -> Result<String, OdinError> {
+    async fn call_step_single(&self, step: &FlowStep, input: &str, images: Option<&[String]>) -> Result<String, OdinError> {
         let backend = self
             .backends
             .iter()
@@ -402,7 +415,14 @@ impl FlowEngine {
                 if let Some(sys) = &step.system_prompt {
                     messages.push(OllamaMessage::new("system", sys.as_str()));
                 }
-                messages.push(OllamaMessage::new("user", input));
+                // Attach multimodal data (images/audio) when available
+                let user_msg = match images {
+                    Some(imgs) if !imgs.is_empty() => {
+                        OllamaMessage::with_images("user", input, imgs.to_vec())
+                    }
+                    _ => OllamaMessage::new("user", input),
+                };
+                messages.push(user_msg);
 
                 let request = OllamaChatRequest {
                     model: step.model.clone(),

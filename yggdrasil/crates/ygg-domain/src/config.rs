@@ -45,7 +45,41 @@ pub struct OdinConfig {
     /// When configured, flows take priority over single-model dispatch for matching intents/modalities.
     #[serde(default)]
     pub flows: Vec<FlowConfig>,
+    /// Camera watch configuration (Sprint 057).
+    /// When present, enables motion-triggered vision analysis via Wyze cameras.
+    #[serde(default)]
+    pub cameras: Option<CameraConfig>,
 }
+
+// ─── Camera Watch (Sprint 057) ──────────────────────────────────────
+
+/// Configuration for motion-triggered camera vision analysis.
+///
+/// Wyze cameras detect motion → HA webhook → Odin fetches RTSP snapshot →
+/// Gemma 4 E4B analyzes → HA notification if important.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraConfig {
+    /// Base URL for wyze-bridge snapshot endpoint (e.g. "http://10.0.45.28:5000/snapshot").
+    pub snapshot_base_url: String,
+    /// List of cameras to monitor.
+    pub cameras: Vec<CameraEntry>,
+    /// HA notification entity (e.g. "notify.mobile_app_pixel_10_pro_fold").
+    pub notify_entity: String,
+    /// Minimum seconds between notifications per camera to prevent spam.
+    #[serde(default = "default_camera_cooldown")]
+    pub cooldown_secs: u64,
+}
+
+/// A single camera entry in the watch list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraEntry {
+    /// Camera name as known to wyze-bridge (used in snapshot URL).
+    pub name: String,
+    /// Human-readable label for notifications (e.g. "Front Door").
+    pub label: String,
+}
+
+fn default_camera_cooldown() -> u64 { 60 }
 
 /// Configuration for Odin's autonomous background task worker.
 ///

@@ -1,0 +1,23 @@
+[Unit]
+Description=Yggdrasil Voice — local mic/speaker bridge to Odin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jhernandez
+Group=audio
+ExecStart=/opt/yggdrasil/bin/ygg-voice --config /opt/yggdrasil/configs/voice/config.json
+WorkingDirectory=/opt/yggdrasil
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+
+# Audio access
+SupplementaryGroups=audio
+
+Environment=RUST_LOG=info,ygg_voice=debug
+Environment=ALSA_CARD=2
+
+[Install]
+WantedBy=multi-user.target

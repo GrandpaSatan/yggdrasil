@@ -16,6 +16,7 @@
 ///   tool_registry — Static registry of MCP tools for agent loop
 ///   agent         — Autonomous agent loop for local LLM tool-use
 pub mod agent;
+pub mod camera;
 pub mod context;
 pub mod error;
 pub mod flow;

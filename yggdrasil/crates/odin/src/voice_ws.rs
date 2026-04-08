@@ -250,8 +250,9 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                             calibration_buf.extend_from_slice(&samples);
                             if calibration_buf.len() >= CALIBRATION_SAMPLES {
                                 let noise_floor = rms_energy_i16(&calibration_buf);
-                                dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_THRESHOLD);
-                                dyn_silence_threshold = (noise_floor * 1.5_f32).max(SILENCE_THRESHOLD);
+                                // Cap VAD threshold at 0.15 so speech can trigger even in noisy rooms.
+                                dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_THRESHOLD).min(0.15);
+                                dyn_silence_threshold = (noise_floor * 1.5_f32).max(SILENCE_THRESHOLD).min(0.10);
                                 calibrated = true;
                                 tracing::info!(
                                     noise_floor = %format!("{noise_floor:.6}"),
@@ -735,12 +736,88 @@ async fn process_utterance(
                 return ProcessResult::NotAddressed;
             }
         }
-    } else {
-        // No omni server configured — voice is non-functional.
-        tracing::warn!("voice: no omni_url configured — cannot process audio");
+    } else if let Some(ref voice_url) = state.voice_api_url {
+        // Sprint 057: Whisper STT → Gemma 4 reasoning → Kokoro TTS pipeline.
+        // Step 1: Send audio to Whisper STT (handles noisy environments).
+        tracing::info!("voice: no omni_url — using Whisper STT + perceive flow");
+
+        let pcm_bytes: Vec<u8> = audio_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE);
+
+        let stt_url = format!("{voice_url}/api/v1/stt");
+        let stt_result = http
+            .post(&stt_url)
+            .body(wav_bytes)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+
+        let transcript = match stt_result {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                body["text"].as_str().unwrap_or("").to_string()
+            }
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "Whisper STT failed");
+                return ProcessResult::NotAddressed;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Whisper STT request failed");
+                return ProcessResult::NotAddressed;
+            }
+        };
+
+        if transcript.is_empty() {
+            tracing::debug!("voice: empty transcript — ignoring");
+            return ProcessResult::NotAddressed;
+        }
+
+        tracing::info!(transcript = %transcript, "Whisper STT result");
+
         let _ = socket
             .send(Message::Text(
-                serde_json::json!({"type": "error", "message": "voice model not configured"})
+                serde_json::json!({"type": "transcript", "text": &transcript})
+                    .to_string().into(),
+            ))
+            .await;
+
+        // Step 2: Send transcript to Gemma 4 for reasoning (text-only, no audio).
+        let system = "You are Fergus, a helpful AI assistant on the Yggdrasil home server. \
+                      Be direct and concise. 1-2 sentences. No markdown.";
+        let ollama_url = "http://10.0.65.9:11434";
+        let chat_body = serde_json::json!({
+            "model": "gemma4:e4b",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": transcript}
+            ],
+            "stream": false,
+            "options": {"num_ctx": 4096, "temperature": 0.7},
+            "think": false
+        });
+
+        let llm_result = http
+            .post(format!("{ollama_url}/api/chat"))
+            .json(&chat_body)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await;
+
+        let response_text = match llm_result {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                body["message"]["content"].as_str().unwrap_or("I didn't catch that, sir.").to_string()
+            }
+            _ => "I'm having trouble thinking right now, sir.".to_string(),
+        };
+
+        tracing::info!(response = %response_text, "Gemma 4 voice response");
+        (format!("{response_text}\n[DONE]"), None)
+    } else {
+        tracing::warn!("voice: no omni_url and no voice_api_url configured");
+        let _ = socket
+            .send(Message::Text(
+                serde_json::json!({"type": "error", "message": "voice not configured"})
                     .to_string().into(),
             ))
             .await;

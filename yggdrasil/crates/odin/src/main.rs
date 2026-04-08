@@ -338,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
         request_log: request_log_writer,
         flow_engine,
         activity_tracker: activity_tracker.clone(),
+        camera_cooldown: Arc::new(odin::camera::CooldownTracker::new()),
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -389,7 +390,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/web_search", post(handlers::web_search_handler))
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
-        .route("/api/v1/webhook", post(ygg_ha::webhook::handle_webhook))
+        .route("/api/v1/webhook", post(handlers::webhook_handler))
         // Voice WebSocket endpoint (STT/TTS streaming via ygg-voice).
         .route("/v1/voice", get(voice_ws::ws_voice_handler))
         .route("/voice", get(voice_ws::voice_page))

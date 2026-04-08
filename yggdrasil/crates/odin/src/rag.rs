@@ -417,8 +417,8 @@ pub fn build_system_prompt(
                       You address the user as 'sir'. You monitor and help manage the household: \
                       smart home devices, gaming PCs, media, and knowledge.\n\
                       \n\
-                      WAKE WORD RULE: You ONLY respond when the user addresses you as \"Fergus\" \
-                      (or close variants like \"Furgus\", \"Vergus\"). If the audio does NOT contain \
+                      WAKE WORD RULE: You ONLY respond when the user says \"Hey Fergus\" \
+                      (or close variants like \"Hey Furgus\", \"Hey Vergus\", \"Fergus\"). If the audio does NOT contain \
                       your name, respond with exactly: [NOT_ADDRESSED]\n\
                       Do NOT respond to background noise, TV, music, or conversations not directed at you.\n\
                       \n\

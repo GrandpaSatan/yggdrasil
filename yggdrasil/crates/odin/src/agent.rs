@@ -175,6 +175,7 @@ pub async fn run_agent_loop_inner(
         conversation.push(OllamaMessage {
             role: "assistant".to_string(),
             content: resp.message.content.clone(),
+            images: None,
             tool_calls: resp.message.tool_calls.clone(),
         });
 

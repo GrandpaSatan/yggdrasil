@@ -1050,7 +1050,65 @@ pub async fn chat_handler(
         tokio::spawn(async move { writer.log(&entry).await });
     }
 
-    // ── 6c. Flow dispatch (Sprint 055) ─────────────────────────────
+    // ── 6c. Multimodal flow dispatch (Sprint 057) ──────────────────
+    // If the request contains images/audio, route to the "omni" modality flow.
+    let request_images: Option<Vec<String>> = request
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| m.images.clone())
+        .filter(|imgs| !imgs.is_empty());
+
+    if let Some(ref imgs) = request_images {
+        if let Some(flow) = state.flow_engine.find_by_modality(&state.config.flows, "omni") {
+            tracing::info!(
+                flow = %flow.name,
+                images = imgs.len(),
+                "dispatching multimodal request to perceive flow"
+            );
+            let result = state.flow_engine.execute(flow, &last_user_message, Some(imgs), Some(&state)).await?;
+            let response_text = result.final_output().to_string();
+
+            state.session_store.append_messages(&session_id, &[
+                crate::session::CompactMessage::new("user", &last_user_message),
+                crate::session::CompactMessage::new("assistant", &response_text),
+            ]);
+
+            for timing in &result.step_timings {
+                tracing::info!(
+                    flow = %flow.name,
+                    step = %timing.name,
+                    model = %timing.model,
+                    ms = timing.elapsed_ms,
+                    chars = timing.output_chars,
+                    "flow step timing"
+                );
+            }
+
+            let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
+            let resp = crate::openai::ChatCompletionResponse {
+                id: completion_id,
+                object: "chat.completion".to_string(),
+                created: crate::proxy::unix_now(),
+                model: flow.name.clone(),
+                choices: vec![crate::openai::Choice {
+                    index: 0,
+                    message: ChatMessage::new(Role::Assistant, &response_text),
+                    finish_reason: Some("stop".to_string()),
+                }],
+                usage: Some(crate::openai::Usage {
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                }),
+            };
+
+            return Ok(axum::Json(resp).into_response());
+        }
+    }
+
+    // ── 6d. Flow dispatch (Sprint 055) ─────────────────────────────
     // If a flow is configured for this intent, execute it instead of single-model dispatch.
     if let Some(flow) = state.flow_engine.find_by_intent(&state.config.flows, &decision.intent) {
         tracing::info!(
@@ -1058,7 +1116,7 @@ pub async fn chat_handler(
             intent = %decision.intent,
             "dispatching to multi-model flow"
         );
-        let result = state.flow_engine.execute(flow, &last_user_message, Some(&state)).await?;
+        let result = state.flow_engine.execute(flow, &last_user_message, None, Some(&state)).await?;
         let response_text = result.final_output().to_string();
 
         // Update session with flow result
@@ -2936,4 +2994,61 @@ pub async fn request_log_query_handler(
 
     let results = writer.query_recent(&params).await;
     Ok(Json(results))
+}
+
+// ─── Webhook handler (Sprint 057) ────────────────────────────────────
+
+/// HA webhook handler with AppState access for camera motion dispatch.
+pub async fn webhook_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ygg_ha::webhook::WebhookPayload>,
+) -> (axum::http::StatusCode, Json<ygg_ha::webhook::WebhookResponse>) {
+    tracing::info!(
+        trigger_id = ?payload.trigger_id,
+        entity_id = ?payload.entity_id,
+        new_state = ?payload.new_state,
+        "received HA webhook"
+    );
+
+    match payload.trigger_id.as_deref() {
+        Some("motion_detected") => {
+            let camera_name = payload
+                .data
+                .get("camera")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+
+            tracing::info!(camera = camera_name, "motion detected — dispatching camera analysis");
+
+            // Run analysis in background so the webhook returns immediately.
+            let state_clone = state.clone();
+            let cam = camera_name.to_string();
+            tokio::spawn(async move {
+                match crate::camera::handle_motion_event(&state_clone, &cam).await {
+                    Ok(analysis) => {
+                        tracing::info!(
+                            camera = %analysis.camera,
+                            important = analysis.is_important,
+                            description = %analysis.description,
+                            "camera analysis complete"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(camera = %cam, error = %e, "camera analysis failed");
+                    }
+                }
+            });
+        }
+        Some("door_opened") => {
+            tracing::info!(entity = ?payload.entity_id, "door opened event");
+        }
+        Some(trigger) => {
+            tracing::info!(trigger, "unhandled webhook trigger");
+        }
+        None => {
+            tracing::debug!("webhook with no trigger_id");
+        }
+    }
+
+    (axum::http::StatusCode::OK, Json(ygg_ha::webhook::WebhookResponse::ok()))
 }

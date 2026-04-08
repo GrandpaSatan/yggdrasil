@@ -25,28 +25,32 @@
       ]
     },
     {
-      "name": "voice_assist",
-      "description": "Audio transcription, reasoning, TTS response",
+      "name": "perceive",
+      "description": "Unified vision+audio perception via Gemma 4 E4B (Sprint 057)",
       "test_cases": [
         {
-          "input": "What is the current status of the Yggdrasil system?",
-          "expected_steps": ["transcribe", "reason", "speak"],
+          "input": "What do you see in this image?",
+          "expected_steps": ["understand"],
           "validation": {
-            "response_contains_any": ["running", "active", "status", "system"]
-          }
-        }
-      ]
-    },
-    {
-      "name": "vision_describe",
-      "description": "Image description and reasoning",
-      "test_cases": [
+            "response_contains_any": ["image", "see", "shows", "appears"]
+          },
+          "_note": "Requires base64 image in images field"
+        },
         {
-          "input": "screenshot of terminal with GPU utilization",
-          "expected_steps": ["describe", "reason"],
+          "input": "What do you hear in this audio?",
+          "expected_steps": ["understand"],
           "validation": {
-            "response_contains_any": ["GPU", "terminal", "utilization", "nvidia"]
-          }
+            "response_contains_any": ["audio", "hear", "sound", "speech"]
+          },
+          "_note": "Requires base64 WAV in images field (Ollama reuses images for audio)"
+        },
+        {
+          "input": "Describe what you see and hear.",
+          "expected_steps": ["understand"],
+          "validation": {
+            "response_contains_any": ["image", "audio", "see", "hear"]
+          },
+          "_note": "Combined vision+audio test"
         }
       ]
     },

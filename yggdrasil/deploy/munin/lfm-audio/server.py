@@ -89,8 +89,8 @@ def generate_speech_response(audio_wav: torch.Tensor, sr: int, system_prompt: st
     for t in model.generate_interleaved(
         **chat,
         max_new_tokens=512,
-        audio_temperature=1.0,
-        audio_top_k=4,
+        audio_temperature=0.6,
+        audio_top_k=8,
     ):
         if t.numel() == 1:
             # Text token
@@ -150,8 +150,8 @@ def generate_tts(text: str):
     for t in model.generate_interleaved(
         **chat,
         max_new_tokens=512,
-        audio_temperature=1.0,
-        audio_top_k=4,
+        audio_temperature=0.6,
+        audio_top_k=8,
     ):
         if t.numel() > 1:
             audio_tokens.append(t)
