@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
+use sqlx;
 use uuid::Uuid;
 use ygg_domain::chunk::{SearchQuery, SearchResponse};
 use ygg_store::postgres::chunks::{
@@ -288,4 +289,159 @@ pub async fn find_references_handler(
         .collect();
 
     Ok(Json(FindReferencesResponse { references }))
+}
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/v1/documents/search  (Sprint 056 — research flow)
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct DocumentSearchRequest {
+    pub query: String,
+    #[serde(default)]
+    pub doc_types: Option<Vec<String>>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default = "default_doc_limit")]
+    pub limit: Option<u32>,
+}
+
+fn default_doc_limit() -> Option<u32> { Some(10) }
+
+#[derive(Debug, Serialize)]
+pub struct DocumentSearchResult {
+    pub id: String,
+    pub source_uri: String,
+    pub doc_type: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DocumentSearchResponse {
+    pub results: Vec<DocumentSearchResult>,
+    pub total: usize,
+}
+
+/// `POST /api/v1/documents/search`
+///
+/// Hybrid vector + BM25 search over ingested documents.
+pub async fn documents_search_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DocumentSearchRequest>,
+) -> Result<Json<DocumentSearchResponse>, MuninnError> {
+    if req.query.trim().is_empty() {
+        return Err(MuninnError::Validation("query must not be empty".to_string()));
+    }
+
+    let limit = req.limit.unwrap_or(10).clamp(1, 50) as usize;
+    let candidate_limit = (limit * 3) as i64;
+
+    // Step 1: Embed query.
+    let query_embedding = state.embedder.embed_single(&req.query).await
+        .map_err(|e| MuninnError::Internal(format!("embed failed: {e}")))?;
+
+    // Step 2: Parallel vector + BM25 search.
+    let (vector_result, bm25_result) = tokio::join!(
+        state.vectors.search("research_documents", query_embedding, candidate_limit as u64),
+        search_documents_bm25(&state.pool, &req.query, candidate_limit, req.project.as_deref()),
+    );
+
+    let vector_ids = vector_result.unwrap_or_default();
+    let bm25_ids = bm25_result.unwrap_or_default();
+
+    // Step 3: RRF fusion.
+    let fused = crate::fusion::reciprocal_rank_fusion(&vector_ids, &bm25_ids, state.search_config.rrf_k);
+
+    // Step 4: Top results.
+    let top: Vec<(Uuid, f64)> = fused.into_iter().take(limit).collect();
+    if top.is_empty() {
+        return Ok(Json(DocumentSearchResponse { results: vec![], total: 0 }));
+    }
+
+    // Step 5: Batch fetch from PG.
+    let ids: Vec<Uuid> = top.iter().map(|(id, _)| *id).collect();
+    let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("${i}")).collect();
+    let query_str = format!(
+        "SELECT id, source_uri, doc_type, title, content FROM yggdrasil.documents WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+    let mut q = sqlx::query_as::<_, (Uuid, String, String, Option<String>, String)>(&query_str);
+    for id in &ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(&state.pool).await
+        .map_err(|e| MuninnError::Internal(format!("pg fetch failed: {e}")))?;
+
+    let doc_map: HashMap<Uuid, (String, String, Option<String>, String)> = rows
+        .into_iter()
+        .map(|(id, uri, dt, title, content)| (id, (uri, dt, title, content)))
+        .collect();
+
+    // Step 6: Assemble results in RRF rank order.
+    let results: Vec<DocumentSearchResult> = top
+        .iter()
+        .filter_map(|(id, score)| {
+            doc_map.get(id).map(|(uri, dt, title, content)| DocumentSearchResult {
+                id: id.to_string(),
+                source_uri: uri.clone(),
+                doc_type: dt.clone(),
+                title: title.clone(),
+                content: content.clone(),
+                score: *score,
+            })
+        })
+        .collect();
+
+    let total = results.len();
+    Ok(Json(DocumentSearchResponse { results, total }))
+}
+
+/// BM25 full-text search on the documents table.
+async fn search_documents_bm25(
+    pool: &sqlx::PgPool,
+    query: &str,
+    limit: i64,
+    project: Option<&str>,
+) -> Result<Vec<(Uuid, f64)>, MuninnError> {
+    let tsquery = query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" & ");
+
+    let rows: Vec<(Uuid, f64)> = if let Some(proj) = project {
+        sqlx::query_as(
+            r#"
+            SELECT id, ts_rank(search_vec, to_tsquery('english', $1))::float8 AS rank
+            FROM yggdrasil.documents
+            WHERE search_vec @@ to_tsquery('english', $1) AND project = $2
+            ORDER BY rank DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(&tsquery)
+        .bind(proj)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| MuninnError::Internal(format!("bm25 search failed: {e}")))?
+    } else {
+        sqlx::query_as(
+            r#"
+            SELECT id, ts_rank(search_vec, to_tsquery('english', $1))::float8 AS rank
+            FROM yggdrasil.documents
+            WHERE search_vec @@ to_tsquery('english', $1)
+            ORDER BY rank DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(&tsquery)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| MuninnError::Internal(format!("bm25 search failed: {e}")))?
+    };
+
+    Ok(rows)
 }

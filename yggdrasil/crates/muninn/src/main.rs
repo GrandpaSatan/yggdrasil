@@ -11,8 +11,8 @@ use ygg_embed::OnnxEmbedder;
 
 use muninn::{
     handlers::{
-        find_references_handler, health_handler, search_handler, stats_handler,
-        symbol_lookup_handler,
+        documents_search_handler, find_references_handler, health_handler, search_handler,
+        stats_handler, symbol_lookup_handler,
     },
     state::AppState,
 };
@@ -98,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/symbols", post(symbol_lookup_handler))
         .route("/api/v1/references", post(find_references_handler))
         .route("/api/v1/stats", get(stats_handler))
+        // Document search (Sprint 056 — research flow).
+        .route("/api/v1/documents/search", post(documents_search_handler))
         // Prometheus scrape endpoint.
         .route(
             "/metrics",

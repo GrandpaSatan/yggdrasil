@@ -17,6 +17,7 @@ use mimir::{
         graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
         recall_engrams, sdr_operations, smart_ingest, spine_push, spine_pop, store_engram,
         task_cancel, task_complete, task_list, task_pop, task_push, timeline, vault_handler,
+        ingest_document,
     },
     state::{AppState, load_sdr_rows},
     summarization::SummarizationService,
@@ -96,6 +97,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/context", post(context_store))
         .route("/api/v1/context", get(context_list))
         .route("/api/v1/context/{handle}", get(context_retrieve))
+        // Document ingestion (Sprint 056).
+        .route("/api/v1/documents/ingest", post(ingest_document))
         // Task queue endpoints.
         .route("/api/v1/tasks/push", post(task_push))
         .route("/api/v1/tasks/pop", post(task_pop))

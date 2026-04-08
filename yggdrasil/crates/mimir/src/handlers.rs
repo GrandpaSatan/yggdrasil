@@ -17,6 +17,8 @@ use ygg_domain::engram::{
 use ygg_store::postgres::engrams;
 use ygg_store::qdrant::{Condition, Filter, Value};
 
+use sqlx;
+
 use crate::{error::MimirError, sdr, state::AppState};
 
 /// Build a Qdrant payload for project/scope isolation on the v2 collection.
@@ -2833,4 +2835,134 @@ pub struct VaultRequest {
     /// Tags for categorization
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Document ingestion (Sprint 056)
+// ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct IngestDocumentRequest {
+    pub source_uri: String,
+    pub content: String,
+    pub doc_type: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IngestDocumentResponse {
+    pub chunks_created: usize,
+    pub document_ids: Vec<Uuid>,
+}
+
+/// Chunk text into ~512-token segments at paragraph boundaries.
+fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for paragraph in text.split("\n\n") {
+        let trimmed = paragraph.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if current.len() + trimmed.len() + 2 > max_chars && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push_str("\n\n");
+        }
+        current.push_str(trimmed);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    // If no paragraph breaks, split on newlines instead.
+    if chunks.is_empty() && !text.trim().is_empty() {
+        chunks.push(text.trim().to_string());
+    }
+    chunks
+}
+
+/// `POST /api/v1/documents/ingest` — chunk, embed, and store a document.
+pub async fn ingest_document(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<IngestDocumentRequest>,
+) -> Result<(StatusCode, Json<IngestDocumentResponse>), MimirError> {
+    if body.content.trim().is_empty() {
+        return Err(MimirError::Validation("content must not be empty".into()));
+    }
+    if body.source_uri.trim().is_empty() {
+        return Err(MimirError::Validation("source_uri must not be empty".into()));
+    }
+
+    let chunks = chunk_text(&body.content, 2000);
+    let mut document_ids = Vec::with_capacity(chunks.len());
+
+    for (idx, chunk_text) in chunks.iter().enumerate() {
+        let chunk_id = Uuid::new_v4();
+
+        // Content hash for dedup.
+        let mut hasher = Sha256::new();
+        hasher.update(chunk_text.as_bytes());
+        let content_hash = hasher.finalize().to_vec();
+
+        // Embed.
+        let embedder = state.embedder.clone();
+        let text_for_embed = chunk_text.clone();
+        let embedding: Vec<f32> =
+            tokio::task::spawn_blocking(move || embedder.embed(&text_for_embed))
+                .await
+                .map_err(|e| MimirError::Internal(format!("embed task panicked: {e}")))?
+                .map_err(|e| MimirError::Internal(format!("embedder error: {e}")))?;
+
+        // Insert into PostgreSQL (ON CONFLICT skip for dedup).
+        sqlx::query(
+            r#"
+            INSERT INTO yggdrasil.documents
+                (id, source_uri, doc_type, title, chunk_index, content, content_hash, project)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (content_hash) DO NOTHING
+            "#,
+        )
+        .bind(chunk_id)
+        .bind(&body.source_uri)
+        .bind(&body.doc_type)
+        .bind(&body.title)
+        .bind(idx as i32)
+        .bind(chunk_text)
+        .bind(&content_hash)
+        .bind(&body.project)
+        .execute(state.store.pool())
+        .await
+        .map_err(|e| MimirError::Internal(format!("pg insert failed: {e}")))?;
+
+        // Upsert to Qdrant.
+        let mut payload = HashMap::new();
+        payload.insert("source_uri".to_string(), Value::from(body.source_uri.clone()));
+        payload.insert("doc_type".to_string(), Value::from(body.doc_type.clone()));
+        if let Some(ref p) = body.project {
+            payload.insert("project".to_string(), Value::from(p.clone()));
+        }
+        state.vectors.upsert("research_documents", chunk_id, embedding, payload).await
+            .map_err(|e| MimirError::Internal(format!("qdrant upsert failed: {e}")))?;
+
+        document_ids.push(chunk_id);
+    }
+
+    tracing::info!(
+        source_uri = %body.source_uri,
+        chunks = document_ids.len(),
+        "document ingested"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(IngestDocumentResponse {
+            chunks_created: document_ids.len(),
+            document_ids,
+        }),
+    ))
 }
