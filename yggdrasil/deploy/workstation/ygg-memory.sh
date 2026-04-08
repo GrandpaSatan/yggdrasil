@@ -185,15 +185,20 @@ do_sleep() {
 
 # ── error_recall: PostToolUse(Bash) — surface past errors on failure ──
 do_error_recall() {
-    local stdin_data exit_code output response count context
+    local stdin_data stderr_text stdout_text output response count context
     stdin_data=$(cat)
 
-    # Extract exit code from hook payload
-    exit_code=$(echo "$stdin_data" | jq -r '.tool_result.exit_code // .tool_output.exit_code // "0"' 2>/dev/null)
-    [ "$exit_code" = "0" ] || [ -z "$exit_code" ] && exit 0
+    # Claude Code PostToolUse payload for Bash:
+    # { tool_response: { stdout, stderr, interrupted } }
+    # No exit_code field — detect errors via non-empty stderr.
+    stderr_text=$(echo "$stdin_data" | jq -r '.tool_response.stderr // ""' 2>/dev/null)
+    stdout_text=$(echo "$stdin_data" | jq -r '.tool_response.stdout // ""' 2>/dev/null)
 
-    # Grab the error output (stderr or stdout, last 500 chars)
-    output=$(echo "$stdin_data" | jq -r '(.tool_result.stderr // .tool_result.stdout // .tool_output.content // "")' 2>/dev/null | tail -c 500)
+    # Only trigger on non-empty stderr (indicates a failure or warning)
+    [ ${#stderr_text} -lt 20 ] && exit 0
+
+    # Use stderr as the query, fall back to stdout if stderr is generic
+    output=$(echo "$stderr_text" | tail -c 500)
     [ ${#output} -lt 20 ] && exit 0
 
     # Query memory with the error text
