@@ -311,7 +311,8 @@ pub async fn fetch_memory_events(
     let body = RecallQuery {
         text: query.to_string(),
         limit,
-        include_text: None,
+        // Sprint 055: Request text so Core-tier engrams can be injected into the prompt.
+        include_text: Some(true),
         project: None,
         include_global: true,
     };
@@ -457,8 +458,24 @@ pub fn build_system_prompt(
         prompt.push_str(code_ctx);
     }
 
-    // NOTE: memory_events are intentionally NOT rendered here.
-    // See memory_router::apply_memory_events for their structural use.
+    // Sprint 055: Selectively inject Core-tier engram text into the prompt.
+    // Core engrams are manually curated stable facts (topology, preferences) — safe to inject.
+    // Recall-tier events are still NOT rendered (zero-injection for volatile memories).
+    if let Some(ref recall) = rag.memory_events {
+        let core_with_text: Vec<_> = recall
+            .core_events
+            .iter()
+            .filter(|e| e.cause.is_some() && e.effect.is_some())
+            .collect();
+        if !core_with_text.is_empty() {
+            prompt.push_str("\n\n## Memory Context (Core)\n\n");
+            for ev in core_with_text.iter().take(5) {
+                if let (Some(cause), Some(effect)) = (&ev.cause, &ev.effect) {
+                    prompt.push_str(&format!("- **{}**: {}\n", cause, effect));
+                }
+            }
+        }
+    }
 
     if let Some(ha_ctx) = &rag.ha_context {
         prompt.push_str(

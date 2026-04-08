@@ -29,6 +29,13 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// Spine label — identifies which worker/model should process this task.
+    /// Workers poll with their label to claim matching tasks.
+    pub label: Option<String>,
+    /// Structured context payload for spine workers (prompt, parameters, etc.).
+    pub context: Option<serde_json::Value>,
+    /// Time-to-live in seconds. Tasks older than TTL are auto-expired.
+    pub ttl_secs: Option<i32>,
 }
 
 /// Push a new task onto the queue. Returns the new task's UUID.
@@ -55,6 +62,63 @@ pub async fn push(
     .map_err(|e| StoreError::Query(e.to_string()))?;
 
     Ok(id.0)
+}
+
+/// Push a spine task — a labeled task with structured context for a model worker.
+pub async fn spine_push(
+    pool: &PgPool,
+    title: &str,
+    label: &str,
+    context: &serde_json::Value,
+    priority: i32,
+    ttl_secs: Option<i32>,
+) -> Result<Uuid, StoreError> {
+    let id: (Uuid,) = sqlx::query_as(
+        "INSERT INTO yggdrasil.tasks (title, label, context, priority, ttl_secs)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id",
+    )
+    .bind(title)
+    .bind(label)
+    .bind(context)
+    .bind(priority)
+    .bind(ttl_secs)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| StoreError::Query(e.to_string()))?;
+
+    Ok(id.0)
+}
+
+/// Pop a spine task by label — atomically claim the highest-priority pending task
+/// matching the given label. Expired tasks (past TTL) are skipped.
+pub async fn spine_pop(
+    pool: &PgPool,
+    agent: &str,
+    label: &str,
+) -> Result<Option<Task>, StoreError> {
+    sqlx::query_as::<_, TaskRow>(
+        "WITH next AS (
+            SELECT id FROM yggdrasil.tasks
+            WHERE status = 'pending'
+              AND label = $2
+              AND (ttl_secs IS NULL OR created_at + (ttl_secs || ' seconds')::interval > now())
+            ORDER BY priority DESC, created_at ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE yggdrasil.tasks t
+        SET status = 'in_progress', agent = $1, updated_at = now()
+        FROM next
+        WHERE t.id = next.id
+        RETURNING t.*",
+    )
+    .bind(agent)
+    .bind(label)
+    .fetch_optional(pool)
+    .await
+    .map(|opt| opt.map(Into::into))
+    .map_err(|e| StoreError::Query(e.to_string()))
 }
 
 /// Atomically claim the highest-priority pending task for the given agent.
@@ -237,6 +301,9 @@ struct TaskRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
+    label: Option<String>,
+    context: Option<serde_json::Value>,
+    ttl_secs: Option<i32>,
 }
 
 impl From<TaskRow> for Task {
@@ -254,6 +321,9 @@ impl From<TaskRow> for Task {
             created_at: r.created_at,
             updated_at: r.updated_at,
             completed_at: r.completed_at,
+            label: r.label,
+            context: r.context,
+            ttl_secs: r.ttl_secs,
         }
     }
 }

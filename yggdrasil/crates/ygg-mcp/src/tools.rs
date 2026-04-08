@@ -406,17 +406,36 @@ pub async fn store_memory(
         let sim = body["similarity"].as_f64().unwrap_or(0.0);
         let existing_cause = body["existing_cause"].as_str().unwrap_or("");
         let existing_effect = body["existing_effect"].as_str().unwrap_or("");
+        let is_contradiction = body["contradiction"].as_bool().unwrap_or(false);
+
+        let header = if is_contradiction {
+            format!("**CONTRADICTION detected** (similarity: {sim:.2}) — same topic, different content.")
+        } else {
+            format!("Near-duplicate detected (similarity: {sim:.2}).")
+        };
+
+        let action_hint = if is_contradiction {
+            format!(
+                "This looks like updated information. \
+                 To REPLACE the old memory, call store_memory with id=\"{dup_id}\".\n\
+                 To KEEP BOTH (old + new), call store_memory with force=true."
+            )
+        } else {
+            format!(
+                "To UPDATE the existing memory, call store_memory again with id=\"{dup_id}\".\n\
+                 To CREATE a new separate memory, call store_memory again with force=true."
+            )
+        };
 
         return tool_ok(format!(
-            "Near-duplicate detected (similarity: {sim:.2}).\n\n\
+            "{header}\n\n\
              **Existing memory** (ID: {dup_id}):\n\
              Cause: {existing_cause}\n\
              Effect: {existing_effect}\n\n\
              **Your new memory:**\n\
              Cause: {}\n\
              Effect: {}\n\n\
-             To UPDATE the existing memory, call store_memory again with id=\"{dup_id}\".\n\
-             To CREATE a new separate memory, call store_memory again with force=true.",
+             {action_hint}",
             params.cause, params.effect
         ));
     } else if status.is_client_error() {

@@ -88,28 +88,11 @@ do_init() {
     # Auto-update extension if source version != installed version
     check_and_update
 
-    local response count context
-    response=$(curl -sf --max-time 2 \
-        -H "Content-Type: application/json" \
-        -d '{"text":"last session work decisions sprint changes deployed gotchas","limit":5,"include_text":true}' \
-        "${MIMIR_URL}/api/v1/recall" 2>/dev/null) || { log "init: mimir unreachable"; emit_event "error" '{"stage":"init","message":"mimir unreachable"}'; exit 0; }
-
-    count=$(echo "$response" | jq '[.events[]? | select(.similarity > 0.6)] | length' 2>/dev/null || echo 0)
-
-    if [ "${count:-0}" -gt 0 ]; then
-        context=$(echo "$response" | jq -r '
-            [.events[]? | select(.similarity > 0.6) |
-             "[" + (.similarity | tostring | .[0:4]) + "] " +
-             (.cause // "") + " → " + (.effect // "")
-            ] | join("\n")
-        ' 2>/dev/null)
-        log "init: restored $count engrams"
-        emit_event "init" "{\"count\":$count}"
-        hook_output "SessionStart" "Prior session context (auto-recalled):\n${context}"
-    else
-        log "init: no prior context found"
-        emit_event "init" '{"count":0}'
-    fi
+    # Sprint 055: No generic recall at session start.
+    # Context-aware recall is handled by Claude.md Phase 1 protocol
+    # (query_memory_tool with the actual task topic on first prompt).
+    log "init: session started (recall deferred to first prompt)"
+    emit_event "init" '{"count":0}'
 }
 
 # ── recall: PreToolUse — surface relevant memories before edits ──────
@@ -140,19 +123,40 @@ do_recall() {
     fi
 }
 
-# ── ingest: PostToolUse — LLM judges if change is worth remembering ──
+# ── ingest: PostToolUse — Saga LLM judges if change is worth remembering ──
 do_ingest() {
-    local stdin_data file_path content filename response
+    local stdin_data file_path content filename response diff_content header branch
     stdin_data=$(cat)
     file_path=$(echo "$stdin_data" | jq -r '.tool_input.file_path // .tool_input.path // "unknown"' 2>/dev/null)
-    content=$(echo "$stdin_data" | jq -r '(.tool_input.new_string // .tool_input.content // "")' 2>/dev/null | head -c 300)
     filename=$(basename "$file_path")
 
-    # Skip trivial changes
-    [ ${#content} -lt 50 ] && exit 0
+    # Sprint 055: Capture git diff hunks instead of fixed char truncation.
+    # This gives the LLM the actual change with 3 lines of context.
+    diff_content=""
+    if [ -f "$file_path" ] && command -v git &>/dev/null; then
+        # Try unstaged diff first, then staged
+        diff_content=$(git diff -U3 -- "$file_path" 2>/dev/null | head -c 2000)
+        if [ -z "$diff_content" ]; then
+            diff_content=$(git diff --cached -U3 -- "$file_path" 2>/dev/null | head -c 2000)
+        fi
+    fi
 
-    # Call Mimir smart-ingest (which calls LLM internally)
-    response=$(curl -sf --max-time 3 \
+    # Fallback to raw content if git diff unavailable (new file, not in repo, etc.)
+    if [ -z "$diff_content" ]; then
+        diff_content=$(echo "$stdin_data" | jq -r '(.tool_input.new_string // .tool_input.content // "")' 2>/dev/null | head -c 2000)
+    fi
+
+    # Skip trivial changes
+    [ ${#diff_content} -lt 50 ] && exit 0
+
+    # Sprint 055: Prepend file metadata so the LLM knows context
+    branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    header="File: ${file_path} | Branch: ${branch}"
+    content="${header}
+${diff_content}"
+
+    # Call Mimir smart-ingest (Saga model judges STORE vs SKIP)
+    response=$(curl -sf --max-time 5 \
         -H "Content-Type: application/json" \
         -d "{\"content\":$(echo "$content" | jq -Rs .),\"file_path\":$(echo "$file_path" | jq -Rs .),\"workstation\":\"$(hostname)\",\"source\":\"edit\"}" \
         "${MIMIR_URL}/api/v1/smart-ingest" 2>/dev/null) || exit 0
@@ -179,12 +183,47 @@ do_sleep() {
     emit_event "sleep" "{\"summary\":$(echo "$summary" | jq -Rs .)}"
 }
 
+# ── error_recall: PostToolUse(Bash) — surface past errors on failure ──
+do_error_recall() {
+    local stdin_data exit_code output response count context
+    stdin_data=$(cat)
+
+    # Extract exit code from hook payload
+    exit_code=$(echo "$stdin_data" | jq -r '.tool_result.exit_code // .tool_output.exit_code // "0"' 2>/dev/null)
+    [ "$exit_code" = "0" ] || [ -z "$exit_code" ] && exit 0
+
+    # Grab the error output (stderr or stdout, last 500 chars)
+    output=$(echo "$stdin_data" | jq -r '(.tool_result.stderr // .tool_result.stdout // .tool_output.content // "")' 2>/dev/null | tail -c 500)
+    [ ${#output} -lt 20 ] && exit 0
+
+    # Query memory with the error text
+    response=$(curl -sf --max-time 1 \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":$(echo "$output" | jq -Rs .),\"limit\":3,\"include_text\":true}" \
+        "${MIMIR_URL}/api/v1/recall" 2>/dev/null) || exit 0
+
+    count=$(echo "$response" | jq '[.events[]? | select(.similarity > 0.7)] | length' 2>/dev/null || echo 0)
+
+    if [ "${count:-0}" -gt 0 ]; then
+        context=$(echo "$response" | jq -r '
+            [.events[]? | select(.similarity > 0.7) |
+             "[" + (.similarity | tostring | .[0:4]) + "] " +
+             (.cause // "") + " → " + (.effect // "")
+            ] | join("\n")
+        ' 2>/dev/null)
+        log "error_recall: $count engrams for failed command"
+        emit_event "error_recall" "{\"count\":$count}"
+        hook_output "PostToolUse" "Past encounters with similar errors:\n${context}"
+    fi
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 case "${1:-}" in
-    init)   do_init ;;
-    recall) do_recall ;;
-    ingest) do_ingest ;;
-    sleep)  do_sleep ;;
-    *)      echo "Usage: ygg-memory.sh <init|recall|ingest|sleep>" >&2 ;;
+    init)         do_init ;;
+    recall)       do_recall ;;
+    ingest)       do_ingest ;;
+    error_recall) do_error_recall ;;
+    sleep)        do_sleep ;;
+    *)            echo "Usage: ygg-memory.sh <init|recall|ingest|sleep|error_recall>" >&2 ;;
 esac
 exit 0

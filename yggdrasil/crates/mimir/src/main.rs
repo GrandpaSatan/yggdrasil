@@ -15,8 +15,8 @@ use mimir::{
         auto_ingest, consolidate, context_list, context_retrieve, context_store, embed_text,
         get_core_engrams_handler, get_engram_by_id, get_stats, graph_link, graph_neighbors,
         graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
-        recall_engrams, sdr_operations, smart_ingest, store_engram, task_cancel, task_complete,
-        task_list, task_pop, task_push, timeline, vault_handler,
+        recall_engrams, sdr_operations, smart_ingest, spine_push, spine_pop, store_engram,
+        task_cancel, task_complete, task_list, task_pop, task_push, timeline, vault_handler,
     },
     state::{AppState, load_sdr_rows},
     summarization::SummarizationService,
@@ -102,6 +102,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tasks/complete", post(task_complete))
         .route("/api/v1/tasks/cancel", post(task_cancel))
         .route("/api/v1/tasks/list", post(task_list))
+        // Spine endpoints (labeled task queue for model workers).
+        .route("/api/v1/spine/push", post(spine_push))
+        .route("/api/v1/spine/pop", post(spine_pop))
+        .route("/api/v1/spine/complete", post(task_complete)) // reuse task_complete
         // Graph endpoints.
         .route("/api/v1/graph/link", post(graph_link))
         .route("/api/v1/graph/unlink", post(graph_unlink))

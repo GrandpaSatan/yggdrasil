@@ -260,10 +260,36 @@ pub async fn store_engram(
                     .map(|e| (e.cause, e.effect))
                     .unwrap_or_default();
 
+                // Sprint 055: Detect contradictions — high cause similarity but divergent effects.
+                // Use Jaccard word overlap on effect text to determine if this is a
+                // near-duplicate (same info) or a contradiction (updated/conflicting info).
+                let contradiction_detected = if sim >= 0.85 && !existing_effect.is_empty() {
+                    let existing_words: std::collections::HashSet<&str> =
+                        existing_effect.split_whitespace().collect();
+                    let new_words: std::collections::HashSet<&str> =
+                        body.effect.split_whitespace().collect();
+                    let intersection = existing_words.intersection(&new_words).count();
+                    let union = existing_words.union(&new_words).count();
+                    let jaccard = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
+                    // Low word overlap (< 0.5) with high semantic similarity = contradiction
+                    jaccard < 0.5
+                } else {
+                    false
+                };
+
+                if contradiction_detected {
+                    tracing::warn!(
+                        duplicate_id = %dup_id,
+                        similarity = %sim,
+                        "contradiction detected — same topic, different content"
+                    );
+                }
+
                 return Ok((
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
-                        "error": "near-duplicate detected",
+                        "error": if contradiction_detected { "contradiction detected" } else { "near-duplicate detected" },
+                        "contradiction": contradiction_detected,
                         "duplicate_id": dup_id,
                         "similarity": sim,
                         "existing_cause": existing_cause,
@@ -325,7 +351,16 @@ pub async fn store_engram(
         .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
         .await?;
 
-    // Step 11: Return 201 Created
+    // Step 11: Fire-and-forget graph linking (Sprint 055)
+    crate::linker::spawn_link_engram(
+        state.clone(),
+        id,
+        body.cause.clone(),
+        body.effect.clone(),
+        sdr_val,
+    );
+
+    // Step 12: Return 201 Created
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }
 
@@ -444,10 +479,10 @@ pub async fn query_engrams(
             .or_insert(score_f64);
     }
 
-    // Sort by similarity descending, truncate to limit
+    // Sort by similarity descending, take extra candidates for composite re-ranking
     let mut ranked: Vec<(Uuid, f64)> = merged.into_iter().collect();
     ranked.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(limit);
+    ranked.truncate(limit * 2);
 
     if ranked.is_empty() {
         return Ok((StatusCode::OK, Json(serde_json::json!({ "results": [] }))));
@@ -455,11 +490,17 @@ pub async fn query_engrams(
 
     // Step 4: Fetch full engram data from PostgreSQL
     let sim_map: HashMap<Uuid, f64> = ranked.iter().cloned().collect();
+    let now = chrono::Utc::now();
     let mut results = Vec::with_capacity(ranked.len());
     for (id, _) in &ranked {
         match engrams::get_engram(state.store.pool(), *id).await {
             Ok(mut engram) => {
-                engram.similarity = sim_map.get(id).copied().unwrap_or(0.0);
+                let raw_sim = sim_map.get(id).copied().unwrap_or(0.0);
+                // Composite scoring: blend similarity with recency and access frequency
+                let hours_since_access = (now - engram.last_accessed).num_seconds().max(0) as f64 / 3600.0;
+                let recency = (-0.01 * hours_since_access).exp();
+                let importance = ((engram.access_count as f64) + 1.0).ln().min(1.0);
+                engram.similarity = (0.6 * raw_sim) + (0.2 * recency) + (0.2 * importance);
                 results.push(engram);
             }
             Err(e) => {
@@ -467,6 +508,10 @@ pub async fn query_engrams(
             }
         }
     }
+
+    // Re-sort by composite score and truncate to requested limit
+    results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    results.truncate(limit);
 
     // Fire-and-forget access count bump
     let result_ids: Vec<Uuid> = results.iter().map(|e| e.id).collect();
@@ -555,25 +600,35 @@ pub async fn recall_engrams(
             .or_insert(normalized);
     }
 
-    // Sort by similarity descending, truncate to limit
+    // Sort by similarity descending, take extra candidates for composite re-ranking
     let mut ranked: Vec<(Uuid, f64)> = merged.into_iter().collect();
     ranked.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(limit);
+    // Fetch extra candidates (2x limit) so composite scoring can re-rank effectively
+    ranked.truncate(limit * 2);
 
-    // Step 6: Fetch metadata from PostgreSQL
+    // Step 6: Fetch metadata from PostgreSQL (includes last_accessed for composite scoring)
     let result_ids: Vec<Uuid> = ranked.iter().map(|(id, _)| *id).collect();
     let sim_map: HashMap<Uuid, f64> = ranked.into_iter().collect();
 
     let event_rows = engrams::fetch_engram_events(state.store.pool(), &result_ids).await?;
 
-    // Step 7: Build EngramEvent list
-    let events: Vec<EngramEvent> = event_rows
+    // Step 7: Build EngramEvent list with composite scoring
+    // score = (0.6 * similarity) + (0.2 * recency_decay) + (0.2 * importance)
+    let now = chrono::Utc::now();
+    let mut events: Vec<EngramEvent> = event_rows
         .into_iter()
-        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count)| {
-            let similarity = sim_map.get(&id).copied().unwrap_or(0.0);
+        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, last_accessed)| {
+            let raw_sim = sim_map.get(&id).copied().unwrap_or(0.0);
+
+            // Composite scoring: blend similarity with recency and access frequency
+            let hours_since_access = (now - last_accessed).num_seconds().max(0) as f64 / 3600.0;
+            let recency = (-0.01 * hours_since_access).exp(); // decay over ~100 hours
+            let importance = ((access_count as f64) + 1.0).ln().min(1.0); // log scale, capped at 1.0
+            let composite = (0.6 * raw_sim) + (0.2 * recency) + (0.2 * importance);
+
             EngramEvent {
                 id,
-                similarity,
+                similarity: composite,
                 tier: parse_tier(&tier_str),
                 tags: tags.clone(),
                 trigger: build_trigger(&trigger_type, trigger_label, &tags),
@@ -584,6 +639,10 @@ pub async fn recall_engrams(
             }
         })
         .collect();
+
+    // Re-sort by composite score and truncate to requested limit
+    events.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    events.truncate(limit);
 
     // Step 7b: Optionally fetch cause/effect text for each event.
     // Backward-compatible: callers that omit include_text get the same metadata-only response.
@@ -613,7 +672,7 @@ pub async fn recall_engrams(
 
     // Step 8: Fetch core engrams as events
     let core_rows = engrams::get_core_engram_events(state.store.pool()).await?;
-    let core_events: Vec<EngramEvent> = core_rows
+    let mut core_events: Vec<EngramEvent> = core_rows
         .into_iter()
         .map(|(id, tags, trigger_type, trigger_label, created_at, access_count)| EngramEvent {
             id,
@@ -629,12 +688,32 @@ pub async fn recall_engrams(
         })
         .collect();
 
-    // Step 9: Fire-and-forget access count bump for recalled engrams
-    if !result_ids.is_empty() {
+    // Sprint 055: Populate Core-tier text when include_text is requested.
+    // This enables selective context injection — Core engrams are safe to inject
+    // into the LLM prompt because they are manually curated facts.
+    if body.include_text.unwrap_or(false) && !core_events.is_empty() {
+        let core_ids: Vec<Uuid> = core_events.iter().map(|e| e.id).collect();
+        let core_sim: HashMap<Uuid, f64> = core_events.iter().map(|e| (e.id, 1.0)).collect();
+        if let Ok(full) = engrams::fetch_engrams_by_ids(state.store.pool(), &core_ids, &core_sim).await {
+            let text_map: HashMap<Uuid, (String, String)> = full
+                .into_iter()
+                .map(|e| (e.id, (e.cause, e.effect)))
+                .collect();
+            for ev in &mut core_events {
+                if let Some((cause, effect)) = text_map.get(&ev.id) {
+                    ev.cause = Some(cause.clone());
+                    ev.effect = Some(effect.clone());
+                }
+            }
+        }
+    }
+
+    // Step 9: Fire-and-forget access count bump for recalled engrams (final set only)
+    let final_ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
+    if !final_ids.is_empty() {
         let pool = state.store.pool().clone();
-        let ids = result_ids.clone();
         tokio::spawn(async move {
-            if let Err(e) = bump_access_counts(&pool, &ids).await {
+            if let Err(e) = bump_access_counts(&pool, &final_ids).await {
                 tracing::warn!(error = %e, "failed to bump access counts");
             }
         });
@@ -863,7 +942,7 @@ pub async fn sdr_operations(
 
     let events: Vec<EngramEvent> = event_rows
         .into_iter()
-        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count)| {
+        .map(|(id, tier_str, tags, trigger_type, trigger_label, created_at, access_count, _last_accessed)| {
             let similarity = sim_map.get(&id).copied().unwrap_or(0.0);
             EngramEvent {
                 id,
@@ -1372,6 +1451,99 @@ pub async fn task_list(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/spine/push — push a labeled task for a model worker
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SpinePushRequest {
+    pub title: String,
+    pub label: String,
+    #[serde(default)]
+    pub context: serde_json::Value,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub ttl_secs: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpinePushResponse {
+    pub id: String,
+}
+
+pub async fn spine_push(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpinePushRequest>,
+) -> Result<Json<SpinePushResponse>, MimirError> {
+    if req.label.trim().is_empty() {
+        return Err(MimirError::Validation("label must not be empty".to_string()));
+    }
+
+    let id = ygg_store::postgres::tasks::spine_push(
+        state.store.pool(),
+        &req.title,
+        &req.label,
+        &req.context,
+        req.priority,
+        req.ttl_secs,
+    )
+    .await?;
+
+    tracing::info!(task_id = %id, label = %req.label, title = %req.title, "spine task pushed");
+    Ok(Json(SpinePushResponse { id: id.to_string() }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/spine/pop — claim the next pending task for a label
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SpinePopRequest {
+    pub agent: String,
+    pub label: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpinePopResponse {
+    pub task: Option<SpineTaskResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpineTaskResponse {
+    pub id: String,
+    pub title: String,
+    pub label: String,
+    pub context: serde_json::Value,
+    pub priority: i32,
+}
+
+pub async fn spine_pop(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpinePopRequest>,
+) -> Result<Json<SpinePopResponse>, MimirError> {
+    if req.label.trim().is_empty() {
+        return Err(MimirError::Validation("label must not be empty".to_string()));
+    }
+
+    let task = ygg_store::postgres::tasks::spine_pop(
+        state.store.pool(),
+        &req.agent,
+        &req.label,
+    )
+    .await?;
+
+    Ok(Json(SpinePopResponse {
+        task: task.map(|t| SpineTaskResponse {
+            id: t.id.to_string(),
+            title: t.title,
+            label: t.label.unwrap_or_default(),
+            context: t.context.unwrap_or(serde_json::Value::Null),
+            priority: t.priority,
+        }),
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/v1/graph/link — create an edge between engrams
 // ---------------------------------------------------------------------------
 
@@ -1745,29 +1917,6 @@ pub async fn auto_ingest(
                 "auto_ingest stored"
             );
 
-            // Spawn Saga async enrichment (fire-and-forget).
-            // Saga verifies should_store, corrects category, and distills
-            // structured cause/effect. If Saga is down, the engram keeps
-            // its cosine-classified data.
-            {
-                let state_clone = state.clone();
-                let content_clone = content.clone();
-                let source_clone = body.source.clone();
-                let file_path_clone = body.file_path.clone();
-                let category_clone = matched_name.clone();
-                tokio::spawn(async move {
-                    crate::saga::enrich_engram(
-                        state_clone,
-                        id,
-                        content_clone,
-                        source_clone,
-                        file_path_clone,
-                        category_clone,
-                    )
-                    .await;
-                });
-            }
-
             return Ok((
                 StatusCode::CREATED,
                 Json(AutoIngestResponse {
@@ -1846,6 +1995,41 @@ pub(crate) struct ChatMsg {
 
 /// Default model for smart-ingest LLM calls (fallback if saga config has no model).
 const DEFAULT_INGEST_MODEL: &str = "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M";
+
+/// Smart-ingest unified JSON response from the Saga model.
+#[derive(Debug, Deserialize)]
+struct SmartIngestLlmResponse {
+    store: bool,
+    #[serde(default)]
+    cause: Option<String>,
+    #[serde(default)]
+    effect: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Strip `<think>...</think>` tags and extract the first JSON object from LLM output.
+fn extract_json(text: &str) -> Option<String> {
+    let mut cleaned = text.to_string();
+    while let Some(start) = cleaned.find("<think>") {
+        if let Some(end) = cleaned.find("</think>") {
+            cleaned.replace_range(start..end + "</think>".len(), "");
+        } else {
+            cleaned.truncate(start);
+            break;
+        }
+    }
+    let cleaned = cleaned.trim();
+    let start = cleaned.find('{')?;
+    let end = cleaned.rfind('}')?;
+    if end > start {
+        Some(cleaned[start..=end].to_string())
+    } else {
+        None
+    }
+}
 
 /// Call an OpenAI-compatible /v1/chat/completions endpoint (Odin, llama-server, etc).
 ///
@@ -1948,27 +2132,28 @@ pub async fn smart_ingest(
         return Ok(skip("duplicate"));
     }
 
-    // Step 4: Call llama-server LLM to classify STORE vs SKIP
+    // Step 4: Call Saga model to classify STORE vs SKIP and extract structured data
     let (llm_url, model) = resolve_llm_config(&state);
     let content_truncated: String = body.content.chars().take(2000).collect();
 
     let prompt = format!(
-        "You curate memories for a software engineer. Decide if this code change is worth remembering.\n\n\
+        "You curate memories for a software engineer. Analyze this code change.\n\n\
          Rules:\n\
-         - STORE important changes (bugs, architecture, deployment, gotchas)\n\
-         - SKIP trivial changes (formatting, imports, comments)\n\
+         - STORE: bugs, architecture decisions, deployment changes, gotchas, user preferences\n\
+         - SKIP: formatting, imports, comments, trivial whitespace\n\
          - Include specific details (file names, error messages, flag values)\n\n\
-         Change in {}:\n\
-         {}\n\n\
-         Respond ONE line:\n\
-         STORE: {{cause}} -> {{effect with details}}\n\
-         or\n\
-         SKIP: {{reason}}",
+         If STORE, respond as JSON:\n\
+         {{\"store\": true, \"cause\": \"what triggered this\", \"effect\": \"what happened\", \"tags\": [\"category\"]}}\n\n\
+         If SKIP, respond as JSON:\n\
+         {{\"store\": false, \"reason\": \"why\"}}\n\n\
+         File: {}\n\
+         Change:\n\
+         {}",
         body.file_path, content_truncated
     );
 
     let llm_result = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(5),
         llm_chat_completion(&state.http_client, &llm_url, &model, &prompt),
     )
     .await
@@ -1977,74 +2162,72 @@ pub async fn smart_ingest(
 
     match llm_result {
         Ok(response) => {
-            let trimmed = response.trim();
-
-            if let Some(store_payload) = trimmed.strip_prefix("STORE:").or_else(|| {
-                // Handle multi-line responses: find the first STORE: line
-                trimmed.lines().find_map(|line| line.trim().strip_prefix("STORE:"))
-            }) {
-                let store_payload = store_payload.trim();
-
-                // Parse "cause -> effect" format
-                let (cause, effect) = if let Some(arrow_pos) = store_payload.find("->") {
-                    let c = store_payload[..arrow_pos].trim().to_string();
-                    let e = store_payload[arrow_pos + 2..].trim().to_string();
-                    (c, e)
-                } else {
-                    // No arrow separator — use the whole payload as both
-                    (store_payload.to_string(), store_payload.to_string())
-                };
-
-                if cause.is_empty() || effect.is_empty() {
-                    tracing::warn!("smart_ingest: LLM returned empty cause/effect, falling back");
+            // Parse JSON response (strip <think> tags if present)
+            let json_str = match extract_json(&response) {
+                Some(s) => s,
+                None => {
+                    tracing::warn!(
+                        raw = %response.chars().take(200).collect::<String>(),
+                        "smart_ingest: no JSON in LLM response, falling back"
+                    );
                     return smart_ingest_fallback(state, body, content_hash_hex).await;
                 }
+            };
 
-                // Step 5: Store the engram — embed → SDR → PG + Qdrant
-                let result = smart_ingest_store(
-                    &state,
-                    &body,
-                    &cause,
-                    &effect,
-                    &content_hash_hex,
-                )
-                .await?;
+            match serde_json::from_str::<SmartIngestLlmResponse>(&json_str) {
+                Ok(parsed) if parsed.store => {
+                    let cause = parsed.cause.unwrap_or_default();
+                    let effect = parsed.effect.unwrap_or_default();
 
-                Ok(result)
-            } else if trimmed.contains("SKIP:") || trimmed.lines().any(|l| l.trim().starts_with("SKIP:")) {
-                let reason = trimmed
-                    .lines()
-                    .find_map(|l| l.trim().strip_prefix("SKIP:"))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| "llm_skip".to_string());
+                    if cause.len() < 5 || effect.len() < 5 {
+                        tracing::warn!("smart_ingest: LLM returned short cause/effect, falling back");
+                        return smart_ingest_fallback(state, body, content_hash_hex).await;
+                    }
 
-                tracing::info!(
-                    workstation = %body.workstation,
-                    file_path = %body.file_path,
-                    reason = %reason,
-                    "smart_ingest: LLM decided SKIP"
-                );
+                    // Step 5: Store the engram with LLM-extracted tags
+                    let result = smart_ingest_store(
+                        &state,
+                        &body,
+                        &cause,
+                        &effect,
+                        &parsed.tags,
+                        &content_hash_hex,
+                    )
+                    .await?;
 
-                // Update cooldown even on skip
-                state
-                    .cooldown_map
-                    .insert(body.workstation.clone(), std::time::Instant::now());
+                    Ok(result)
+                }
+                Ok(parsed) => {
+                    // store == false → SKIP
+                    let reason = parsed.reason.unwrap_or_else(|| "llm_skip".to_string());
 
-                Ok(skip(&reason))
-            } else {
-                // LLM returned something we cannot parse — fall back
-                tracing::warn!(
-                    raw = %trimmed,
-                    "smart_ingest: LLM response not STORE/SKIP, falling back"
-                );
-                smart_ingest_fallback(state, body, content_hash_hex).await
+                    tracing::info!(
+                        workstation = %body.workstation,
+                        file_path = %body.file_path,
+                        reason = %reason,
+                        "smart_ingest: Saga decided SKIP"
+                    );
+
+                    state
+                        .cooldown_map
+                        .insert(body.workstation.clone(), std::time::Instant::now());
+
+                    Ok(skip(&reason))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        raw = %json_str.chars().take(200).collect::<String>(),
+                        "smart_ingest: JSON parse failed, falling back"
+                    );
+                    smart_ingest_fallback(state, body, content_hash_hex).await
+                }
             }
         }
         Err(e) => {
-            // LLM failure — fall back to template matching
             tracing::warn!(
                 error = %e,
-                "smart_ingest: LLM call failed, falling back to template matching"
+                "smart_ingest: Saga call failed, falling back to template matching"
             );
             smart_ingest_fallback(state, body, content_hash_hex).await
         }
@@ -2057,6 +2240,7 @@ async fn smart_ingest_store(
     body: &SmartIngestRequest,
     cause: &str,
     effect: &str,
+    llm_tags: &[String],
     content_hash_hex: &str,
 ) -> Result<(StatusCode, Json<SmartIngestResponse>), MimirError> {
     // Embed cause text
@@ -2073,12 +2257,17 @@ async fn smart_ingest_store(
     let pg_content_hash = engram_content_hash(cause, effect);
     let trigger_label = truncate_to_word_boundary(cause, 80);
 
-    let tags = vec![
+    let mut tags = vec![
         "auto_ingest".to_string(),
         "smart_ingest".to_string(),
         format!("workstation:{}", body.workstation),
         format!("source:{}", body.source),
     ];
+    for t in llm_tags {
+        if !t.is_empty() && !tags.contains(t) {
+            tags.push(t.clone());
+        }
+    }
 
     let id = engrams::insert_engram_sdr(
         state.store.pool(),

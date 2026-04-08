@@ -338,14 +338,14 @@ pub async fn update_engram_sdr(
 pub async fn fetch_engram_events(
     pool: &PgPool,
     ids: &[Uuid],
-) -> Result<Vec<(Uuid, String, Vec<String>, String, String, DateTime<Utc>, i64)>, StoreError> {
+) -> Result<Vec<(Uuid, String, Vec<String>, String, String, DateTime<Utc>, i64, DateTime<Utc>)>, StoreError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let rows = sqlx::query(
         r#"
-        SELECT id, tier, tags, trigger_type, trigger_label, created_at, access_count
+        SELECT id, tier, tags, trigger_type, trigger_label, created_at, access_count, last_accessed
         FROM yggdrasil.engrams
         WHERE id = ANY($1)
         "#,
@@ -367,6 +367,7 @@ pub async fn fetch_engram_events(
                     .unwrap_or_default(),
                 r.get::<DateTime<Utc>, _>("created_at"),
                 r.get::<i64, _>("access_count"),
+                r.get::<DateTime<Utc>, _>("last_accessed"),
             )
         })
         .collect())
