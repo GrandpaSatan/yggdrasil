@@ -82,7 +82,7 @@ function getHtml(stats: SessionStats): string {
   }
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     margin-bottom: 24px;
   }
@@ -102,6 +102,7 @@ function getHtml(stats: SessionStats): string {
   .stat-value.errors { color: var(--vscode-charts-red); }
   .stat-value.stored { color: var(--vscode-charts-green); }
   .stat-value.recalled { color: var(--vscode-charts-purple); }
+  .stat-value.sidecar { color: var(--vscode-charts-orange); }
   .stat-label {
     font-size: 0.85em;
     color: var(--vscode-descriptionForeground);
@@ -169,6 +170,10 @@ function getHtml(stats: SessionStats): string {
       <div class="stat-label">Errors</div>
     </div>
     <div class="stat-card">
+      <div class="stat-value sidecar">${stats.sidecarCount}</div>
+      <div class="stat-label">Sidecar${stats.lastCategory ? ` (${stats.lastCategory})` : ""}</div>
+    </div>
+    <div class="stat-card">
       <div class="stat-value">${stats.events.length}</div>
       <div class="stat-label">Total Events</div>
     </div>
@@ -195,6 +200,9 @@ function eventIcon(event: string): string {
     case "sleep": return "\u{1F634}";
     case "error": return "\u274C";
     case "tool": return "\u{1F527}";
+    case "sidecar": return "\u{1F916}";
+    case "error_recall": return "\u{1F504}";
+    case "update": return "\u2B06\uFE0F";
     default: return "\u2022";
   }
 }
@@ -203,8 +211,11 @@ function eventDetail(e: { event: string; data: Record<string, unknown> }): strin
   switch (e.event) {
     case "init":
       return `${e.data.count ?? 0} engrams from prior session`;
-    case "recall":
-      return `${e.data.count ?? 0} memories for ${e.data.file ?? "?"}`;
+    case "recall": {
+      const query = e.data.query ?? e.data.file ?? "?";
+      const mode = e.data.mode ? ` (${e.data.mode})` : "";
+      return `${e.data.count ?? 0} memories for "${query}"${mode}`;
+    }
     case "ingest":
       return e.data.stored
         ? `${e.data.file ?? "?"} \u2014 ${(e.data.cause as string)?.slice(0, 60) ?? ""}`
@@ -213,6 +224,16 @@ function eventDetail(e: { event: string; data: Record<string, unknown> }): strin
       return String(e.data.summary ?? "session ended");
     case "error":
       return `${e.data.stage ?? "?"}: ${e.data.message ?? "unknown"}`;
+    case "sidecar": {
+      const cat = e.data.category ?? "?";
+      const eng = e.data.engrams ?? e.data.queries ?? 0;
+      const worthy = e.data.store_worthy ? " \u2714" : "";
+      return `${cat} \u2014 ${eng} engrams${worthy}`;
+    }
+    case "error_recall":
+      return `${e.data.count ?? 0} past error encounters`;
+    case "update":
+      return `${e.data.from ?? "?"} \u2192 ${e.data.to ?? "?"} (${e.data.status ?? "?"})`;
     case "tool":
       return `${e.data.name ?? "?"} (${e.data.status}, ${e.data.duration_ms ?? 0}ms)`;
     default:

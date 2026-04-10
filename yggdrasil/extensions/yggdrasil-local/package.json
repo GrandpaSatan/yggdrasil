@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil Local",
   "description": "Local Yggdrasil interface — memory monitor + dashboard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "engines": {
@@ -56,7 +56,7 @@
           "default": ["ingest", "error"],
           "items": {
             "type": "string",
-            "enum": ["init", "recall", "ingest", "sleep", "error"]
+            "enum": ["init", "recall", "ingest", "sleep", "error", "sidecar", "error_recall", "update"]
           },
           "description": "Which event types trigger notifications"
         }

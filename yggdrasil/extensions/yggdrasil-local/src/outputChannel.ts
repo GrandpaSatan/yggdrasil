@@ -38,9 +38,10 @@ export class OutputChannelManager implements vscode.Disposable {
 
       case "recall": {
         const count = event.data.count ?? 0;
-        const file = event.data.file ?? "unknown";
+        const query = event.data.query ?? event.data.file ?? "unknown";
+        const mode = event.data.mode ? ` (${event.data.mode})` : "";
         this.channel.appendLine(
-          `[${ts}] \u{1F50D} Recalled ${count} memories for ${file}`
+          `[${ts}] \u{1F50D} Recalled ${count} memories for "${query}"${mode}`
         );
         break;
       }
@@ -70,6 +71,35 @@ export class OutputChannelManager implements vscode.Disposable {
         );
         // Auto-show on errors
         this.channel.show(true);
+        break;
+      }
+
+      case "sidecar": {
+        const category = event.data.category ?? "unknown";
+        const engrams = event.data.engrams ?? event.data.queries ?? 0;
+        const worthy = event.data.store_worthy ? " (store-worthy)" : "";
+        this.channel.appendLine(
+          `[${ts}] \u{1F916} Sidecar: ${category} \u2014 ${engrams} engrams injected${worthy}`
+        );
+        break;
+      }
+
+      case "error_recall": {
+        const count = event.data.count ?? 0;
+        this.channel.appendLine(
+          `[${ts}] \u{1F504} Error recall: found ${count} past encounters`
+        );
+        break;
+      }
+
+      case "update": {
+        const from = event.data.from ?? "?";
+        const to = event.data.to ?? "?";
+        const status = event.data.status ?? "?";
+        const icon = status === "complete" ? "\u2705" : "\u{2B06}\u{FE0F}";
+        this.channel.appendLine(
+          `[${ts}] ${icon} Extension update: ${from} \u2192 ${to} (${status})`
+        );
         break;
       }
 

@@ -97,7 +97,8 @@ class AdaptiveGrokCallback(TrainerCallback):
     lr_grok_factor : float
         Reduce LR to this fraction when grokking detected.  Default 0.5.
     pre_grok_lr_factor : float
-        Reduce LR by this fraction on PRE_GROK detection.  Default 0.7.
+        In PRE_GROK, perturb LR by this factor (>1 = spike, <1 = reduce).
+        Default 1.5 (spike to escape flat basins).
     train_loss_mem_threshold : float
         Train loss below this → memorization complete.  Default 0.05.
     grok_drop_threshold : float
@@ -116,7 +117,7 @@ class AdaptiveGrokCallback(TrainerCallback):
         wd_max: float = 1.5,
         lr_bump_factor: float = 1.5,
         lr_grok_factor: float = 0.5,
-        pre_grok_lr_factor: float = 0.7,
+        pre_grok_lr_factor: float = 1.5,
         train_loss_mem_threshold: float = 0.05,
         grok_drop_threshold: float = 0.20,
         convergence_patience: int = 500,
@@ -338,12 +339,24 @@ class AdaptiveGrokCallback(TrainerCallback):
 
         # ── PRE_GROK phase logic ─────────────────────────────────
         elif self.phase == GrokPhase.PRE_GROK and optimizer:
-            # Stabilize: decrease LR
-            if step - self.last_intervention_step > 50:
+            # Perturbation strategy: spike LR to escape flat basin,
+            # then let the scheduler (or next eval) pull it back.
+            # Only perturb every 200+ steps to give the spike time to work.
+            if step - self.last_intervention_step > 200:
                 current_lr = self._get_lr(optimizer)
-                new_lr = current_lr * self.pre_grok_lr_factor
-                self._set_lr(optimizer, new_lr)
-                intervention = f"LR {current_lr:.2e}→{new_lr:.2e} (stabilize PRE_GROK)"
+                # Alternate: spike up, then restore base LR
+                if not hasattr(self, '_pre_grok_base_lr'):
+                    self._pre_grok_base_lr = current_lr
+                if current_lr <= self._pre_grok_base_lr:
+                    # Spike phase: temporarily increase LR
+                    new_lr = self._pre_grok_base_lr * self.pre_grok_lr_factor
+                    self._set_lr(optimizer, new_lr)
+                    intervention = f"LR {current_lr:.2e}→{new_lr:.2e} (PRE_GROK perturbation spike)"
+                else:
+                    # Restore phase: bring LR back to base
+                    new_lr = self._pre_grok_base_lr
+                    self._set_lr(optimizer, new_lr)
+                    intervention = f"LR {current_lr:.2e}→{new_lr:.2e} (PRE_GROK restore base)"
                 print(f"  [Intervention] {intervention}")
                 self.last_intervention_step = step
 

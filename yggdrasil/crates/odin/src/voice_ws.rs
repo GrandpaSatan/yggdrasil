@@ -51,14 +51,11 @@ pub async fn ws_voice_handler(
 // ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 enum VadState {
     /// Waiting for speech energy to exceed the threshold.
     Idle,
     /// Speech detected — accumulating audio.
     Listening,
-    /// Silence timeout reached — pipeline running.
-    Processing,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -82,6 +79,23 @@ const VAD_WINDOW_SAMPLES: usize = SAMPLE_RATE as usize / 2;
 /// Maximum time in Listening state before forcing processing (in samples).
 /// Prevents VAD from getting stuck when background noise hovers near threshold.
 const MAX_UTTERANCE_SAMPLES: usize = 10 * SAMPLE_RATE as usize;
+
+/// Chunk size for streaming audio over WebSocket (bytes).
+const AUDIO_STREAM_CHUNK_BYTES: usize = 8192;
+/// Default timeout for tool execution HTTP calls.
+const TOOL_CALL_TIMEOUT_SECS: u64 = 15;
+/// Timeout for omni chat calls (audio encoding + generation is slower).
+const OMNI_CHAT_TIMEOUT_SECS: u64 = 30;
+
+/// Default TTS voice persona.
+const DEFAULT_TTS_VOICE: &str = "bm_george";
+
+/// VAD calibration constants — must stay in sync with ygg-voice pipeline.rs.
+const CALIBRATION_WINDOW_SECS: f32 = 2.0;
+const VAD_ONSET_MULTIPLIER: f32 = 3.0;
+const VAD_SILENCE_MULTIPLIER: f32 = 1.5;
+const VAD_MAX_ONSET: f32 = 0.15;
+const VAD_MAX_SILENCE: f32 = 0.10;
 
 // ─────────────────────────────────────────────────────────────────
 // Conversation state
@@ -118,7 +132,7 @@ async fn send_preset(socket: &mut WebSocket, name: &str) {
                 .to_string().into(),
         ))
         .await;
-    for chunk in data.chunks(8192) {
+    for chunk in data.chunks(AUDIO_STREAM_CHUNK_BYTES) {
         if socket.send(Message::Binary(chunk.to_vec().into())).await.is_err() {
             return;
         }
@@ -184,8 +198,8 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     // ── Dynamic VAD calibration ──────────────────────────────────
     // Measure ambient noise for the first 2 seconds to set thresholds
     // adaptively. Until calibration completes, use conservative defaults.
-    const CALIBRATION_SAMPLES: usize = 2 * SAMPLE_RATE as usize; // 2 seconds
-    let mut calibration_buf: Vec<i16> = Vec::with_capacity(CALIBRATION_SAMPLES);
+    let calibration_samples = (CALIBRATION_WINDOW_SECS * SAMPLE_RATE as f32) as usize;
+    let mut calibration_buf: Vec<i16> = Vec::with_capacity(calibration_samples);
     let mut calibrated = false;
     let mut dyn_vad_threshold = VAD_THRESHOLD;
     let mut dyn_silence_threshold = SILENCE_THRESHOLD;
@@ -193,9 +207,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
     // Conversation state — when active, wake word is not required.
     let mut conversation_active = false;
     let mut conversation_timeout = std::time::Instant::now();
-    let mut idle_since = std::time::Instant::now();
     let mut conv_timeout_secs = CONVERSATION_TIMEOUT_SECS;
-    let mut last_response = String::new(); // Echo cancellation: last Fergus spoken text
 
     loop {
         // Select between WebSocket messages and broadcast alerts.
@@ -248,11 +260,10 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                         // ── Calibration phase: measure noise floor ──
                         if !calibrated {
                             calibration_buf.extend_from_slice(&samples);
-                            if calibration_buf.len() >= CALIBRATION_SAMPLES {
+                            if calibration_buf.len() >= calibration_samples {
                                 let noise_floor = rms_energy_i16(&calibration_buf);
-                                // Cap VAD threshold at 0.15 so speech can trigger even in noisy rooms.
-                                dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_THRESHOLD).min(0.15);
-                                dyn_silence_threshold = (noise_floor * 1.5_f32).max(SILENCE_THRESHOLD).min(0.10);
+                                dyn_vad_threshold = (noise_floor * VAD_ONSET_MULTIPLIER).max(VAD_THRESHOLD).min(VAD_MAX_ONSET);
+                                dyn_silence_threshold = (noise_floor * VAD_SILENCE_MULTIPLIER).max(SILENCE_THRESHOLD).min(VAD_MAX_SILENCE);
                                 calibrated = true;
                                 tracing::info!(
                                     noise_floor = %format!("{noise_floor:.6}"),
@@ -291,20 +302,6 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 tracing::info!(speech_secs = speech_len / SAMPLE_RATE as usize, "voice: max utterance timeout — forcing processing");
                             }
 
-                            // Pick the right wake preset based on idle duration.
-                            let wake_preset = if !conversation_active {
-                                let idle_secs = idle_since.elapsed().as_secs();
-                                Some(if idle_secs > 1800 {
-                                    "wake_drowsy"
-                                } else if idle_secs > 300 {
-                                    "wake_normal"
-                                } else {
-                                    "wake_fresh"
-                                })
-                            } else {
-                                None // Already in conversation, no wake preset.
-                            };
-
                             // Only send the speech portion, not pre-speech silence.
                             let speech_audio = &audio_buffer[speech_start_sample..];
 
@@ -330,17 +327,8 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 &session_id,
                                 speech_audio,
                                 conversation_active,
-                                &last_response,
                             )
                             .await;
-
-                            // Update echo cancellation state from result.
-                            match &result {
-                                ProcessResult::Continue(text) | ProcessResult::Done(text) | ProcessResult::Dismiss(text) => {
-                                    last_response = text.clone();
-                                }
-                                _ => {}
-                            }
 
                             // Drive conversation state machine based on result.
                             match result {
@@ -353,11 +341,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 }
                                 ProcessResult::Continue(_) => {
                                     if !conversation_active {
-                                        // First activation — play wake preset.
-                                        if let Some(preset) = wake_preset {
-                                            // Don't play preset — omni already responded.
-                                            tracing::info!(preset, "voice: conversation started");
-                                        }
+                                        tracing::info!("voice: conversation started");
                                     }
                                     conversation_active = true;
                                     conversation_timeout = std::time::Instant::now();
@@ -370,7 +354,7 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 }
                                 ProcessResult::Dismiss(_) => {
                                     conversation_active = false;
-                                    idle_since = std::time::Instant::now();
+
                                     send_preset(&mut socket, "dismiss_ack").await;
                                 }
                                 ProcessResult::Busy => {
@@ -391,12 +375,8 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 tracing::info!("voice: conversation timed out");
                                 send_preset(&mut socket, "timeout_idle").await;
                                 conversation_active = false;
-                                idle_since = std::time::Instant::now();
                             }
                         }
-                    }
-                    VadState::Processing => {
-                        // Should not arrive here in practice (single-threaded per connection).
                     }
                 }
             }
@@ -433,12 +413,8 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                     &session_id,
                                     speech_audio,
                                     conversation_active,
-                                    &last_response,
                                 )
                                 .await;
-                                if let ProcessResult::Continue(ref text) | ProcessResult::Done(ref text) | ProcessResult::Dismiss(ref text) = _result {
-                                    last_response = text.clone();
-                                }
 
                                 audio_buffer.clear();
                                 speech_start_sample = 0;
@@ -446,7 +422,6 @@ async fn handle_voice_session(mut socket: WebSocket, state: AppState) {
                                 silence_frames = 0;
                             }
                         }
-                        Some("config") => { /* reserved — no-op */ }
                         _ => {}
                     }
                 }
@@ -473,13 +448,7 @@ async fn process_utterance(
     _session_id: &str,
     audio_buffer: &[i16],
     conversation_active: bool,
-    _last_response: &str,
 ) -> ProcessResult {
-    let http = &state.http_client;
-    let voice_api_url = state.voice_api_url.as_deref().unwrap_or_default();
-    let tts_url = voice_api_url;
-    let omni_url = state.omni_url.as_deref();
-
     // Notify client that we are processing.
     let _ = socket
         .send(Message::Text(
@@ -527,321 +496,13 @@ async fn process_utterance(
         ))
         .await;
 
-    // ── LFM-Audio path: single model handles STT + LLM + TTS in one pass ──
-    // System prompt includes tool definitions; model outputs <tool_call> tags.
-    let (response_text, response_audio) = if let Some(omni) = omni_url {
-        // Build the system prompt with persona + tool routing + gaming context.
-        // ── Speaker identification ────────────────────────────────
-        let speaker_id = state
-            .wake_word_registry
-            .identify(audio_buffer, &state.skill_cache)
-            .await
-            .map(|m| m.user_id)
-            .unwrap_or_else(|| {
-                // Unknown speaker — auto-enroll as guest (fire and forget).
-                "unknown".to_string()
-            });
-        tracing::info!(speaker = %speaker_id, "voice: identified speaker");
+    // ── Dispatch to the appropriate pipeline ──────────────────────
+    let tts_url = state.voice_api_url.as_deref().unwrap_or_default();
 
-        let rag_context = crate::rag::RagContext::default();
-        let gaming_ctx = state.gaming_config.as_ref().map(|gc| {
-            let names: Vec<String> = gc.hosts.iter().flat_map(|h| {
-                let vms = h.vms.iter().map(|v| v.name.as_str());
-                let cts = h.containers.iter().map(|c| c.name.as_str());
-                vms.chain(cts).map(|n| format!("{}/{}", h.name, n))
-            }).collect();
-            format!("Managed VMs/containers: {}", names.join(", "))
-        });
-        let mut system_prompt = crate::rag::build_system_prompt(
-            &rag_context,
-            "voice",
-            gaming_ctx.as_deref(),
-        );
-        // Inject speaker context so Fergus can address the user by name.
-        if speaker_id != "unknown" {
-            system_prompt.push_str(&format!(
-                "\n\nCurrent speaker: {speaker_id}. Address them by name when appropriate."
-            ));
-        }
-
-        // ── SDR skill cache: fast-path for repeat commands ──────────
-        // Fingerprint the raw audio directly into a 256-bit SDR (~1ms, no
-        // network, no models). If a cached skill matches, skip the LLM entirely.
-        let audio_sdr = state.skill_cache.fingerprint(audio_buffer);
-        if let Some(skill_match) = state.skill_cache.match_skill(&audio_sdr).await {
-            tracing::info!(
-                tool = %skill_match.tool_name,
-                similarity = skill_match.similarity,
-                "skill cache HIT — skipping LLM inference"
-            );
-
-            // Execute cached tool directly.
-            if let Some(spec) = crate::tool_registry::find_tool(
-                &state.tool_registry, &skill_match.tool_name,
-            ) {
-                let effective_timeout = spec
-                    .timeout_override_secs
-                    .map(std::time::Duration::from_secs)
-                    .unwrap_or(std::time::Duration::from_secs(15));
-
-                let result = tokio::time::timeout(
-                    effective_timeout,
-                    crate::tool_registry::execute_tool(
-                        state, spec, &skill_match.tool_args, effective_timeout,
-                    ),
-                ).await;
-
-                let result_text = match result {
-                    Ok(Ok(output)) => output,
-                    Ok(Err(e)) => format!("Error: {e}"),
-                    Err(_) => "timed out".to_string(),
-                };
-
-                // Brief confirmation via omni text chat.
-                let (confirmation, conf_audio) = match call_omni_text_chat(
-                    http, omni,
-                    &format!("Tool {} result: {}. Give a brief spoken confirmation.", skill_match.tool_name, result_text),
-                    &system_prompt,
-                ).await {
-                    Ok((text, audio, _sr)) => (text, audio),
-                    Err(_) => (format!("Done, sir. {result_text}"), None),
-                };
-
-                let _ = socket
-                    .send(Message::Text(
-                        serde_json::json!({"type": "response", "text": &confirmation})
-                            .to_string()
-                            .into(),
-                    ))
-                    .await;
-                state.omni_busy.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(wav_bytes) = conf_audio {
-                    send_wav_audio(socket, &wav_bytes).await;
-                } else {
-                    send_tts(socket, http, tts_url, &confirmation).await;
-                }
-                state.omni_busy.store(false, std::sync::atomic::Ordering::Relaxed);
-                return ProcessResult::Done(confirmation);
-            }
-        }
-
-        // Cache missed — compute pcm_bytes only now (deferred from top of fn).
-        let pcm_bytes = pcm_to_bytes(audio_buffer);
-
-        match call_omni_chat(http, omni, &pcm_bytes, &system_prompt).await {
-            Ok((raw_response, audio, _sr)) if !raw_response.is_empty() => {
-                // Check if omni decided the user wasn't addressing Fergus.
-                let cleaned = strip_think_tags(&raw_response);
-                if cleaned.contains("[NOT_ADDRESSED]") {
-                    tracing::info!("voice: omni says not addressed — ignoring");
-                    return ProcessResult::NotAddressed;
-                }
-
-                // Parse and execute any tool calls from the response.
-                let (tool_calls, spoken_text_raw) = parse_tool_calls(&raw_response);
-                let spoken_text = strip_think_tags(&spoken_text_raw);
-
-                if !tool_calls.is_empty() {
-                    let mut tool_results = Vec::new();
-                    let tool_timeout = std::time::Duration::from_secs(
-                        state.config.agent.as_ref()
-                            .map(|a| a.tool_timeout_secs)
-                            .unwrap_or(15),
-                    );
-
-                    for tc in &tool_calls {
-                        if let Some(spec) = crate::tool_registry::find_tool(&state.tool_registry, &tc.name) {
-                            let effective_timeout = spec
-                                .timeout_override_secs
-                                .map(std::time::Duration::from_secs)
-                                .unwrap_or(tool_timeout);
-
-                            tracing::info!(
-                                tool = %tc.name,
-                                args = %tc.args,
-                                timeout_secs = effective_timeout.as_secs(),
-                                "executing tool call from omni response"
-                            );
-
-                            let result = tokio::time::timeout(
-                                effective_timeout,
-                                crate::tool_registry::execute_tool(state, spec, &tc.args, effective_timeout),
-                            )
-                            .await;
-
-                            match result {
-                                Ok(Ok(output)) => {
-                                    tracing::info!(tool = %tc.name, "tool executed successfully");
-                                    tool_results.push(format!("{}: {}", tc.name, output));
-                                }
-                                Ok(Err(e)) => {
-                                    tracing::warn!(tool = %tc.name, error = %e, "tool execution failed");
-                                    tool_results.push(format!("{}: Error: {}", tc.name, e));
-                                }
-                                Err(_) => {
-                                    tracing::warn!(tool = %tc.name, "tool execution timed out");
-                                    tool_results.push(format!("{}: timed out", tc.name));
-                                }
-                            }
-                        } else {
-                            tracing::warn!(tool = %tc.name, "unknown tool in omni response");
-                        }
-                    }
-
-                    // Learn successful tool calls in the SDR skill cache.
-                    if tool_results.iter().any(|r| !r.contains("Error:") && !r.contains("timed out")) {
-                        let skill_cache = state.skill_cache.clone();
-                        let first_tc_name = tool_calls[0].name.clone();
-                        let first_tc_args = tool_calls[0].args.clone();
-                        let label = spoken_text.clone();
-                        tokio::spawn(async move {
-                            skill_cache.learn(audio_sdr, label, first_tc_name, first_tc_args).await;
-                        });
-                    }
-
-                    // Ask omni for a spoken confirmation with tool results.
-                    if !tool_results.is_empty() {
-                        let confirmation_prompt = format!(
-                            "Tool results:\n{}\n\nGive a brief spoken confirmation of what happened.",
-                            tool_results.join("\n")
-                        );
-                        match call_omni_text_chat(http, omni, &confirmation_prompt, &system_prompt).await {
-                            Ok((text, conf_audio, _sr)) => (text, conf_audio),
-                            Err(_) => {
-                                let fallback = if spoken_text.is_empty() {
-                                    format!("Done, sir. {}", tool_results.join(". "))
-                                } else {
-                                    spoken_text
-                                };
-                                (fallback, None)
-                            }
-                        }
-                    } else {
-                        (spoken_text, audio)
-                    }
-                } else {
-                    // No tool calls — pure conversational response.
-                    (spoken_text, audio)
-                }
-            }
-            Ok(_) => return ProcessResult::NotAddressed, // Empty response — silence
-            Err(e) => {
-                tracing::warn!(error = %e, "LFM-Audio chat failed");
-                let _ = socket
-                    .send(Message::Text(
-                        serde_json::json!({"type": "error", "message": format!("voice model unavailable: {e}")})
-                            .to_string().into(),
-                    ))
-                    .await;
-                return ProcessResult::NotAddressed;
-            }
-        }
+    if let Some(omni) = state.omni_url.as_deref() {
+        run_omni_pipeline(socket, state, audio_buffer, omni, tts_url).await
     } else if let Some(ref voice_url) = state.voice_api_url {
-        // Sprint 057: LFM2.5-Audio STT → LFM2.5-Audio/Gemma 4 reasoning → LFM2.5-Audio TTS.
-        tracing::info!("voice: no omni_url — using LFM2.5-Audio split pipeline");
-
-        let pcm_bytes: Vec<u8> = audio_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
-        let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE);
-
-        // ── Step 1: LFM2.5-Audio STT ──────────────────────────────
-        let stt_url = format!("{voice_url}/api/v1/stt");
-        let stt_result = http
-            .post(&stt_url)
-            .body(wav_bytes)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await;
-
-        let transcript = match stt_result {
-            Ok(resp) if resp.status().is_success() => {
-                let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                body["text"].as_str().unwrap_or("").to_string()
-            }
-            Ok(resp) => {
-                tracing::warn!(status = %resp.status(), "LFM-Audio STT failed");
-                return ProcessResult::NotAddressed;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "LFM-Audio STT request failed");
-                return ProcessResult::NotAddressed;
-            }
-        };
-
-        if transcript.is_empty() {
-            tracing::debug!("voice: empty transcript — ignoring");
-            return ProcessResult::NotAddressed;
-        }
-
-        tracing::info!(transcript = %transcript, "LFM-Audio STT result");
-
-        let _ = socket
-            .send(Message::Text(
-                serde_json::json!({"type": "transcript", "text": &transcript})
-                    .to_string().into(),
-            ))
-            .await;
-
-        // ── Step 2: Reasoning — LFM2.5-Audio for simple, Gemma 4 for complex ──
-        // Check if the transcript contains tool-triggering keywords.
-        let needs_escalation = transcript.contains("turn on") || transcript.contains("turn off")
-            || transcript.contains("light") || transcript.contains("switch")
-            || transcript.contains("gaming") || transcript.contains("Thor")
-            || transcript.contains("launch") || transcript.contains("status")
-            || transcript.contains("memory") || transcript.contains("search");
-
-        let response_text = if needs_escalation {
-            // Escalate to Gemma 4 E4B for tool-capable reasoning.
-            tracing::info!("voice: escalating to Gemma 4 for complex request");
-            let ollama_url = "http://10.0.65.9:11434";
-            let chat_body = serde_json::json!({
-                "model": "gemma4:e4b",
-                "messages": [
-                    {"role": "system", "content": "You are Fergus, a helpful AI butler on the Yggdrasil home server. Be direct and concise. 1-2 sentences. No markdown."},
-                    {"role": "user", "content": transcript}
-                ],
-                "stream": false,
-                "options": {"num_ctx": 4096, "temperature": 0.7},
-                "think": false
-            });
-
-            match http
-                .post(format!("{ollama_url}/api/chat"))
-                .json(&chat_body)
-                .timeout(std::time::Duration::from_secs(15))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                    body["message"]["content"].as_str().unwrap_or("I didn't catch that, sir.").to_string()
-                }
-                _ => "I'm having trouble thinking right now, sir.".to_string(),
-            }
-        } else {
-            // Simple conversation — let LFM2.5-Audio handle reasoning via text chat.
-            let chat_url = format!("{voice_url}/api/v1/chat");
-            let chat_body = serde_json::json!({
-                "text": transcript,
-                "system_prompt": "You are Fergus, a helpful AI butler. Be direct and concise. 1-2 sentences."
-            });
-
-            match http
-                .post(&chat_url)
-                .json(&chat_body)
-                .timeout(std::time::Duration::from_secs(15))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                    body["text"].as_str().unwrap_or("I didn't catch that, sir.").to_string()
-                }
-                _ => "I'm having trouble right now, sir.".to_string(),
-            }
-        };
-
-        tracing::info!(response = %response_text, escalated = needs_escalation, "voice response");
-        (format!("{response_text}\n[DONE]"), None)
+        run_split_pipeline(socket, state, audio_buffer, voice_url, tts_url).await
     } else {
         tracing::warn!("voice: no omni_url and no voice_api_url configured");
         let _ = socket
@@ -850,12 +511,45 @@ async fn process_utterance(
                     .to_string().into(),
             ))
             .await;
-        return ProcessResult::NotAddressed;
-    };
+        ProcessResult::NotAddressed
+    }
+}
 
-    // ── Parse conversation flow tag and send response ────────────
+/// Build the voice system prompt with gaming context and speaker identification.
+fn build_voice_system_prompt(state: &AppState, speaker_id: &str) -> String {
+    let rag_context = crate::rag::RagContext::default();
+    let gaming_ctx = state.gaming_config.as_ref().map(|gc| {
+        let names: Vec<String> = gc.hosts.iter().flat_map(|h| {
+            let vms = h.vms.iter().map(|v| v.name.as_str());
+            let cts = h.containers.iter().map(|c| c.name.as_str());
+            vms.chain(cts).map(|n| format!("{}/{}", h.name, n))
+        }).collect();
+        format!("Managed VMs/containers: {}", names.join(", "))
+    });
+    let mut system_prompt = crate::rag::build_system_prompt(
+        &rag_context,
+        "voice",
+        gaming_ctx.as_deref(),
+    );
+    if speaker_id != "unknown" {
+        system_prompt.push_str(&format!(
+            "\n\nCurrent speaker: {speaker_id}. Address them by name when appropriate."
+        ));
+    }
+    system_prompt
+}
+
+/// Send the response text and audio back over the WebSocket, returning the appropriate ProcessResult.
+async fn finalize_response(
+    socket: &mut WebSocket,
+    state: &AppState,
+    tts_url: &str,
+    response_text: &str,
+    response_audio: Option<Vec<u8>>,
+) -> ProcessResult {
+    let http = &state.http_client;
     tracing::info!(response_len = response_text.len(), response_preview = %response_text.chars().take(100).collect::<String>(), "voice: LLM response received");
-    let (spoken_text, flow_tag) = parse_flow_tag(&response_text);
+    let (spoken_text, flow_tag) = parse_flow_tag(response_text);
 
     let _ = socket
         .send(Message::Text(
@@ -868,15 +562,11 @@ async fn process_utterance(
     // Mark omni as busy during audio playback (blocks audio input + other sessions).
     state.omni_busy.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(wav_bytes) = response_audio {
-        // Use audio directly from LFM-Audio model response.
         send_wav_audio(socket, &wav_bytes).await;
     } else {
-        // Fallback to TTS endpoint on same server.
         send_tts(socket, http, tts_url, &spoken_text).await;
     }
     state.omni_busy.store(false, std::sync::atomic::Ordering::Relaxed);
-
-    // Echo cancellation: spoken_text is captured by caller via ProcessResult.
 
     match flow_tag {
         "[CONTINUE]" => ProcessResult::Continue(spoken_text),
@@ -884,6 +574,308 @@ async fn process_utterance(
         "[DISMISS]" => ProcessResult::Dismiss(spoken_text),
         _ => ProcessResult::Continue(spoken_text),
     }
+}
+
+/// Omni pipeline: single model handles STT + LLM + TTS in one pass.
+async fn run_omni_pipeline(
+    socket: &mut WebSocket,
+    state: &AppState,
+    audio_buffer: &[i16],
+    omni_url: &str,
+    tts_url: &str,
+) -> ProcessResult {
+    let http = &state.http_client;
+
+    // Speaker identification.
+    let speaker_id = state
+        .wake_word_registry
+        .identify(audio_buffer, &state.skill_cache)
+        .await
+        .map(|m| m.user_id)
+        .unwrap_or_else(|| "unknown".to_string());
+    tracing::info!(speaker = %speaker_id, "voice: identified speaker");
+
+    let system_prompt = build_voice_system_prompt(state, &speaker_id);
+
+    // ── SDR skill cache: fast-path for repeat commands ──────────
+    let audio_sdr = state.skill_cache.fingerprint(audio_buffer);
+    if let Some(skill_match) = state.skill_cache.match_skill(&audio_sdr).await {
+        tracing::info!(
+            tool = %skill_match.tool_name,
+            similarity = skill_match.similarity,
+            "skill cache HIT — skipping LLM inference"
+        );
+
+        if let Some(spec) = crate::tool_registry::find_tool(
+            &state.tool_registry, &skill_match.tool_name,
+        ) {
+            let effective_timeout = spec
+                .timeout_override_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(std::time::Duration::from_secs(TOOL_CALL_TIMEOUT_SECS));
+
+            let result = tokio::time::timeout(
+                effective_timeout,
+                crate::tool_registry::execute_tool(
+                    state, spec, &skill_match.tool_args, effective_timeout,
+                ),
+            ).await;
+
+            let result_text = match result {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => format!("Error: {e}"),
+                Err(_) => "timed out".to_string(),
+            };
+
+            let (confirmation, conf_audio) = match call_omni_text_chat(
+                http, omni_url,
+                &format!("Tool {} result: {}. Give a brief spoken confirmation.", skill_match.tool_name, result_text),
+                &system_prompt,
+            ).await {
+                Ok((text, audio, _sr)) => (text, audio),
+                Err(_) => (format!("Done, sir. {result_text}"), None),
+            };
+
+            return finalize_response(socket, state, tts_url, &format!("{confirmation}\n[DONE]"), conf_audio).await;
+        }
+    }
+
+    // Cache missed — run full omni inference.
+    let pcm_bytes = pcm_to_bytes(audio_buffer);
+
+    match call_omni_chat(http, omni_url, &pcm_bytes, &system_prompt).await {
+        Ok((raw_response, audio, _sr)) if !raw_response.is_empty() => {
+            let cleaned = strip_think_tags(&raw_response);
+            if cleaned.contains("[NOT_ADDRESSED]") {
+                tracing::info!("voice: omni says not addressed — ignoring");
+                return ProcessResult::NotAddressed;
+            }
+
+            let (tool_calls, spoken_text_raw) = parse_tool_calls(&raw_response);
+            let spoken_text = strip_think_tags(&spoken_text_raw);
+
+            let (response_text, response_audio) = if !tool_calls.is_empty() {
+                let tool_results = execute_voice_tools(state, &tool_calls).await;
+
+                // Learn successful tool calls in the SDR skill cache.
+                if tool_results.iter().any(|r| !r.contains("Error:") && !r.contains("timed out")) {
+                    let skill_cache = state.skill_cache.clone();
+                    let first_tc_name = tool_calls[0].name.clone();
+                    let first_tc_args = tool_calls[0].args.clone();
+                    let label = spoken_text.clone();
+                    tokio::spawn(async move {
+                        skill_cache.learn(audio_sdr, label, first_tc_name, first_tc_args).await;
+                    });
+                }
+
+                // Ask omni for a spoken confirmation with tool results.
+                if !tool_results.is_empty() {
+                    let confirmation_prompt = format!(
+                        "Tool results:\n{}\n\nGive a brief spoken confirmation of what happened.",
+                        tool_results.join("\n")
+                    );
+                    match call_omni_text_chat(http, omni_url, &confirmation_prompt, &system_prompt).await {
+                        Ok((text, conf_audio, _sr)) => (text, conf_audio),
+                        Err(_) => {
+                            let fallback = if spoken_text.is_empty() {
+                                format!("Done, sir. {}", tool_results.join(". "))
+                            } else {
+                                spoken_text
+                            };
+                            (fallback, None)
+                        }
+                    }
+                } else {
+                    (spoken_text, audio)
+                }
+            } else {
+                (spoken_text, audio)
+            };
+
+            finalize_response(socket, state, tts_url, &response_text, response_audio).await
+        }
+        Ok(_) => ProcessResult::NotAddressed,
+        Err(e) => {
+            tracing::warn!(error = %e, "LFM-Audio chat failed");
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({"type": "error", "message": format!("voice model unavailable: {e}")})
+                        .to_string().into(),
+                ))
+                .await;
+            ProcessResult::NotAddressed
+        }
+    }
+}
+
+/// Execute tool calls from voice and collect results.
+async fn execute_voice_tools(state: &AppState, tool_calls: &[ParsedToolCall]) -> Vec<String> {
+    let tool_timeout = std::time::Duration::from_secs(
+        state.config.agent.as_ref()
+            .map(|a| a.tool_timeout_secs)
+            .unwrap_or(TOOL_CALL_TIMEOUT_SECS),
+    );
+    let mut tool_results = Vec::new();
+
+    for tc in tool_calls {
+        if let Some(spec) = crate::tool_registry::find_tool(&state.tool_registry, &tc.name) {
+            let effective_timeout = spec
+                .timeout_override_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(tool_timeout);
+
+            tracing::info!(
+                tool = %tc.name,
+                args = %tc.args,
+                timeout_secs = effective_timeout.as_secs(),
+                "executing tool call from omni response"
+            );
+
+            let result = tokio::time::timeout(
+                effective_timeout,
+                crate::tool_registry::execute_tool(state, spec, &tc.args, effective_timeout),
+            )
+            .await;
+
+            match result {
+                Ok(Ok(output)) => {
+                    tracing::info!(tool = %tc.name, "tool executed successfully");
+                    tool_results.push(format!("{}: {}", tc.name, output));
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(tool = %tc.name, error = %e, "tool execution failed");
+                    tool_results.push(format!("{}: Error: {}", tc.name, e));
+                }
+                Err(_) => {
+                    tracing::warn!(tool = %tc.name, "tool execution timed out");
+                    tool_results.push(format!("{}: timed out", tc.name));
+                }
+            }
+        } else {
+            tracing::warn!(tool = %tc.name, "unknown tool in omni response");
+        }
+    }
+
+    tool_results
+}
+
+/// Split pipeline: STT → LLM reasoning → TTS (separate services).
+async fn run_split_pipeline(
+    socket: &mut WebSocket,
+    state: &AppState,
+    audio_buffer: &[i16],
+    voice_url: &str,
+    tts_url: &str,
+) -> ProcessResult {
+    let http = &state.http_client;
+    tracing::info!("voice: no omni_url — using split pipeline");
+
+    let pcm_bytes: Vec<u8> = audio_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let wav_bytes = pcm_to_wav(&pcm_bytes, SAMPLE_RATE);
+
+    // ── Step 1: STT ──────────────────────────────────────────────
+    let stt_url = format!("{voice_url}/api/v1/stt");
+    let stt_result = http
+        .post(&stt_url)
+        .body(wav_bytes)
+        .timeout(std::time::Duration::from_secs(TOOL_CALL_TIMEOUT_SECS))
+        .send()
+        .await;
+
+    let transcript = match stt_result {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            body["text"].as_str().unwrap_or("").to_string()
+        }
+        Ok(resp) => {
+            tracing::warn!(status = %resp.status(), "STT failed");
+            return ProcessResult::NotAddressed;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "STT request failed");
+            return ProcessResult::NotAddressed;
+        }
+    };
+
+    if transcript.is_empty() {
+        tracing::debug!("voice: empty transcript — ignoring");
+        return ProcessResult::NotAddressed;
+    }
+
+    tracing::info!(transcript = %transcript, "STT result");
+
+    let _ = socket
+        .send(Message::Text(
+            serde_json::json!({"type": "transcript", "text": &transcript})
+                .to_string().into(),
+        ))
+        .await;
+
+    // ── Step 2: Reasoning — keyword escalation to Ollama for complex requests ──
+    let needs_escalation = transcript.contains("turn on") || transcript.contains("turn off")
+        || transcript.contains("light") || transcript.contains("switch")
+        || transcript.contains("gaming") || transcript.contains("Thor")
+        || transcript.contains("launch") || transcript.contains("status")
+        || transcript.contains("memory") || transcript.contains("search");
+
+    let voice_cfg = state.config.voice.as_ref();
+    let response_text = if needs_escalation {
+        let fallback_url = voice_cfg
+            .and_then(|v| v.fallback_ollama_url.as_deref())
+            .unwrap_or("http://10.0.65.9:11434");
+        let fallback_model = voice_cfg
+            .and_then(|v| v.fallback_model.as_deref())
+            .unwrap_or("gemma4:e4b");
+        tracing::info!(url = fallback_url, model = fallback_model, "voice: escalating to Ollama for complex request");
+        let chat_body = serde_json::json!({
+            "model": fallback_model,
+            "messages": [
+                {"role": "system", "content": "You are Fergus, a helpful AI butler on the Yggdrasil home server. Be direct and concise. 1-2 sentences. No markdown."},
+                {"role": "user", "content": transcript}
+            ],
+            "stream": false,
+            "options": {"num_ctx": 4096, "temperature": 0.7},
+            "think": false
+        });
+
+        match http
+            .post(format!("{fallback_url}/api/chat"))
+            .json(&chat_body)
+            .timeout(std::time::Duration::from_secs(TOOL_CALL_TIMEOUT_SECS))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                body["message"]["content"].as_str().unwrap_or("I didn't catch that, sir.").to_string()
+            }
+            _ => "I'm having trouble thinking right now, sir.".to_string(),
+        }
+    } else {
+        // Simple conversation — let voice server handle reasoning.
+        let chat_url = format!("{voice_url}/api/v1/chat");
+        let chat_body = serde_json::json!({
+            "text": transcript,
+            "system_prompt": "You are Fergus, a helpful AI butler. Be direct and concise. 1-2 sentences."
+        });
+
+        match http
+            .post(&chat_url)
+            .json(&chat_body)
+            .timeout(std::time::Duration::from_secs(TOOL_CALL_TIMEOUT_SECS))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                body["text"].as_str().unwrap_or("I didn't catch that, sir.").to_string()
+            }
+            _ => "I'm having trouble right now, sir.".to_string(),
+        }
+    };
+
+    tracing::info!(response = %response_text, escalated = needs_escalation, "voice response");
+    finalize_response(socket, state, tts_url, &format!("{response_text}\n[DONE]"), None).await
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -907,6 +899,8 @@ fn strip_think_tags(text: &str) -> String {
 }
 
 /// Compute RMS energy of i16 PCM samples normalised to [-1.0, 1.0].
+/// NOTE: i16 variant of `ygg_voice::audio::rms_energy` (f32 input).
+/// Kept separate because odin and ygg-voice are different crates with different PCM types.
 fn rms_energy_i16(samples: &[i16]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -950,7 +944,7 @@ async fn send_wav_audio(socket: &mut WebSocket, wav_bytes: &[u8]) {
                 .to_string().into(),
         ))
         .await;
-    for chunk in pcm_bytes.chunks(8192) {
+    for chunk in pcm_bytes.chunks(AUDIO_STREAM_CHUNK_BYTES) {
         if socket.send(Message::Binary(chunk.to_vec().into())).await.is_err() {
             return;
         }
@@ -964,7 +958,7 @@ async fn send_wav_audio(socket: &mut WebSocket, wav_bytes: &[u8]) {
 
 /// Send TTS audio back over the WebSocket.
 async fn send_tts(socket: &mut WebSocket, http: &reqwest::Client, tts_url: &str, text: &str) {
-    match call_tts(http, tts_url, text).await {
+    match call_tts(http, tts_url, text, DEFAULT_TTS_VOICE).await {
         Ok((audio_bytes, sample_rate)) => {
             let _ = socket
                 .send(Message::Text(
@@ -972,7 +966,7 @@ async fn send_tts(socket: &mut WebSocket, http: &reqwest::Client, tts_url: &str,
                         .to_string().into(),
                 ))
                 .await;
-            for chunk in audio_bytes.chunks(8192) {
+            for chunk in audio_bytes.chunks(AUDIO_STREAM_CHUNK_BYTES) {
                 if socket.send(Message::Binary(chunk.to_vec().into())).await.is_err() {
                     return;
                 }
@@ -1020,7 +1014,7 @@ async fn call_omni_chat(
     let resp = client
         .post(&chat_url)
         .json(&body)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(OMNI_CHAT_TIMEOUT_SECS))
         .send()
         .await
         .map_err(|e| format!("omni chat request failed: {e}"))?;
@@ -1071,7 +1065,7 @@ async fn call_omni_text_chat(
     let resp = client
         .post(&chat_url)
         .json(&body)
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(TOOL_CALL_TIMEOUT_SECS))
         .send()
         .await
         .map_err(|e| format!("omni text chat failed: {e}"))?;
@@ -1174,10 +1168,11 @@ async fn call_tts(
     client: &reqwest::Client,
     base_url: &str,
     text: &str,
+    voice: &str,
 ) -> Result<(Vec<u8>, u32), String> {
     let resp = client
         .post(format!("{base_url}/api/v1/tts"))
-        .json(&serde_json::json!({"text": text, "voice": "bm_george"}))
+        .json(&serde_json::json!({"text": text, "voice": voice}))
         .send()
         .await
         .map_err(|e| format!("TTS request failed: {e}"))?;

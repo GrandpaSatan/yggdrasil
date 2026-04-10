@@ -1124,9 +1124,40 @@ def format_chat_text(example: dict) -> dict:
 # ── Streaming Dataset ───────────────────────────────────────────
 
 class Fusion360StreamDataset(IterableDataset):
-    def __init__(self, difficulty: int = 0, seed: int = 42):
+    """Infinite streaming dataset for Fusion 360 code generation.
+
+    When curriculum_steps > 0, difficulty auto-escalates:
+      - Steps 0 to 33%: Level 1 only (basic primitives)
+      - Steps 33% to 66%: Levels 1-2 (add single-feature shapes)
+      - Steps 66%+: All levels (add compound/pattern shapes)
+
+    This maps sample count to approximate training step via
+    batch_size * grad_accum.
+    """
+
+    def __init__(self, difficulty: int = 0, seed: int = 42,
+                 curriculum_steps: int = 0, batch_size: int = 1,
+                 grad_accum: int = 1):
         self.difficulty = difficulty
         self.base_seed = seed
+        self.curriculum_steps = curriculum_steps
+        self.samples_per_step = batch_size * grad_accum
+
+    def _get_difficulty(self, counter: int) -> int:
+        """Map sample count to difficulty level for curriculum learning."""
+        if self.curriculum_steps <= 0:
+            return self.difficulty
+
+        approx_step = counter // max(self.samples_per_step, 1)
+        phase1_end = self.curriculum_steps // 3
+        phase2_end = (self.curriculum_steps * 2) // 3
+
+        if approx_step < phase1_end:
+            return 1  # Basic primitives only
+        elif approx_step < phase2_end:
+            return 2  # Add single-feature shapes
+        else:
+            return 0  # All generators (difficulty=0 means all)
 
     def __iter__(self) -> Iterator[dict]:
         worker_info = torch.utils.data.get_worker_info()
@@ -1136,7 +1167,8 @@ class Fusion360StreamDataset(IterableDataset):
         while True:
             if counter % 100_000 == 0 and counter > 0:
                 rng = random.Random(seed + counter)
-            problem = generate_cad_problem(rng, self.difficulty)
+            diff = self._get_difficulty(counter)
+            problem = generate_cad_problem(rng, diff)
             chat = problem_to_chat(problem, rng)
             formatted = format_chat_text(chat)
             formatted["metadata"] = chat["metadata"]

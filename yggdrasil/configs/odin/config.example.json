@@ -57,9 +57,11 @@
   },
   "voice": {
     "enabled": true,
-    "voice_api_url": "http://localhost:9095",
+    "voice_api_url": "http://localhost:9098",
     "omni_url": "http://localhost:8000",
-    "omni_model": "Qwen/Qwen3-Omni-30B-A3B"
+    "fallback_ollama_url": "http://<munin-ip>:11434",
+    "fallback_model": "gemma4:e4b",
+    "tts_voice": "bm_george"
   },
   "cloud": {
     "fallback_enabled": true,

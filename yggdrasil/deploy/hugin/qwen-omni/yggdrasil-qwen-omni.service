@@ -1,12 +1,12 @@
 [Unit]
-Description=Yggdrasil Voice Server — LFM2.5-Audio STT+TTS (ROCm eGPU)
+Description=Yggdrasil Qwen2.5-Omni Voice Server (ROCm eGPU)
 After=network.target
 
 [Service]
 Type=simple
 User=jhernandez
-WorkingDirectory=/opt/yggdrasil/deploy/kokoro-tts
-ExecStart=/opt/yggdrasil/deploy/kokoro-tts/.venv/bin/python3 server.py --port 9098
+WorkingDirectory=/opt/yggdrasil/deploy/qwen-omni
+ExecStart=/opt/yggdrasil/deploy/qwen-omni/.venv/bin/python3 server.py --port 9098
 Restart=on-failure
 RestartSec=30
 TimeoutStartSec=600

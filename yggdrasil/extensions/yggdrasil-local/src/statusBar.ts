@@ -12,6 +12,8 @@ export interface SessionStats {
   recallCount: number;
   storeCount: number;
   errorCount: number;
+  sidecarCount: number;
+  lastCategory: string | null;
   sessionStart: string | null;
   lastEvent: string | null;
   events: YggEvent[];
@@ -23,6 +25,8 @@ export class StatusBarManager implements vscode.Disposable {
     recallCount: 0,
     storeCount: 0,
     errorCount: 0,
+    sidecarCount: 0,
+    lastCategory: null,
     sessionStart: null,
     lastEvent: null,
     events: [],
@@ -59,6 +63,8 @@ export class StatusBarManager implements vscode.Disposable {
         this.stats.recallCount = (event.data.count as number) || 0;
         this.stats.storeCount = 0;
         this.stats.errorCount = 0;
+        this.stats.sidecarCount = 0;
+        this.stats.lastCategory = null;
         this.stats.sessionStart = event.ts;
         break;
 
@@ -80,6 +86,19 @@ export class StatusBarManager implements vscode.Disposable {
         // Session end — keep stats visible
         break;
 
+      case "sidecar":
+        this.stats.sidecarCount++;
+        this.stats.lastCategory = (event.data.category as string) || null;
+        break;
+
+      case "error_recall":
+        this.stats.recallCount += (event.data.count as number) || 0;
+        break;
+
+      case "update":
+        // Extension auto-update — no counter change
+        break;
+
       case "tool":
         // MCP tool execution — no counter change
         break;
@@ -91,6 +110,9 @@ export class StatusBarManager implements vscode.Disposable {
   private updateText(): void {
     const parts: string[] = [];
 
+    if (this.stats.lastCategory) {
+      parts.push(this.stats.lastCategory);
+    }
     if (this.stats.recallCount > 0) {
       parts.push(`${this.stats.recallCount} recalled`);
     }
@@ -101,7 +123,7 @@ export class StatusBarManager implements vscode.Disposable {
       parts.push(`${this.stats.errorCount} errors`);
     }
 
-    const summary = parts.length > 0 ? parts.join(" · ") : "idle";
+    const summary = parts.length > 0 ? parts.join(" \u00b7 ") : "idle";
     this.item.text = `$(database) Ygg: ${summary}`;
 
     // Tooltip with more detail
@@ -113,6 +135,12 @@ export class StatusBarManager implements vscode.Disposable {
     lines.push(`Recalled: ${this.stats.recallCount}`);
     lines.push(`Stored: ${this.stats.storeCount}`);
     lines.push(`Errors: ${this.stats.errorCount}`);
+    if (this.stats.sidecarCount > 0) {
+      lines.push(`Sidecar: ${this.stats.sidecarCount} classifications`);
+    }
+    if (this.stats.lastCategory) {
+      lines.push(`Category: ${this.stats.lastCategory}`);
+    }
     if (this.stats.lastEvent) {
       lines.push(`Last: ${this.stats.lastEvent}`);
     }

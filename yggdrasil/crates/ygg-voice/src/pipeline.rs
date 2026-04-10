@@ -32,6 +32,13 @@ const RECONNECT_DELAY_SECS: u64 = 3;
 /// Size of PCM chunks sent per WebSocket frame (4096 samples = 0.256s at 16kHz).
 const PCM_CHUNK_SAMPLES: usize = 4096;
 
+/// VAD calibration constants — must stay in sync with odin voice_ws.rs.
+const CALIBRATION_WINDOW_SECS: f32 = 2.0;
+const VAD_ONSET_MULTIPLIER: f32 = 3.0;
+const VAD_SILENCE_MULTIPLIER: f32 = 1.5;
+const VAD_MAX_ONSET: f32 = 0.15;
+const VAD_MAX_SILENCE: f32 = 0.10;
+
 /// Pipeline state machine states.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PipelineState {
@@ -97,8 +104,8 @@ impl VoicePipeline {
             (MAX_UTTERANCE_SECONDS * 1000.0 / POLL_INTERVAL_MS as f32) as u32;
 
         // ── Dynamic VAD calibration ──────────────────────────────
-        // Measure ambient noise for the first 2 seconds to set thresholds.
-        let calibration_needed = (2.0 * self.sample_rate as f32) as usize;
+        // Measure ambient noise to set thresholds adaptively.
+        let calibration_needed = (CALIBRATION_WINDOW_SECS * self.sample_rate as f32) as usize;
         let mut calibration_samples: usize = 0;
         let mut calibration_energy_sum: f64 = 0.0;
         let mut calibration_energy_count: u32 = 0;
@@ -143,8 +150,8 @@ impl VoicePipeline {
                                 if calibration_samples >= calibration_needed {
                                     let noise_floor = (calibration_energy_sum / calibration_energy_count as f64) as f32;
                                     // Cap thresholds so speech triggers even in noisy rooms (fans/PCs).
-                                    dyn_vad_threshold = (noise_floor * 3.0_f32).max(VAD_ENERGY_THRESHOLD).min(0.15);
-                                    dyn_silence_threshold = (noise_floor * 1.5_f32).max(VAD_SILENCE_THRESHOLD).min(0.10);
+                                    dyn_vad_threshold = (noise_floor * VAD_ONSET_MULTIPLIER).max(VAD_ENERGY_THRESHOLD).min(VAD_MAX_ONSET);
+                                    dyn_silence_threshold = (noise_floor * VAD_SILENCE_MULTIPLIER).max(VAD_SILENCE_THRESHOLD).min(VAD_MAX_SILENCE);
                                     calibrated = true;
                                     info!(
                                         noise_floor = %format!("{noise_floor:.6}"),

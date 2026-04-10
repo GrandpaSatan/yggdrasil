@@ -65,6 +65,34 @@ export class NotificationManager {
         );
         break;
       }
+
+      case "sidecar": {
+        const category = event.data.category ?? "unknown";
+        const engrams = event.data.engrams ?? 0;
+        vscode.window.showInformationMessage(
+          `Yggdrasil sidecar: ${category} \u2014 ${engrams} engrams injected`
+        );
+        break;
+      }
+
+      case "error_recall": {
+        const count = event.data.count ?? 0;
+        vscode.window.showInformationMessage(
+          `Yggdrasil: Found ${count} past encounters with similar errors`
+        );
+        break;
+      }
+
+      case "update": {
+        const to = event.data.to ?? "?";
+        const status = event.data.status ?? "?";
+        if (status === "complete") {
+          vscode.window.showInformationMessage(
+            `Yggdrasil extension updated to v${to} \u2014 restart to activate`
+          );
+        }
+        break;
+      }
     }
   }
 }

@@ -167,6 +167,20 @@ pub struct VoiceStreamConfig {
     /// are included in the agent loop context (reduces token overhead).
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    /// Fallback Ollama URL for the split pipeline's keyword-escalation path.
+    /// Used when omni_url is not configured and a complex request is detected.
+    #[serde(default)]
+    pub fallback_ollama_url: Option<String>,
+    /// Model name for the fallback Ollama escalation path.
+    #[serde(default)]
+    pub fallback_model: Option<String>,
+    /// TTS voice persona name (default: "bm_george").
+    #[serde(default = "default_tts_voice")]
+    pub tts_voice: String,
+}
+
+fn default_tts_voice() -> String {
+    "bm_george".to_string()
 }
 
 fn default_voice_api_url() -> String {
