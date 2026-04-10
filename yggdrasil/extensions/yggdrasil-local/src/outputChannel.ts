@@ -38,9 +38,9 @@ export class OutputChannelManager implements vscode.Disposable {
 
       case "recall": {
         const count = event.data.count ?? 0;
-        const file = event.data.file ?? "unknown";
+        const query = typeof event.data.query === "string" ? event.data.query.slice(0, 80) : "unknown";
         this.channel.appendLine(
-          `[${ts}] \u{1F50D} Recalled ${count} memories for ${file}`
+          `[${ts}] \u{1F50D} Recalled ${count} memories for "${query}"`
         );
         break;
       }
@@ -80,6 +80,16 @@ export class OutputChannelManager implements vscode.Disposable {
         const icon = status === "ok" ? "\u2705" : "\u274C";
         this.channel.appendLine(
           `[${ts}] ${icon} Tool: ${name} (${status}, ${duration}ms)`
+        );
+        break;
+      }
+
+      case "sidecar": {
+        const cat = event.data.category ?? "?";
+        const engrams = event.data.engrams ?? 0;
+        const worthy = event.data.store_worthy ? " (store-worthy)" : "";
+        this.channel.appendLine(
+          `[${ts}] \u{1F916} Sidecar: ${cat} \u2014 ${engrams} engrams${worthy}`
         );
         break;
       }

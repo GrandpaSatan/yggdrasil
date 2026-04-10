@@ -12,6 +12,7 @@ export interface SessionStats {
   recallCount: number;
   storeCount: number;
   errorCount: number;
+  sidecarCount: number;
   sessionStart: string | null;
   lastEvent: string | null;
   events: YggEvent[];
@@ -23,6 +24,7 @@ export class StatusBarManager implements vscode.Disposable {
     recallCount: 0,
     storeCount: 0,
     errorCount: 0,
+    sidecarCount: 0,
     sessionStart: null,
     lastEvent: null,
     events: [],
@@ -59,6 +61,7 @@ export class StatusBarManager implements vscode.Disposable {
         this.stats.recallCount = (event.data.count as number) || 0;
         this.stats.storeCount = 0;
         this.stats.errorCount = 0;
+        this.stats.sidecarCount = 0;
         this.stats.sessionStart = event.ts;
         break;
 
@@ -78,6 +81,10 @@ export class StatusBarManager implements vscode.Disposable {
 
       case "sleep":
         // Session end — keep stats visible
+        break;
+
+      case "sidecar":
+        this.stats.sidecarCount++;
         break;
 
       case "tool":

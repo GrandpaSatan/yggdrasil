@@ -82,7 +82,7 @@ function getHtml(stats: SessionStats): string {
   }
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     margin-bottom: 24px;
   }
@@ -169,6 +169,10 @@ function getHtml(stats: SessionStats): string {
       <div class="stat-label">Errors</div>
     </div>
     <div class="stat-card">
+      <div class="stat-value" style="color: var(--vscode-charts-yellow);">${stats.sidecarCount}</div>
+      <div class="stat-label">Sidecar Evals</div>
+    </div>
+    <div class="stat-card">
       <div class="stat-value">${stats.events.length}</div>
       <div class="stat-label">Total Events</div>
     </div>
@@ -195,6 +199,7 @@ function eventIcon(event: string): string {
     case "sleep": return "\u{1F634}";
     case "error": return "\u274C";
     case "tool": return "\u{1F527}";
+    case "sidecar": return "\u{1F916}";
     default: return "\u2022";
   }
 }
@@ -204,7 +209,8 @@ function eventDetail(e: { event: string; data: Record<string, unknown> }): strin
     case "init":
       return `${e.data.count ?? 0} engrams from prior session`;
     case "recall":
-      return `${e.data.count ?? 0} memories for ${e.data.file ?? "?"}`;
+      return `${e.data.count ?? 0} memories for "${(e.data.query as string)?.slice(0, 80) ?? "?"}"`;
+
     case "ingest":
       return e.data.stored
         ? `${e.data.file ?? "?"} \u2014 ${(e.data.cause as string)?.slice(0, 60) ?? ""}`
@@ -215,6 +221,12 @@ function eventDetail(e: { event: string; data: Record<string, unknown> }): strin
       return `${e.data.stage ?? "?"}: ${e.data.message ?? "unknown"}`;
     case "tool":
       return `${e.data.name ?? "?"} (${e.data.status}, ${e.data.duration_ms ?? 0}ms)`;
+    case "sidecar": {
+      const cat = e.data.category ?? "?";
+      const engrams = e.data.engrams ?? 0;
+      const worthy = e.data.store_worthy ? " (store-worthy)" : "";
+      return `${cat} \u2014 ${engrams} engrams${worthy}`;
+    }
     default:
       return JSON.stringify(e.data).slice(0, 80);
   }

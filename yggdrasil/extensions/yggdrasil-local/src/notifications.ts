@@ -30,9 +30,9 @@ export class NotificationManager {
 
       case "recall": {
         const count = event.data.count ?? 0;
-        const file = event.data.file ?? "unknown";
+        const query = typeof event.data.query === "string" ? event.data.query.slice(0, 80) : "unknown";
         vscode.window.showInformationMessage(
-          `Yggdrasil: ${count} memories recalled for ${file}`
+          `Yggdrasil: ${count} memories recalled for "${query}"`
         );
         break;
       }

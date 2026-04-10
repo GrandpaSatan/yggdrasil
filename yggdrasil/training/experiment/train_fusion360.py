@@ -270,12 +270,16 @@ class CodeEvalCallback(TrainerCallback):
 
 # ── Model Loading ───────────────────────────────────────────────
 
-def load_model_and_tokenizer(device_idx: int = 0, base_model: str = DEFAULT_BASE_MODEL):
+def load_model_and_tokenizer(device_idx: int = 0, base_model: str = DEFAULT_BASE_MODEL, multi_gpu: bool = False):
     """Load model in bf16 for full fine-tuning."""
+    if multi_gpu:
+        device_map = "auto"
+    else:
+        device_map = {"": device_idx}
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         torch_dtype=torch.bfloat16,
-        device_map={"": device_idx},
+        device_map=device_map,
         trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -335,6 +339,7 @@ def run_experiment(
     device_idx: int = 0,
     eval_problems: Optional[list[dict]] = None,
     base_model: str = DEFAULT_BASE_MODEL,
+    multi_gpu: bool = False,
 ) -> dict:
     output_dir = output_base / cfg.name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -351,7 +356,7 @@ def run_experiment(
     print(f"  DATA: infinite stream, never repeats")
     print(f"{'='*60}")
 
-    model, tokenizer = load_model_and_tokenizer(device_idx, base_model)
+    model, tokenizer = load_model_and_tokenizer(device_idx, base_model, multi_gpu=multi_gpu)
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
@@ -503,14 +508,22 @@ def main():
     parser.add_argument("--difficulty", type=int, default=0)
     parser.add_argument("--data-seed", type=int, default=42)
     parser.add_argument("--base-model", type=str, default=DEFAULT_BASE_MODEL)
+    parser.add_argument("--multi-gpu", action="store_true",
+                        help="Spread model across all available GPUs (device_map='auto')")
     args = parser.parse_args()
 
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-    print(f"GPU: {torch.cuda.get_device_name(args.gpu)}")
-    mem = torch.cuda.get_device_properties(args.gpu).total_memory
-    print(f"VRAM: {mem / 1e9:.1f} GB")
-    print(f"MODE: FULL fine-tuning + 8-bit Adam (1.2B model)")
+    if args.multi_gpu:
+        ngpu = torch.cuda.device_count()
+        total_mem = sum(torch.cuda.get_device_properties(i).total_memory for i in range(ngpu))
+        print(f"GPUs: {ngpu}x {torch.cuda.get_device_name(0)}")
+        print(f"Total VRAM: {total_mem / 1e9:.1f} GB")
+    else:
+        print(f"GPU: {torch.cuda.get_device_name(args.gpu)}")
+        mem = torch.cuda.get_device_properties(args.gpu).total_memory
+        print(f"VRAM: {mem / 1e9:.1f} GB")
+    print(f"MODE: FULL fine-tuning + 8-bit Adam")
 
     print("\nGenerating eval set (200 problems)...")
     eval_problems = generate_fusion_eval_set(n=200, seed=9999)
@@ -537,7 +550,7 @@ def main():
         data_seed=args.data_seed,
     )
 
-    run_experiment(cfg, args.output, args.gpu, eval_problems, args.base_model)
+    run_experiment(cfg, args.output, args.gpu, eval_problems, args.base_model, multi_gpu=args.multi_gpu)
 
 
 if __name__ == "__main__":
