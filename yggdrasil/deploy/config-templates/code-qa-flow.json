@@ -1,0 +1,80 @@
+{
+  "_comment": "Sprint 058 \u2014 Code QA flow. Fetch code, analyze coverage, write tests, validate. Reviewer != coder.",
+  "flows": [
+    {
+      "name": "code_qa",
+      "trigger": "manual",
+      "timeout_secs": 300,
+      "max_step_output_chars": 12000,
+      "steps": [
+        {
+          "name": "fetch_code",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a code retrieval specialist. Search the codebase for the function, module, or component the user wants tested. Return the relevant source code with file paths and line numbers.",
+          "input": "user_message",
+          "output_key": "source_code",
+          "max_tokens": 4096,
+          "temperature": 0.1,
+          "think": false,
+          "tools": [
+            "search_code"
+          ],
+          "agent_config": {
+            "max_iterations": 3,
+            "max_tool_calls_total": 6,
+            "tool_timeout_secs": 15,
+            "total_timeout_secs": 60,
+            "temperature": 0.1,
+            "tool_output_max_chars": 4000,
+            "enable_thinking": false
+          }
+        },
+        {
+          "name": "analyze_coverage",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a test coverage analyst. Given source code, identify: (1) happy path scenarios, (2) edge cases (empty inputs, boundaries, overflow), (3) error conditions (network failures, invalid input, missing data), (4) security-sensitive paths. Output a numbered list of test cases to write.",
+          "input": {
+            "template": {
+              "template": "User request: {user_message}\n\nSource code to test:\n{source_code.output}\n\nAnalyze what test cases are needed."
+            }
+          },
+          "output_key": "coverage_analysis",
+          "max_tokens": 2048,
+          "temperature": 0.2,
+          "think": false
+        },
+        {
+          "name": "write_tests",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are a Rust test generator for the Yggdrasil project. Generate test code following conventions: #[cfg(test)] mod tests, #[test] or #[tokio::test], descriptive snake_case names (test_<what>_<scenario>), assert!/assert_eq!/assert_ne! macros. Output ONLY valid Rust test code, no explanations.",
+          "input": {
+            "template": {
+              "template": "Source code:\n{source_code.output}\n\nTest cases to implement:\n{coverage_analysis.output}\n\nGenerate the test code."
+            }
+          },
+          "output_key": "test_code",
+          "max_tokens": 4096,
+          "temperature": 0.2
+        },
+        {
+          "name": "validate",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a test validator. Review the generated tests against the coverage analysis. Check: (1) all identified test cases are covered, (2) assertions are meaningful (not just assert!(true)), (3) edge cases are actually tested, (4) test names are descriptive. If all good, respond: LGTM. If gaps exist, list them.",
+          "input": {
+            "template": {
+              "template": "Coverage analysis:\n{coverage_analysis.output}\n\nGenerated tests:\n{test_code.output}\n\nValidate the tests cover all identified cases."
+            }
+          },
+          "output_key": "validation",
+          "max_tokens": 1024,
+          "temperature": 0.1,
+          "think": false
+        }
+      ]
+    }
+  ]
+}

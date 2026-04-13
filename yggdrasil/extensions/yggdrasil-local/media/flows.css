@@ -1,0 +1,497 @@
+/* Yggdrasil flows webview styles.
+   Dark zinc palette (from sprint-058-flows.html) with VSCode CSS-var
+   hooks where mapping makes sense. Zinc is kept as the source of truth
+   because the flows view is infrastructure-ops-oriented. */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: var(--vscode-font-family, 'Inter', system-ui, -apple-system, sans-serif);
+}
+
+body {
+  background: #09090b;
+  color: #e4e4e7;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #0c0c0f;
+  border-right: 1px solid #27272a;
+  padding: 20px 0;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar-header {
+  padding: 0 20px 20px;
+  border-bottom: 1px solid #27272a;
+}
+
+.sidebar-header h1 {
+  font-size: 17px;
+  font-weight: 600;
+  color: #fafafa;
+  letter-spacing: -0.02em;
+}
+
+.sidebar-header p {
+  font-size: 11px;
+  color: #71717a;
+  margin-top: 3px;
+}
+
+.sidebar-header .stats {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 10px;
+}
+
+.stat {
+  background: #18181b;
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: #a1a1aa;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+.stat.live { color: #86efac; }
+
+.nav-section { padding: 12px 0; }
+
+.nav-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #52525b;
+  padding: 0 20px 6px;
+  font-weight: 600;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 20px;
+  cursor: pointer;
+  transition: all 0.1s;
+  font-size: 12px;
+  color: #a1a1aa;
+  border-left: 2px solid transparent;
+  user-select: none;
+}
+
+.nav-item:hover { background: #18181b; color: #e4e4e7; }
+
+.nav-item.active {
+  background: #18181b;
+  color: #fafafa;
+  border-left-color: #3b82f6;
+}
+
+.nav-item .status {
+  margin-left: auto;
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.status-new { background: #1e3a8a; color: #93c5fd; }
+.status-done { background: #14532d; color: #86efac; }
+.status-empty { background: #3f1d1d; color: #fca5a5; }
+.status-partial { background: #78350f; color: #fcd34d; }
+
+.main { padding: 32px 48px; max-width: 1500px; }
+.tab { display: none; }
+.tab.active { display: block; }
+
+.tab-header {
+  margin-bottom: 28px;
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.tab-header .hleft { flex: 1; min-width: 400px; }
+
+.tab-header .badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 3px 8px;
+  background: #1f2937;
+  color: #93c5fd;
+  border-radius: 3px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+.tab-header h2 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fafafa;
+  margin-bottom: 6px;
+}
+
+.tab-header p {
+  color: #a1a1aa;
+  font-size: 14px;
+  max-width: 720px;
+  line-height: 1.5;
+}
+
+.play-btn {
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #e4e4e7;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.1s;
+}
+
+.play-btn:hover { background: #27272a; border-color: #3f3f46; }
+.play-btn.playing { background: #1e40af; border-color: #3b82f6; color: #dbeafe; }
+
+.section { margin-bottom: 28px; }
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e4e4e7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+
+.grid { display: grid; gap: 12px; }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+
+.card {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.card h3 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin-bottom: 6px; }
+.card p { font-size: 12px; color: #a1a1aa; line-height: 1.55; }
+
+.card .meta {
+  font-size: 10px;
+  color: #52525b;
+  margin-top: 6px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+.flow-container {
+  background: #0c0c0f;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 32px 24px;
+  overflow: auto;
+}
+
+.flow-svg { width: 100%; min-width: 1000px; height: 260px; }
+
+.node-rect {
+  fill: #18181b;
+  stroke: #3f3f46;
+  stroke-width: 1.5;
+  rx: 6;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.node-rect.user { fill: #292524; stroke: #78716c; }
+.node-rect.assigned { fill: #0c1f2e; stroke: #0891b2; }
+.node-rect.empty { fill: #2a0f0f; stroke: #dc2626; stroke-dasharray: 4; }
+.node-rect.nonllm { fill: #0c1f13; stroke: #16a34a; }
+.node-rect.distilled { fill: #1a0a2e; stroke: #9333ea; }
+.node-rect.ondemand { fill: #2a1708; stroke: #d97706; stroke-dasharray: 4; }
+.node-rect.response { fill: #112e1a; stroke: #22c55e; }
+
+.node-title {
+  fill: #fafafa;
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.node-model {
+  fill: #a1a1aa;
+  font-size: 10px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.node-host {
+  fill: #71717a;
+  font-size: 9px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.flow-arrow {
+  stroke: #52525b;
+  stroke-width: 2;
+  fill: none;
+  marker-end: url(#arrowhead);
+}
+
+.flow-arrow.loop { stroke: #3b82f6; stroke-dasharray: 5 3; }
+
+.data-packet {
+  fill: #3b82f6;
+  filter: drop-shadow(0 0 4px #3b82f6);
+  opacity: 0;
+}
+
+.data-packet.animating {
+  opacity: 1;
+  animation-duration: 4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+.ai-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  font-weight: 500;
+}
+
+.ai-assigned { background: #164e63; color: #67e8f9; }
+.ai-empty { background: #3f1d1d; color: #fca5a5; }
+.ai-distilled { background: #581c87; color: #d8b4fe; }
+.ai-ondemand { background: #713f12; color: #fde047; }
+.ai-nonllm { background: #14532d; color: #86efac; }
+.ai-loaded { background: #14532d; color: #86efac; }
+.ai-unloaded { background: #27272a; color: #71717a; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #18181b;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+th {
+  background: #09090b;
+  color: #a1a1aa;
+  font-weight: 500;
+  text-align: left;
+  padding: 9px 14px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #27272a;
+}
+
+td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #27272a;
+  color: #e4e4e7;
+  vertical-align: top;
+}
+
+tr:last-child td { border-bottom: none; }
+
+td.mono {
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #a1a1aa;
+}
+
+.loop-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 7px;
+  background: #1e40af;
+  color: #bfdbfe;
+  border-radius: 3px;
+  margin-left: 8px;
+  font-weight: 500;
+}
+
+.tooltip {
+  position: absolute;
+  background: #09090b;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #e4e4e7;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  max-width: 300px;
+}
+
+.tooltip.show { opacity: 1; }
+
+.verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #86efac;
+  font-size: 10px;
+  margin-left: 8px;
+}
+
+.verified::before {
+  content: '●';
+  color: #22c55e;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.hardware-map {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+}
+
+.host-card {
+  background: #0c0c0f;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.host-card.live { border-color: #166534; }
+
+.host-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #27272a;
+}
+
+.host-header h3 { font-size: 14px; font-weight: 600; color: #fafafa; }
+
+.host-header .ip {
+  font-size: 10px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  color: #71717a;
+}
+
+.host-section { margin-bottom: 12px; }
+
+.host-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #52525b;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.model-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: #18181b;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  border-left: 2px solid transparent;
+}
+
+.model-row.loaded { border-left-color: #22c55e; }
+.model-row .size { color: #71717a; font-size: 10px; }
+
+.svc-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #18181b;
+  border-radius: 4px;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+.svc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+/* Prompt disclosures — new for extension integration */
+details.prompt-detail {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+details.prompt-detail > summary {
+  cursor: pointer;
+  color: #93c5fd;
+  user-select: none;
+  padding: 3px 0;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+details.prompt-detail > summary:hover { color: #dbeafe; }
+
+details.prompt-detail pre {
+  background: #0c0c0f;
+  border: 1px solid #27272a;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #d4d4d8;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+details.prompt-detail .prompt-label {
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 2px;
+}
+
+details.prompt-detail .prompt-label:first-child { margin-top: 0; }

@@ -1,18 +1,83 @@
 {
   "name": "yggdrasil-local",
-  "displayName": "Yggdrasil Local",
-  "description": "Local Yggdrasil interface — memory monitor + dashboard",
-  "version": "0.2.0",
+  "displayName": "Yggdrasil",
+  "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
+  "version": "0.6.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["Other"],
+  "categories": ["AI", "Chat", "Machine Learning", "Other"],
+  "keywords": [
+    "ai",
+    "llm",
+    "ollama",
+    "local-ai",
+    "homelab",
+    "chat",
+    "coding-agent",
+    "rag",
+    "mcp",
+    "yggdrasil"
+  ],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "yggdrasil",
+          "title": "Yggdrasil",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "yggdrasil": [
+        {
+          "id": "yggdrasil.flowsTree",
+          "name": "Flows",
+          "icon": "media/icon.svg",
+          "contextualTitle": "Yggdrasil Flows"
+        },
+        {
+          "id": "yggdrasil.modelsTree",
+          "name": "Models",
+          "contextualTitle": "Yggdrasil Models"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "yggdrasil.openFlows",
+        "title": "Yggdrasil: Open Flows Explorer",
+        "icon": "$(symbol-structure)"
+      },
+      {
+        "command": "yggdrasil.refreshFlows",
+        "title": "Yggdrasil: Refresh Flows",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "yggdrasil.openSettings",
+        "title": "Yggdrasil: Open Settings",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "yggdrasil.openChat",
+        "title": "Yggdrasil: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "yggdrasil.refreshModels",
+        "title": "Yggdrasil: Refresh Models",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "yggdrasil.useModelInChat",
+        "title": "Yggdrasil: Use Model in Chat"
+      },
       {
         "command": "yggdrasil.openDashboard",
         "title": "Yggdrasil: Open Memory Dashboard"
@@ -24,17 +89,103 @@
       {
         "command": "yggdrasil.toggleNotifications",
         "title": "Yggdrasil: Toggle Notifications"
+      },
+      {
+        "command": "yggdrasil.reinstallHooks",
+        "title": "Yggdrasil: Reinstall Hooks"
+      },
+      {
+        "command": "yggdrasil.checkForUpdates",
+        "title": "Yggdrasil: Check for Updates"
+      },
+      {
+        "command": "yggdrasil.chat.explainSelection",
+        "title": "Yggdrasil: Explain Selection"
+      },
+      {
+        "command": "yggdrasil.chat.askAboutFile",
+        "title": "Yggdrasil: Ask About This File"
+      },
+      {
+        "command": "yggdrasil.chat.editWithModel",
+        "title": "Yggdrasil: Edit Selection With Model…"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "yggdrasil.refreshFlows",
+          "when": "view == yggdrasil.flowsTree",
+          "group": "navigation"
+        },
+        {
+          "command": "yggdrasil.openFlows",
+          "when": "view == yggdrasil.flowsTree",
+          "group": "navigation"
+        },
+        {
+          "command": "yggdrasil.openChat",
+          "when": "view == yggdrasil.flowsTree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "yggdrasil.openSettings",
+          "when": "view == yggdrasil.flowsTree",
+          "group": "navigation@2"
+        },
+        {
+          "command": "yggdrasil.refreshModels",
+          "when": "view == yggdrasil.modelsTree",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "yggdrasil.chat.explainSelection",
+          "when": "editorHasSelection",
+          "group": "yggdrasil@1"
+        },
+        {
+          "command": "yggdrasil.chat.editWithModel",
+          "when": "editorHasSelection",
+          "group": "yggdrasil@2"
+        },
+        {
+          "command": "yggdrasil.chat.askAboutFile",
+          "group": "yggdrasil@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "yggdrasil.useModelInChat",
+          "when": "false"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "yggdrasil.openDashboard",
         "key": "ctrl+shift+m",
         "when": "!terminalFocus"
+      },
+      {
+        "command": "yggdrasil.openFlows",
+        "key": "ctrl+shift+y",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "yggdrasil.openChat",
+        "key": "ctrl+shift+i",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "yggdrasil.chat.explainSelection",
+        "key": "ctrl+shift+e",
+        "when": "editorHasSelection && !terminalFocus"
       }
     ],
     "configuration": {
-      "title": "Yggdrasil Local",
+      "title": "Yggdrasil",
       "properties": {
         "yggdrasil.eventsFile": {
           "type": "string",
@@ -59,6 +210,41 @@
             "enum": ["init", "recall", "ingest", "sleep", "error", "sidecar", "error_recall", "update"]
           },
           "description": "Which event types trigger notifications"
+        },
+        "yggdrasil.odinUrl": {
+          "type": "string",
+          "default": "http://10.0.65.8:8080",
+          "description": "Odin router URL — chat completions, model list, flow CRUD"
+        },
+        "yggdrasil.mimirUrl": {
+          "type": "string",
+          "default": "http://10.0.65.8:9090",
+          "description": "Mimir memory service URL"
+        },
+        "yggdrasil.huginUrl": {
+          "type": "string",
+          "default": "http://10.0.65.9:11434",
+          "description": "Hugin Ollama URL"
+        },
+        "yggdrasil.giteaUrl": {
+          "type": "string",
+          "default": "http://10.0.65.11:3000",
+          "description": "Gitea server URL for auto-updates"
+        },
+        "yggdrasil.giteaRepo": {
+          "type": "string",
+          "default": "jesus/Yggdrasil",
+          "description": "Gitea repo (owner/name) for release downloads"
+        },
+        "yggdrasil.autoUpdate.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically check for extension updates from Gitea"
+        },
+        "yggdrasil.hooks.managed": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically manage Claude Code hooks in ~/.claude/settings.json"
         }
       }
     }

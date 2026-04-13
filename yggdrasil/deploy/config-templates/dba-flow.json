@@ -1,0 +1,81 @@
+{
+  "_comment": "Sprint 058 \u2014 DBA flow. Schema design, migration generation, safety review, query optimization.",
+  "_design": "With Morrigan available, Qwen3.5-27B handles complex schema design. Falls back to qwen3-coder when offline.",
+  "flows": [
+    {
+      "name": "dba",
+      "trigger": "manual",
+      "timeout_secs": 240,
+      "max_step_output_chars": 8000,
+      "steps": [
+        {
+          "name": "analyze_schema",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a database analyst for the Yggdrasil project. Search the codebase for existing database schemas, migrations, and queries related to the user's request. Return: current table definitions, existing migration files, and any relevant query patterns. The project uses PostgreSQL with pgvector and sqlx.",
+          "input": "user_message",
+          "output_key": "schema_analysis",
+          "max_tokens": 4096,
+          "temperature": 0.1,
+          "think": false,
+          "tools": [
+            "search_code",
+            "query_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 4,
+            "max_tool_calls_total": 8,
+            "tool_timeout_secs": 15,
+            "total_timeout_secs": 90,
+            "temperature": 0.1,
+            "tool_output_max_chars": 4000,
+            "enable_thinking": false
+          }
+        },
+        {
+          "name": "generate_migration",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are a PostgreSQL DBA for the Yggdrasil project. Generate a versioned, idempotent SQL migration with both UP and DOWN sections. Follow conventions: snake_case table/column names, UUID primary keys, timestamptz for dates, JSONB for flexible fields. For vector columns use pgvector (vector(N)). Include appropriate indexes. Consider backward compatibility \u2014 migrations must not break existing queries. Output ONLY the SQL, no explanations.",
+          "input": {
+            "template": {
+              "template": "User request: {user_message}\n\nExisting schema context:\n{schema_analysis.output}\n\nGenerate the SQL migration."
+            }
+          },
+          "output_key": "migration",
+          "max_tokens": 4096,
+          "temperature": 0.2
+        },
+        {
+          "name": "review_safety",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a database migration safety reviewer. Check the migration for: (1) backward compatibility \u2014 will existing queries break? (2) data loss risk \u2014 any DROP TABLE, DROP COLUMN, or type changes without data migration? (3) index impact \u2014 will new indexes cause long lock times on large tables? (4) constraint safety \u2014 NOT NULL on existing columns needs DEFAULT. (5) pgvector specifics \u2014 correct dimension, appropriate index type (HNSW vs IVFFlat). If safe, respond: LGTM. Otherwise list issues with severity.",
+          "input": {
+            "template": {
+              "template": "Schema context:\n{schema_analysis.output}\n\nProposed migration:\n{migration.output}\n\nReview for safety."
+            }
+          },
+          "output_key": "safety_review",
+          "max_tokens": 1024,
+          "temperature": 0.1,
+          "think": false
+        },
+        {
+          "name": "optimize_queries",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "Given the migration and safety review, suggest query optimizations: (1) indexes that should be added for common query patterns, (2) any queries in the codebase that should be updated, (3) EXPLAIN ANALYZE suggestions for validation. If the safety review flagged issues, also output the corrected migration SQL. Output SQL and recommendations.",
+          "input": {
+            "template": {
+              "template": "Migration:\n{migration.output}\n\nSafety review:\n{safety_review.output}\n\nOptimize queries and fix any flagged issues."
+            }
+          },
+          "output_key": "optimized",
+          "max_tokens": 4096,
+          "temperature": 0.2
+        }
+      ]
+    }
+  ]
+}

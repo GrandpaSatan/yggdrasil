@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# ygg-memory.sh — Cognitive Sidecar for Claude Code (Sprint 057)
+# ygg-memory.sh — Cognitive Sidecar for Claude Code (Sprint 058)
+# Bundled inside the yggdrasil-local VS Code extension.
+# Deployed to ~/.yggdrasil/ygg-memory.sh by the extension on activation.
+#
 # Usage: ygg-memory.sh <init|sidecar|post|sleep>
 # All modes exit 0 — never blocks Claude Code.
-# Emits JSONL events to /tmp/ygg-hooks/memory-events.jsonl for the
-# Yggdrasil Local VS Code extension.
+# Emits JSONL events to /tmp/ygg-hooks/memory-events.jsonl
 set -o pipefail
 
 MUNIN_IP="${MUNIN_IP:-10.0.65.8}"
@@ -37,73 +39,6 @@ session_append() {
         "$(date +%H:%M:%S)" "$tool" "$(echo "$summary" | jq -Rs .)" >> "$SESSION_FILE" 2>/dev/null
 }
 
-# ── check_and_update: versioned auto-update for yggdrasil-local extension ──
-check_and_update() {
-    local ext_dir source_version installed_version
-    ext_dir="$(cd "$(dirname "$0")/../.." && pwd)/extensions/yggdrasil-local"
-
-    [ -f "$ext_dir/package.json" ] || return 0
-    command -v node &>/dev/null || return 0
-    command -v npm &>/dev/null || return 0
-
-    source_version=$(jq -r '.version // "0.0.0"' "$ext_dir/package.json" 2>/dev/null)
-    installed_version=$(ls -d "$HOME/.vscode/extensions/yggdrasil.yggdrasil-local-"* 2>/dev/null \
-        | sed 's/.*yggdrasil-local-//' | sort -V | tail -1)
-    installed_version="${installed_version:-not_installed}"
-
-    if [ "$source_version" = "$installed_version" ]; then
-        return 0
-    fi
-
-    log "update: $installed_version → $source_version"
-    emit_event "update" "{\"from\":\"$installed_version\",\"to\":\"$source_version\",\"status\":\"started\"}"
-
-    (
-        cd "$ext_dir" || exit 1
-        [ -d "node_modules" ] || npm install --no-audit --no-fund 2>/dev/null
-        npm run compile 2>/dev/null || exit 1
-        if command -v code &>/dev/null && [ -f "out/extension.js" ]; then
-            npx @vscode/vsce package --no-dependencies 2>/dev/null
-            local vsix=$(ls -t *.vsix 2>/dev/null | head -1)
-            [ -n "$vsix" ] && code --install-extension "$vsix" --force 2>/dev/null
-        fi
-        log "update: extension updated to $source_version — restart Claude Code to activate"
-        emit_event "update" "{\"from\":\"$installed_version\",\"to\":\"$source_version\",\"status\":\"complete\"}"
-    ) &>/dev/null &
-}
-
-# ── auto_pull: fetch latest Yggdrasil from Gitea ───────────────────────
-auto_pull() {
-    # Find the repo root (this script lives in deploy/workstation/)
-    _repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-    [ -d "$_repo_root/.git" ] || return 0
-
-    # Only pull if we haven't pulled in the last hour (avoid hammering Gitea)
-    _pull_marker="/tmp/ygg-hooks/last-pull"
-    if [ -f "$_pull_marker" ]; then
-        _age=$(( $(date +%s) - $(stat -c %Y "$_pull_marker" 2>/dev/null || echo 0) ))
-        [ "$_age" -lt 3600 ] && return 0
-    fi
-
-    # Fast-forward pull in background — never blocks session start
-    (
-        cd "$_repo_root" || exit 0
-        _before=$(git rev-parse HEAD 2>/dev/null)
-        git pull --ff-only origin main 2>/dev/null || exit 0
-        _after=$(git rev-parse HEAD 2>/dev/null)
-        touch "$_pull_marker" 2>/dev/null
-
-        if [ "$_before" != "$_after" ]; then
-            _changes=$(git log --oneline "${_before}..${_after}" 2>/dev/null | head -5)
-            log "init: auto-updated from Gitea ($(echo "$_changes" | wc -l) commits)"
-            emit_event "auto_pull" "{\"commits\":$(echo "$_changes" | wc -l),\"from\":\"${_before:0:7}\",\"to\":\"${_after:0:7}\"}"
-
-            # Re-run install with the UPDATED script (in case hook commands changed)
-            "$_repo_root/yggdrasil/deploy/workstation/ygg-memory.sh" install 2>/dev/null
-        fi
-    ) &
-}
-
 # ── init: SessionStart — prepare per-project session ───────────────────
 do_init() {
     mkdir -p /tmp/ygg-hooks 2>/dev/null
@@ -112,25 +47,6 @@ do_init() {
 
     # Create per-project session file (truncate for new session)
     : > "$SESSION_FILE"
-
-    # Auto-pull latest from Gitea (background, max once per hour)
-    auto_pull
-
-    # Auto-update VS Code extension if source version != installed version
-    check_and_update
-
-    # Auto-verify hooks are correctly configured (catch stale command names)
-    _settings="$HOME/.claude/settings.json"
-    _self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    if [ -f "$_settings" ]; then
-        if grep -q "recall\|ingest" "$_settings" 2>/dev/null; then
-            log "init: WARN — hooks use old command names, auto-fixing..."
-            "$_self" install 2>/dev/null
-        elif ! grep -q "$_self" "$_settings" 2>/dev/null; then
-            log "init: WARN — hooks don't reference this script, auto-fixing..."
-            "$_self" install 2>/dev/null
-        fi
-    fi
 
     log "init: session started (project: ${PROJECT_HASH}, sidecar: RWKV-7)"
     emit_event "init" "{\"count\":0,\"project_hash\":\"${PROJECT_HASH}\"}"
@@ -419,103 +335,9 @@ case "${1:-}" in
     sidecar|recall)    do_sidecar ;;
     post|ingest)       do_post ;;
     sleep)             do_sleep ;;
-    verify)
-        # Self-test: verify settings.json hooks point to this script
-        _settings="$HOME/.claude/settings.json"
-        _script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-        if [ -f "$_settings" ]; then
-            if grep -q "$_script_path" "$_settings" 2>/dev/null; then
-                # Also verify command names are canonical (sidecar/post, not recall/ingest)
-                if grep -q "recall\|ingest" "$_settings" 2>/dev/null; then
-                    echo "WARN: hooks use old command names (recall/ingest). Run: ygg-memory.sh install" >&2
-                else
-                    echo "OK: hooks reference $_script_path with correct command names" >&2
-                fi
-            else
-                echo "WARN: hooks in $_settings do not reference $_script_path" >&2
-                echo "Run: ygg-memory.sh install" >&2
-            fi
-        else
-            echo "WARN: $_settings does not exist" >&2
-        fi
-        ;;
-    install)
-        # Generate correct hooks config and merge into settings.json
-        _settings="$HOME/.claude/settings.json"
-        _script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-        mkdir -p "$HOME/.claude" 2>/dev/null
-
-        # Read existing settings or start fresh
-        _existing="{}"
-        [ -f "$_settings" ] && _existing=$(cat "$_settings")
-
-        # Build hooks JSON with correct command names
-        _hooks_json=$(cat <<HOOKEOF
-{
-    "SessionStart": [{
-        "hooks": [{
-            "type": "command",
-            "command": "${_script_path} init",
-            "timeout": 5000
-        }]
-    }],
-    "PreToolUse": [
-        {
-            "matcher": "Edit|Write|Read|Bash|Grep|Agent",
-            "hooks": [{
-                "type": "command",
-                "command": "${_script_path} sidecar",
-                "timeout": 1500
-            }]
-        },
-        {
-            "matcher": "mcp__yggdrasil__ha_call_service_tool",
-            "hooks": [{
-                "type": "command",
-                "command": "if [ ! -f /tmp/ygg-hooks/ha_verified ]; then echo \"BLOCKED: Must call ha_get_states_tool or ha_list_entities_tool before controlling devices.\" >&2; exit 2; fi"
-            }]
-        }
-    ],
-    "PostToolUse": [
-        {
-            "matcher": "Edit|Write|Bash",
-            "hooks": [{
-                "type": "command",
-                "command": "${_script_path} post",
-                "timeout": 5000
-            }]
-        },
-        {
-            "matcher": "mcp__yggdrasil__ha_get_states_tool|mcp__yggdrasil__ha_list_entities_tool",
-            "hooks": [{
-                "type": "command",
-                "command": "mkdir -p /tmp/ygg-hooks && touch /tmp/ygg-hooks/ha_verified"
-            }]
-        }
-    ],
-    "Stop": [{
-        "hooks": [{
-            "type": "command",
-            "command": "${_script_path} sleep",
-            "timeout": 15000
-        }]
-    }]
-}
-HOOKEOF
-)
-        # Merge: replace hooks key, preserve everything else
-        _merged=$(echo "$_existing" | jq --argjson hooks "$_hooks_json" '. * {hooks: $hooks}')
-
-        echo "$_merged" | jq . > "$_settings"
-        echo "Installed hooks into $_settings" >&2
-        echo "Script: $_script_path" >&2
-        echo "Commands: init, sidecar, post, sleep (aliases: recall, ingest)" >&2
-        echo "Includes: HA safety hooks" >&2
-        echo "Restart Claude Code to activate." >&2
-        ;;
     *)
-        echo "Usage: ygg-memory.sh <init|sidecar|post|sleep|verify|install>" >&2
-        echo "Aliases: recall→sidecar, ingest→post" >&2
+        echo "Usage: ygg-memory.sh <init|sidecar|post|sleep>" >&2
+        echo "Managed by the yggdrasil-local VS Code extension." >&2
         ;;
 esac
 exit 0

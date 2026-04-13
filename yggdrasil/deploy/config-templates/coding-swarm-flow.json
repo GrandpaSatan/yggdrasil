@@ -1,0 +1,66 @@
+{
+  "_comment": "Sprint 058 \u2014 Coding swarm flow. Cross-model generate->review->refine with LGTM convergence loop.",
+  "_models": {
+    "coder": "nemotron-3-nano:4b \u2014 4B Mamba+Attention hybrid, 66.5% HumanEval, runs on Munin iGPU",
+    "reviewer": "gemma4:e4b \u2014 dense 8B, different architecture catches different bugs, Hugin eGPU",
+    "fast": "mollysama/rwkv-7-g1e:2.9b \u2014 51 tok/s, 1M context, Hugin eGPU"
+  },
+  "_design": "The coder and reviewer MUST be different models \u2014 an AI cannot review its own code.",
+  "flows": [
+    {
+      "name": "coding_swarm",
+      "trigger": {
+        "intent": "coding"
+      },
+      "timeout_secs": 300,
+      "max_step_output_chars": 12000,
+      "loop_config": {
+        "max_iterations": 3,
+        "convergence_pattern": "LGTM|APPROVED|NO_ISSUES",
+        "restart_from_step": "review",
+        "check_step": "review"
+      },
+      "steps": [
+        {
+          "name": "generate",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are an expert code generator for the Yggdrasil AI homelab project. Write clean, idiomatic code that follows project conventions: axum handlers, serde structs, thiserror enums, tokio async, tracing instrumentation. Never hardcode IPs \u2014 use environment variables. Include error handling with Result types. Output ONLY the code, no explanations.",
+          "input": "user_message",
+          "output_key": "generated_code",
+          "max_tokens": 4096,
+          "temperature": 0.2
+        },
+        {
+          "name": "review",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a code reviewer for the Yggdrasil project. Review the code for: bugs, security issues (hardcoded IPs, unwrap() panics, SQL injection), convention violations, missing error handling, and performance issues. If the code is correct, respond with exactly: LGTM. If issues exist, respond with a numbered list of issues, each with severity (high/medium/low) and a specific fix suggestion. Be concise \u2014 only flag real problems, not style preferences.",
+          "input": {
+            "step_output": {
+              "key": "generated_code"
+            }
+          },
+          "output_key": "review",
+          "max_tokens": 1024,
+          "temperature": 0.1,
+          "think": false
+        },
+        {
+          "name": "refine",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are a code refiner. Apply the reviewer's feedback to fix the code. Output ONLY the corrected code, no explanations. If the review says LGTM, output the code unchanged.",
+          "input": {
+            "template": {
+              "template": "Original code:\n{generated_code.output}\n\nReview feedback:\n{review.output}\n\nApply the fixes and output the corrected code."
+            }
+          },
+          "output_key": "refined_code",
+          "max_tokens": 4096,
+          "temperature": 0.1
+        }
+      ]
+    }
+  ]
+}

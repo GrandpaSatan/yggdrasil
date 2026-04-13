@@ -1,0 +1,40 @@
+{
+    "_comment": "Sprint 059 \u2014 Complex reasoning flow. Fast plan then deep verify.",
+    "_design": "Both steps use GLM-4.7-Flash (30B MoE, 3B active, 200K context) \u2014 reasoning specialist that can temporarily replace Claude when offline.",
+    "flows": [
+        {
+            "name": "complex_reasoning",
+            "trigger": "manual",
+            "timeout_secs": 240,
+            "max_step_output_chars": 12000,
+            "steps": [
+                {
+                    "name": "fast_plan",
+                    "backend": "munin-ollama",
+                    "model": "glm-4.7-flash",
+                    "system_prompt": "You are a reasoning specialist. Given a hard question, produce a concise plan: (1) identify the core question, (2) list sub-problems that must be resolved, (3) for each sub-problem, state the approach. Keep it tight \u2014 this is a first-pass plan, not the final answer.",
+                    "input": "user_message",
+                    "output_key": "plan",
+                    "max_tokens": 2048,
+                    "temperature": 0.2,
+                    "think": true
+                },
+                {
+                    "name": "deep_verify",
+                    "backend": "munin-ollama",
+                    "model": "glm-4.7-flash",
+                    "system_prompt": "You are a verification specialist. Given a plan from fast_plan, execute it rigorously: resolve each sub-problem with step-by-step reasoning, check for logical gaps, cite evidence where possible, and produce a final verified answer. If the plan is flawed, revise it and explain why.",
+                    "input": {
+                        "template": {
+                            "template": "Original question: {user_message}\n\nInitial plan:\n{plan.output}\n\nVerify, deepen, and answer."
+                        }
+                    },
+                    "output_key": "answer",
+                    "max_tokens": 4096,
+                    "temperature": 0.3,
+                    "think": true
+                }
+            ]
+        }
+    ]
+}

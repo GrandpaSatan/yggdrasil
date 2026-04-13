@@ -1,0 +1,74 @@
+{
+    "_comment": "Sprint 058 \u2014 UI design flow. Generate frontend components with visual review loop.",
+    "_design": "Gemma 4 E4B is vision-capable \u2014 can review rendered UI screenshots via screenshot_tool.",
+    "flows": [
+        {
+            "name": "ui_design",
+            "trigger": "manual",
+            "timeout_secs": 360,
+            "max_step_output_chars": 16000,
+            "loop_config": {
+                "max_iterations": 2,
+                "convergence_pattern": "APPROVED|LGTM",
+                "restart_from_step": "visual_review",
+                "check_step": "visual_review"
+            },
+            "steps": [
+                {
+                    "name": "design_spec",
+                    "backend": "munin-ollama",
+                    "model": "glm-4.7-flash",
+                    "system_prompt": "You are a UI/UX architect. From the user's request, create a structured design specification: (1) component hierarchy, (2) layout approach (CSS Grid, Flexbox), (3) color scheme (dark mode, zinc-950 background), (4) interaction states (hover, active, loading, error), (5) data flow (props, state, events). Yggdrasil style: enterprise SaaS, dark mode, left-side nav rail, no centered-div layouts, no top navbars. Output as a structured spec.",
+                    "input": "user_message",
+                    "output_key": "design_spec",
+                    "max_tokens": 2048,
+                    "temperature": 0.3,
+                    "think": false
+                },
+                {
+                    "name": "generate_ui",
+                    "backend": "munin-ollama",
+                    "model": "nemotron-3-nano:4b",
+                    "system_prompt": "You are a frontend engineer specializing in enterprise SaaS interfaces. Generate production-ready React/TypeScript components with Tailwind CSS. Follow these design rules: dark mode (bg-zinc-950, text-zinc-100), CSS Grid for layouts, left-side nav rails, data-dense tables with sorting/filtering, real-time charts where applicable. Use shadcn/ui patterns. Output ONLY the code \u2014 no explanations.",
+                    "input": {
+                        "template": {
+                            "template": "Design specification:\n{design_spec.output}\n\nUser request: {user_message}\n\nGenerate the React/TypeScript component code."
+                        }
+                    },
+                    "output_key": "ui_code",
+                    "max_tokens": 8192,
+                    "temperature": 0.2
+                },
+                {
+                    "name": "visual_review",
+                    "backend": "hugin-ollama",
+                    "model": "gemma4:e4b",
+                    "system_prompt": "You are a UI quality reviewer. Review the generated frontend code for: (1) accessibility (ARIA labels, keyboard navigation, contrast ratios), (2) responsive design (breakpoints, mobile layout), (3) component structure (proper prop types, error boundaries), (4) dark mode consistency (no white backgrounds, proper contrast), (5) interaction completeness (loading states, empty states, error states). If the UI code meets all criteria, respond: APPROVED. Otherwise list specific issues.",
+                    "input": {
+                        "template": {
+                            "template": "Design spec:\n{design_spec.output}\n\nGenerated UI code:\n{ui_code.output}\n\nReview for quality and completeness."
+                        }
+                    },
+                    "output_key": "visual_review",
+                    "max_tokens": 1024,
+                    "temperature": 0.1,
+                    "think": false
+                },
+                {
+                    "name": "refine_ui",
+                    "backend": "munin-ollama",
+                    "model": "nemotron-3-nano:4b",
+                    "system_prompt": "Apply the reviewer's feedback to fix the UI code. Output ONLY the corrected code. If the review says APPROVED, output the code unchanged.",
+                    "input": {
+                        "template": {
+                            "template": "UI code:\n{ui_code.output}\n\nReview feedback:\n{visual_review.output}\n\nApply fixes and output corrected code."
+                        }
+                    },
+                    "output_key": "final_ui",
+                    "max_tokens": 8192,
+                    "temperature": 0.1
+                }
+            ]
+        }
+    ]
+}

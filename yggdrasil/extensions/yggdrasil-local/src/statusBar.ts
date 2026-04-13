@@ -21,6 +21,7 @@ export interface SessionStats {
 
 export class StatusBarManager implements vscode.Disposable {
   private item: vscode.StatusBarItem;
+  private healthStatus: "green" | "yellow" | "red" = "green";
   private stats: SessionStats = {
     recallCount: 0,
     storeCount: 0,
@@ -43,6 +44,11 @@ export class StatusBarManager implements vscode.Disposable {
 
   show(): void {
     this.item.show();
+  }
+
+  setHealthStatus(status: "green" | "yellow" | "red"): void {
+    this.healthStatus = status;
+    this.updateText();
   }
 
   getStats(): SessionStats {
@@ -144,11 +150,26 @@ export class StatusBarManager implements vscode.Disposable {
     if (this.stats.lastEvent) {
       lines.push(`Last: ${this.stats.lastEvent}`);
     }
+    // Health info
+    const healthLabels = {
+      green: "Hooks: configured \u2713 | Mimir: reachable \u2713",
+      yellow: "Hooks: configured \u2713 | Mimir: unreachable \u2717",
+      red: "Hooks: NOT CONFIGURED \u2717",
+    };
+    lines.push(healthLabels[this.healthStatus]);
     lines.push("", "Click to open dashboard");
     this.item.tooltip = lines.join("\n");
 
-    // Color on errors
-    if (this.stats.errorCount > 0) {
+    // Color priority: red health > errors > yellow health > green (default)
+    if (this.healthStatus === "red") {
+      this.item.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.errorBackground"
+      );
+    } else if (this.stats.errorCount > 0) {
+      this.item.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.warningBackground"
+      );
+    } else if (this.healthStatus === "yellow") {
       this.item.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground"
       );

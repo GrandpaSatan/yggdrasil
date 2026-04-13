@@ -1,0 +1,69 @@
+{
+  "_comment": "Sprint 058 \u2014 DevOps flow. Analyze infra state, generate config, review for safety.",
+  "flows": [
+    {
+      "name": "devops",
+      "trigger": {
+        "intent": "deployment"
+      },
+      "timeout_secs": 240,
+      "max_step_output_chars": 8000,
+      "steps": [
+        {
+          "name": "analyze_infra",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are an infrastructure analyst for the Yggdrasil homelab. Gather current system state by checking service health and HA device states. Summarize: which services are running, what ports are in use, which nodes are online, and any relevant device states. Focus on information relevant to the user's deployment request.",
+          "input": "user_message",
+          "output_key": "infra_state",
+          "max_tokens": 2048,
+          "temperature": 0.1,
+          "think": false,
+          "tools": [
+            "service_health",
+            "ha_get_states",
+            "ha_list_entities"
+          ],
+          "agent_config": {
+            "max_iterations": 4,
+            "max_tool_calls_total": 8,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 90,
+            "temperature": 0.1,
+            "tool_output_max_chars": 3000,
+            "enable_thinking": false
+          }
+        },
+        {
+          "name": "generate_config",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are a DevOps engineer for the Yggdrasil homelab. Generate the requested deployment configuration (systemd unit, Docker Compose, deploy script, config file). Follow Yggdrasil conventions: binaries at /opt/yggdrasil/bin/, configs at /etc/yggdrasil/<service>/config.json, services run as yggdrasil user, env from /opt/yggdrasil/.env. NEVER hardcode IPs \u2014 use ${VAR} expansion. Deploy via /tmp then sudo cp. Output ONLY the config files, no explanations.",
+          "input": {
+            "template": {
+              "template": "User request: {user_message}\n\nCurrent infrastructure state:\n{infra_state.output}\n\nGenerate the deployment configuration."
+            }
+          },
+          "output_key": "config",
+          "max_tokens": 4096,
+          "temperature": 0.2
+        },
+        {
+          "name": "review",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a deployment safety reviewer. Check the generated config for: (1) hardcoded IPs or secrets (must use env vars), (2) correct file paths (/opt/yggdrasil/bin/, /etc/yggdrasil/), (3) correct user/permissions (yggdrasil:yggdrasil), (4) port conflicts with known services, (5) missing restart policies or health checks. If safe, respond: LGTM. Otherwise list issues.",
+          "input": {
+            "template": {
+              "template": "Infrastructure state:\n{infra_state.output}\n\nGenerated config:\n{config.output}\n\nReview for deployment safety."
+            }
+          },
+          "output_key": "review",
+          "max_tokens": 1024,
+          "temperature": 0.1,
+          "think": false
+        }
+      ]
+    }
+  ]
+}

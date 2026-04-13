@@ -1,0 +1,32 @@
+[Unit]
+Description=Yggdrasil LLaMA-Omni2-3B Voice Server (ROCm)
+After=network.target
+
+[Service]
+Type=simple
+User=jhernandez
+WorkingDirectory=/opt/yggdrasil/deploy/llama-omni2/LLaMA-Omni2
+ExecStart=/opt/yggdrasil/deploy/llama-omni2/.venv/bin/python3 \
+    /opt/yggdrasil/deploy/llama-omni2/server.py --port 9098
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=600
+
+# Unbuffered Python output for journalctl
+Environment=PYTHONUNBUFFERED=1
+
+# ROCm — use first GPU (eGPU on Hugin)
+Environment=ROCR_VISIBLE_DEVICES=0
+Environment=TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+
+# Model paths (override defaults if needed)
+Environment=LLAMA_OMNI2_ROOT=/opt/yggdrasil/deploy/llama-omni2/LLaMA-Omni2
+Environment=LLAMA_OMNI2_MODEL=/opt/yggdrasil/models/llama-omni2-3b
+Environment=COSY2_DECODER_PATH=/opt/yggdrasil/models/cosy2_decoder
+Environment=SPEECH_ENCODER_PATH=/opt/yggdrasil/models/speech_encoder/large-v3.pt
+
+# Alfred voice — CosyVoice2 speaker embedding from Michael Caine as Alfred Pennyworth
+Environment=PROMPT_WAV_PATH=/opt/yggdrasil/models/alfred_prompt.wav
+
+[Install]
+WantedBy=multi-user.target

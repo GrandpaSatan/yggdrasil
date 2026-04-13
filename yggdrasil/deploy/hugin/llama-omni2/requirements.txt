@@ -1,0 +1,47 @@
+# LLaMA-Omni2 3B Voice Server — Python dependencies
+# PyTorch ROCm must be installed separately:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+#
+# Install these after PyTorch:
+#   pip install -r requirements.txt
+
+# Core inference
+transformers==4.43.4
+accelerate==0.33.0
+sentencepiece
+peft
+safetensors
+bitsandbytes
+einops
+timm
+
+# CosyVoice2 decoder deps
+HyperPyYAML==1.2.3
+conformer==0.3.2
+lightning==2.2.4
+pytorch-lightning
+lightning-utilities
+WeTextProcessing
+inflect
+Unidecode
+hydra-core
+antlr4-python3-runtime==4.9.3
+grpcio
+onnxruntime
+coloredlogs
+
+# Whisper (speech encoder)
+openai-whisper
+
+# Audio I/O (soundfile — no torchaudio CUDA deps)
+soundfile
+scipy
+librosa
+
+# Server
+flask
+
+# Misc
+numpy
+Cython
+pyarrow

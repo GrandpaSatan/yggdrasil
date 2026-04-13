@@ -1,0 +1,80 @@
+{
+    "_comment": "Sprint 058 \u2014 Code documentation flow. Fetch code, generate docs, cross-check accuracy, fix.",
+    "flows": [
+        {
+            "name": "code_docs",
+            "trigger": "manual",
+            "timeout_secs": 240,
+            "max_step_output_chars": 12000,
+            "steps": [
+                {
+                    "name": "fetch_code",
+                    "backend": "hugin-ollama",
+                    "model": "gemma4:e4b",
+                    "system_prompt": "Search the codebase for the struct, function, module, or API the user wants documented. Return the complete source code with file paths, signatures, and any existing doc comments.",
+                    "input": "user_message",
+                    "output_key": "source_code",
+                    "max_tokens": 4096,
+                    "temperature": 0.1,
+                    "think": false,
+                    "tools": [
+                        "search_code"
+                    ],
+                    "agent_config": {
+                        "max_iterations": 3,
+                        "max_tool_calls_total": 6,
+                        "tool_timeout_secs": 15,
+                        "total_timeout_secs": 60,
+                        "temperature": 0.1,
+                        "tool_output_max_chars": 4000,
+                        "enable_thinking": false
+                    }
+                },
+                {
+                    "name": "generate_docs",
+                    "backend": "munin-ollama",
+                    "model": "nemotron-3-nano:4b",
+                    "system_prompt": "You are a technical documentation writer. Generate clear, accurate documentation for the given code. Include: struct/function description, parameters with types, return values, usage examples, and any important notes about error handling or thread safety. Use Rust doc comment format (/// for items, //! for modules).",
+                    "input": {
+                        "template": {
+                            "template": "User request: {user_message}\n\nSource code:\n{source_code.output}\n\nGenerate documentation."
+                        }
+                    },
+                    "output_key": "docs",
+                    "max_tokens": 4096,
+                    "temperature": 0.3,
+                    "think": false
+                },
+                {
+                    "name": "review_accuracy",
+                    "backend": "hugin-ollama",
+                    "model": "gemma4:e4b",
+                    "system_prompt": "You are a documentation accuracy reviewer. Compare the generated documentation against the actual source code. Check: (1) parameter names and types match, (2) return types are correct, (3) described behavior matches the implementation, (4) examples would actually compile. List any inaccuracies found. If everything is accurate, respond: LGTM.",
+                    "input": {
+                        "template": {
+                            "template": "Source code:\n{source_code.output}\n\nGenerated documentation:\n{docs.output}\n\nVerify accuracy."
+                        }
+                    },
+                    "output_key": "accuracy_review",
+                    "max_tokens": 1024,
+                    "temperature": 0.1,
+                    "think": false
+                },
+                {
+                    "name": "fix",
+                    "backend": "munin-ollama",
+                    "model": "nemotron-3-nano:4b",
+                    "system_prompt": "Fix any inaccuracies identified in the review. Output the corrected documentation. If the review says LGTM, output the documentation unchanged.",
+                    "input": {
+                        "template": {
+                            "template": "Documentation:\n{docs.output}\n\nAccuracy review:\n{accuracy_review.output}\n\nOutput the corrected documentation."
+                        }
+                    },
+                    "output_key": "final_docs",
+                    "max_tokens": 4096,
+                    "temperature": 0.1
+                }
+            ]
+        }
+    ]
+}
