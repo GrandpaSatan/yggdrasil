@@ -406,7 +406,8 @@
   // SECRETS tab
   // ─────────────────────────────────────────────────────────────
   const SECRETS = [
-    { key: "giteaToken", label: "Gitea Token", hint: "For private repo access" },
+    { key: "giteaToken", label: "Gitea Token", hint: "Auto-update from private Gitea releases" },
+    { key: "githubToken", label: "GitHub Token", hint: "Auto-update from GitHub releases (if provider is github)" },
     { key: "haToken", label: "Home Assistant Token", hint: "Long-lived access token" },
     { key: "braveSearchKey", label: "Brave Search API Key", hint: "Web search in flows" },
   ];

@@ -309,6 +309,10 @@ async fn main() -> anyhow::Result<()> {
     let activity_tracker = odin::flow_scheduler::ActivityTracker::new();
     tracing::info!(flows = config.flows.len(), "flow engine initialized");
 
+    // Hot-swappable flows (mutated by PUT /api/flows/:id at runtime).
+    let flows_hot = Arc::new(std::sync::RwLock::new(Arc::new(config.flows.clone())));
+    let config_path = std::path::PathBuf::from(&cli.config);
+
     let state = AppState {
         http_client,
         router,
@@ -339,6 +343,8 @@ async fn main() -> anyhow::Result<()> {
         flow_engine,
         activity_tracker: activity_tracker.clone(),
         camera_cooldown: Arc::new(odin::camera::CooldownTracker::new()),
+        flows: flows_hot,
+        config_path,
     };
 
     // ── Axum router ───────────────────────────────────────────────
@@ -405,6 +411,10 @@ async fn main() -> anyhow::Result<()> {
         // Sprint 052: Request feedback and log query endpoints.
         .route("/api/v1/request/feedback", post(handlers::request_feedback_handler))
         .route("/api/v1/request/log", get(handlers::request_log_query_handler))
+        // Flow CRUD (Sprint 059) — consumed by the VS Code extension Settings → Flows editor.
+        .route("/api/flows", get(handlers::flows_list_handler))
+        .route("/api/flows/{id}", get(handlers::flow_get_handler).put(handlers::flow_save_handler))
+        .route("/api/backends", get(handlers::backends_handler))
         // Odin health endpoint.
         .route("/health", get(handlers::health_handler))
         // Prometheus scrape endpoint.

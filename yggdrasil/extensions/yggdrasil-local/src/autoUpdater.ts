@@ -1,10 +1,19 @@
 /**
- * Auto-Updater — checks Gitea releases for newer extension versions.
+ * Auto-Updater — checks a release host for newer extension versions.
+ *
+ * Supports two providers behind a common `ReleaseProvider` interface:
+ *   - Gitea  (default) — uses `Authorization: token <value>` auth.
+ *   - GitHub — uses `Authorization: Bearer <value>` + GitHub API headers.
  *
  * On activation (max once per hour):
- * 1. GET /api/v1/repos/:owner/:repo/releases/latest from Gitea
- * 2. Compare tag_name version vs installed version
- * 3. If newer: download .vsix, install, prompt reload
+ *   1. GET {releasesLatestUrl} with auth header (if token present)
+ *   2. Compare tag_name version vs installed version
+ *   3. If newer: download .vsix, install, prompt reload
+ *
+ * Security note: the Authorization header is ONLY sent on the first hop.
+ * Redirects (GitHub assets 302 to pre-signed S3 URLs) are followed with no
+ * Authorization header attached, so the token cannot leak to third-party
+ * hosts and AWS will not reject the request for an unrecognised header.
  */
 
 import * as fs from "fs";
@@ -12,19 +21,90 @@ import * as os from "os";
 import * as path from "path";
 import * as http from "http";
 import * as https from "https";
+import * as url from "url";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
 import type { OutputChannelManager } from "./outputChannel";
 
-const CHECK_INTERVAL_MS = 3600 * 1000; // 1 hour
+const CHECK_INTERVAL_MS = 3600 * 1000;
 const API_TIMEOUT_MS = 5000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
+type TokenProvider = () => Thenable<string | undefined>;
+type HeaderMap = Record<string, string>;
+
+interface ReleaseProvider {
+  readonly name: "gitea" | "github";
+  /** URL for `/releases/latest`. */
+  readonly releasesLatestUrl: string;
+  /** Auth + accept headers for API calls. Empty when no token configured. */
+  apiHeaders(): Promise<HeaderMap>;
+  /** Auth headers to attach to the FIRST-hop asset download (not redirects). */
+  assetHeaders(): Promise<HeaderMap>;
+}
+
+class GiteaProvider implements ReleaseProvider {
+  readonly name = "gitea" as const;
+  readonly releasesLatestUrl: string;
+  constructor(baseUrl: string, repo: string, private tokenProvider: TokenProvider) {
+    const trimmed = baseUrl.replace(/\/+$/, "");
+    this.releasesLatestUrl = `${trimmed}/api/v1/repos/${repo}/releases/latest`;
+  }
+  async apiHeaders(): Promise<HeaderMap> {
+    const token = await this.tokenProvider();
+    return token ? { Authorization: `token ${token}` } : {};
+  }
+  async assetHeaders(): Promise<HeaderMap> {
+    // Gitea serves assets directly — same auth scheme as the API.
+    return this.apiHeaders();
+  }
+}
+
+class GithubProvider implements ReleaseProvider {
+  readonly name = "github" as const;
+  readonly releasesLatestUrl: string;
+  constructor(repo: string, private tokenProvider: TokenProvider) {
+    this.releasesLatestUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+  }
+  async apiHeaders(): Promise<HeaderMap> {
+    const token = await this.tokenProvider();
+    const base: HeaderMap = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "yggdrasil-local-extension",
+    };
+    return token ? { ...base, Authorization: `Bearer ${token}` } : base;
+  }
+  async assetHeaders(): Promise<HeaderMap> {
+    // First hop to api.github.com is authorised; the 302 to S3 is followed
+    // anonymously by downloadFile (see the `followingRedirect` guard).
+    return this.apiHeaders();
+  }
+}
+
 export class AutoUpdater implements vscode.Disposable {
+  private provider: ReleaseProvider;
+
   constructor(
     private context: vscode.ExtensionContext,
     private outputChannel: OutputChannelManager
-  ) {}
+  ) {
+    const config = vscode.workspace.getConfiguration("yggdrasil");
+    const providerName = config.get<string>("autoUpdate.provider", "gitea");
+
+    if (providerName === "github") {
+      const repo = config.get<string>("githubRepo", "");
+      this.provider = new GithubProvider(repo, () =>
+        context.secrets.get("yggdrasil.githubToken")
+      );
+    } else {
+      const baseUrl = config.get<string>("giteaUrl", "http://localhost:3000");
+      const repo = config.get<string>("giteaRepo", "you/Yggdrasil");
+      this.provider = new GiteaProvider(baseUrl, repo, () =>
+        context.secrets.get("yggdrasil.giteaToken")
+      );
+    }
+  }
 
   async checkAndUpdate(): Promise<void> {
     const config = vscode.workspace.getConfiguration("yggdrasil");
@@ -32,50 +112,40 @@ export class AutoUpdater implements vscode.Disposable {
       return;
     }
 
-    // Rate limit: max once per hour
-    const lastCheck = this.context.globalState.get<number>(
-      "autoUpdate.lastCheck",
-      0
-    );
+    const lastCheck = this.context.globalState.get<number>("autoUpdate.lastCheck", 0);
     if (Date.now() - lastCheck < CHECK_INTERVAL_MS) {
       return;
     }
     await this.context.globalState.update("autoUpdate.lastCheck", Date.now());
 
     try {
-      const giteaUrl = config.get<string>(
-        "giteaUrl",
-        "http://10.0.65.11:3000"
-      );
-      const giteaRepo = config.get<string>("giteaRepo", "jesus/Yggdrasil");
-      const currentVersion =
-        this.context.extension.packageJSON.version || "0.0.0";
+      const currentVersion = this.context.extension.packageJSON.version || "0.0.0";
 
-      // Fetch latest release
-      const apiUrl = `${giteaUrl}/api/v1/repos/${giteaRepo}/releases/latest`;
-      const release = await this.fetchJson(apiUrl);
+      const headers = await this.provider.apiHeaders();
+      const release = await this.fetchJson(this.provider.releasesLatestUrl, headers);
 
       if (!release) {
-        this.outputChannel.append("Auto-update: no releases found");
+        this.outputChannel.append(
+          `Auto-update (${this.provider.name}): no release returned — check URL, network, or auth token in Settings → Secrets`
+        );
         return;
       }
 
       const tagName = release.tag_name as string | undefined;
       if (!tagName) {
-        this.outputChannel.append("Auto-update: release has no tag_name");
+        this.outputChannel.append(`Auto-update (${this.provider.name}): release has no tag_name`);
         return;
       }
 
       const remoteVersion = tagName.replace(/^v/, "");
       if (!this.isNewer(remoteVersion, currentVersion)) {
-        return; // Already up to date
+        return;
       }
 
       this.outputChannel.append(
-        `Auto-update: ${currentVersion} → ${remoteVersion}`
+        `Auto-update (${this.provider.name}): ${currentVersion} → ${remoteVersion}`
       );
 
-      // Find .vsix asset
       const assets = (release.assets as Array<Record<string, unknown>>) || [];
       const vsixAsset = assets.find(
         (a) => typeof a.name === "string" && (a.name as string).endsWith(".vsix")
@@ -83,12 +153,11 @@ export class AutoUpdater implements vscode.Disposable {
 
       if (!vsixAsset || !vsixAsset.browser_download_url) {
         this.outputChannel.append(
-          "Auto-update: release has no .vsix asset, skipping"
+          `Auto-update (${this.provider.name}): release has no .vsix asset, skipping`
         );
         return;
       }
 
-      // Download .vsix to temp file
       const tmpDir = path.join(os.tmpdir(), "ygg-update");
       if (!fs.existsSync(tmpDir)) {
         fs.mkdirSync(tmpDir, { recursive: true });
@@ -97,20 +166,20 @@ export class AutoUpdater implements vscode.Disposable {
       const downloadUrl = vsixAsset.browser_download_url as string;
       const tmpFile = path.join(tmpDir, assetName);
 
-      await this.downloadFile(downloadUrl, tmpFile);
-      this.outputChannel.append(`Auto-update: downloaded ${assetName}`);
+      const assetHeaders = await this.provider.assetHeaders();
+      await this.downloadFile(downloadUrl, tmpFile, assetHeaders);
+      this.outputChannel.append(
+        `Auto-update (${this.provider.name}): downloaded ${assetName}`
+      );
 
-      // Install via code CLI
       await this.installVsix(tmpFile);
 
-      // Cleanup
       try {
         fs.unlinkSync(tmpFile);
       } catch {
         // ignore
       }
 
-      // Notify user
       const action = await vscode.window.showInformationMessage(
         `Yggdrasil updated to v${remoteVersion}. Reload to activate.`,
         "Reload"
@@ -119,14 +188,12 @@ export class AutoUpdater implements vscode.Disposable {
         vscode.commands.executeCommand("workbench.action.reloadWindow");
       }
     } catch (err) {
-      // Silent failure — log but don't crash
       this.outputChannel.append(
         `Auto-update check failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
 
-  /** Simple semver comparison: returns true if remote > current. */
   private isNewer(remote: string, current: string): boolean {
     const r = remote.split(".").map(Number);
     const c = current.split(".").map(Number);
@@ -139,14 +206,37 @@ export class AutoUpdater implements vscode.Disposable {
     return false;
   }
 
-  /** HTTP GET JSON with timeout. */
-  private fetchJson(url: string): Promise<Record<string, unknown> | null> {
+  /**
+   * HTTP GET JSON with timeout. Surfaces auth failures to the output channel
+   * with an actionable hint (configure a token in Settings → Secrets).
+   */
+  private fetchJson(
+    requestUrl: string,
+    headers: HeaderMap
+  ): Promise<Record<string, unknown> | null> {
     return new Promise((resolve) => {
+      const parsed = url.parse(requestUrl);
+      const client = parsed.protocol === "https:" ? https : http;
+      const options: http.RequestOptions = {
+        ...parsed,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+      };
+
       const timeout = setTimeout(() => resolve(null), API_TIMEOUT_MS);
-      const client = url.startsWith("https") ? https : http;
 
       try {
-        const req = client.get(url, (res) => {
+        const req = client.get(options, (res) => {
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            clearTimeout(timeout);
+            res.resume();
+            this.outputChannel.append(
+              `Auto-update (${this.provider.name}): HTTP ${res.statusCode} — set a ${
+                this.provider.name === "github" ? "GitHub" : "Gitea"
+              } token in Yggdrasil → Settings → Secrets`
+            );
+            resolve(null);
+            return;
+          }
           let data = "";
           res.on("data", (chunk: Buffer) => {
             data += chunk.toString();
@@ -171,18 +261,34 @@ export class AutoUpdater implements vscode.Disposable {
     });
   }
 
-  /** Download a file from URL to disk. */
-  private downloadFile(url: string, dest: string): Promise<void> {
+  /**
+   * Download a file from URL to disk.
+   *
+   * Auth header is attached only on the FIRST hop. Redirects are followed
+   * with no Authorization header so the token cannot leak to a 302-target
+   * host (GitHub's asset download flow 302s to AWS S3 pre-signed URLs).
+   */
+  private downloadFile(
+    requestUrl: string,
+    dest: string,
+    headers: HeaderMap,
+    followingRedirect = false
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
+      const parsed = url.parse(requestUrl);
+      const client = parsed.protocol === "https:" ? https : http;
+      const effectiveHeaders = followingRedirect ? {} : headers;
+      const options: http.RequestOptions = {
+        ...parsed,
+        headers: Object.keys(effectiveHeaders).length > 0 ? effectiveHeaders : undefined,
+      };
       const timeout = setTimeout(
         () => reject(new Error("download timeout")),
         DOWNLOAD_TIMEOUT_MS
       );
-      const client = url.startsWith("https") ? https : http;
 
       try {
-        const req = client.get(url, (res) => {
-          // Follow redirects (Gitea uses 302 for asset downloads)
+        const req = client.get(options, (res) => {
           if (
             res.statusCode &&
             res.statusCode >= 300 &&
@@ -190,10 +296,21 @@ export class AutoUpdater implements vscode.Disposable {
             res.headers.location
           ) {
             clearTimeout(timeout);
-            this.downloadFile(res.headers.location, dest)
+            this.downloadFile(res.headers.location, dest, headers, true)
               .then(resolve)
               .catch(reject);
             res.resume();
+            return;
+          }
+
+          if (res.statusCode === 401 || res.statusCode === 403) {
+            clearTimeout(timeout);
+            res.resume();
+            reject(
+              new Error(
+                `HTTP ${res.statusCode} downloading asset — token may be missing or lacks scope`
+              )
+            );
             return;
           }
 
@@ -216,10 +333,8 @@ export class AutoUpdater implements vscode.Disposable {
     });
   }
 
-  /** Install a .vsix file via the code CLI. */
   private installVsix(vsixPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Try to find the code CLI
       const codePath = this.findCodeCli();
 
       execFile(
@@ -231,13 +346,9 @@ export class AutoUpdater implements vscode.Disposable {
             this.outputChannel.append(
               `Auto-update: install failed via CLI, trying VS Code API`
             );
-            // Fallback: try VS Code command
             const uri = vscode.Uri.file(vsixPath);
             vscode.commands
-              .executeCommand(
-                "workbench.extensions.installExtension",
-                uri
-              )
+              .executeCommand("workbench.extensions.installExtension", uri)
               .then(
                 () => resolve(),
                 (e) => reject(e)
@@ -250,10 +361,7 @@ export class AutoUpdater implements vscode.Disposable {
     });
   }
 
-  /** Find the 'code' CLI binary. */
   private findCodeCli(): string {
-    // VS Code sets VSCODE_IPC_HOOK which tells us it's running
-    // The 'code' binary is usually in PATH on Linux
     return "code";
   }
 

@@ -939,7 +939,8 @@ pub async fn chat_handler(
         .filter(|imgs| !imgs.is_empty());
 
     if let Some(ref imgs) = request_images {
-        if let Some(flow) = state.flow_engine.find_by_modality(&state.config.flows, "omni") {
+        let flows_snapshot = state.flows.read().unwrap().clone();
+        if let Some(flow) = state.flow_engine.find_by_modality(&flows_snapshot, "omni") {
             tracing::info!(
                 flow = %flow.name,
                 images = imgs.len(),
@@ -988,7 +989,8 @@ pub async fn chat_handler(
 
     // ── 6d. Flow dispatch (Sprint 055) ─────────────────────────────
     // If a flow is configured for this intent, execute it instead of single-model dispatch.
-    if let Some(flow) = state.flow_engine.find_by_intent(&state.config.flows, &decision.intent) {
+    let flows_snapshot = state.flows.read().unwrap().clone();
+    if let Some(flow) = state.flow_engine.find_by_intent(&flows_snapshot, &decision.intent) {
         tracing::info!(
             flow = %flow.name,
             intent = %decision.intent,
@@ -2929,4 +2931,240 @@ pub async fn webhook_handler(
     }
 
     (axum::http::StatusCode::OK, Json(ygg_ha::webhook::WebhookResponse::ok()))
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Flow CRUD (Sprint 059)
+// ─────────────────────────────────────────────────────────────────
+//
+// Endpoints consumed by the VS Code extension Settings → Flows editor.
+// Mutations are persisted to the backing config file via atomic
+// tempfile-rename so they survive service restarts, and the in-memory
+// `state.flows` snapshot is hot-swapped so the next request sees the
+// new flow without a service restart.
+
+/// `GET /api/flows` — list every configured flow.
+pub async fn flows_list_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Vec<ygg_domain::config::FlowConfig>> {
+    let snapshot = state.flows.read().unwrap().clone();
+    Json((*snapshot).clone())
+}
+
+/// `GET /api/flows/:id` — fetch a single flow by name.
+pub async fn flow_get_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<ygg_domain::config::FlowConfig>, (StatusCode, String)> {
+    let snapshot = state.flows.read().unwrap().clone();
+    snapshot
+        .iter()
+        .find(|f| f.name == id)
+        .cloned()
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, format!("flow '{id}' not found")))
+}
+
+/// `PUT /api/flows/:id` — create or replace a flow. Validates each step's
+/// backend against the live backend registry, persists the full config
+/// atomically (tempfile + rename), then hot-swaps the in-memory flow list.
+///
+/// The on-disk config is patched as raw JSON so `${ENV_VAR}` placeholders
+/// elsewhere in the file are preserved (we never round-trip the whole
+/// `OdinConfig` through serde after env expansion).
+pub async fn flow_save_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(flow): Json<ygg_domain::config::FlowConfig>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if flow.name != id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("flow.name '{}' does not match path id '{}'", flow.name, id),
+        ));
+    }
+
+    let backend_names: std::collections::HashSet<&str> =
+        state.backends.iter().map(|b| b.name.as_str()).collect();
+    for step in &flow.steps {
+        if !backend_names.contains(step.backend.as_str()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "step '{}' references unknown backend '{}'",
+                    step.name, step.backend
+                ),
+            ));
+        }
+    }
+
+    let mut new_flows: Vec<ygg_domain::config::FlowConfig> = {
+        let snapshot = state.flows.read().unwrap().clone();
+        (*snapshot).clone()
+    };
+    match new_flows.iter().position(|f| f.name == id) {
+        Some(pos) => new_flows[pos] = flow.clone(),
+        None => new_flows.push(flow.clone()),
+    }
+
+    persist_flows_patch(&state.config_path, &new_flows).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist config: {e}"),
+        )
+    })?;
+
+    {
+        let mut guard = state.flows.write().unwrap();
+        *guard = std::sync::Arc::new(new_flows);
+    }
+
+    tracing::info!(flow = %id, "flow updated via CRUD");
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `GET /api/backends` — list configured backends (name, url, type, models,
+/// context window). Everything in `BackendConfig` is non-sensitive, so this
+/// is a direct clone of `state.config.backends`.
+pub async fn backends_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Vec<ygg_domain::config::BackendConfig>> {
+    Json(state.config.backends.clone())
+}
+
+/// Atomic write of the full config file with only the `flows` array replaced.
+/// Parses existing JSON into `serde_json::Value`, swaps in the new `flows`
+/// field (preserving every other field verbatim including `${ENV_VAR}`
+/// placeholders), serialises pretty, writes to a sibling tempfile, then
+/// renames into place. Rename on the same filesystem is atomic on Linux.
+fn persist_flows_patch(
+    path: &std::path::Path,
+    flows: &[ygg_domain::config::FlowConfig],
+) -> Result<(), String> {
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    match root.as_object_mut() {
+        Some(obj) => {
+            obj.insert(
+                "flows".to_string(),
+                serde_json::to_value(flows).map_err(|e| format!("serialize flows: {e}"))?,
+            );
+        }
+        None => return Err("root config is not a JSON object".into()),
+    }
+    let serialized =
+        serde_json::to_string_pretty(&root).map_err(|e| format!("serialize config: {e}"))?;
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("config path has no filename: {}", path.display()))?;
+    let tmp_path = parent.join(format!(".{filename}.tmp.{}", std::process::id()));
+
+    std::fs::write(&tmp_path, &serialized).map_err(|e| format!("tmp write: {e}"))?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("rename: {e}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod flow_crud_tests {
+    use super::*;
+    use ygg_domain::config::{FlowConfig, FlowInput, FlowStep, FlowTrigger};
+
+    fn sample_flow(name: &str) -> FlowConfig {
+        FlowConfig {
+            name: name.to_string(),
+            trigger: FlowTrigger::Manual,
+            steps: vec![FlowStep {
+                name: "only".to_string(),
+                backend: "mock".to_string(),
+                model: "mock-model".to_string(),
+                system_prompt: None,
+                input: FlowInput::UserMessage,
+                output_key: "out".to_string(),
+                max_tokens: 256,
+                temperature: 0.3,
+                tools: None,
+                think: None,
+                agent_config: None,
+            }],
+            timeout_secs: 30,
+            max_step_output_chars: 4000,
+            loop_config: None,
+        }
+    }
+
+    #[test]
+    fn persist_patches_only_flows_field_preserving_env_placeholders() {
+        let dir = std::env::temp_dir().join(format!("odin_flow_crud_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+
+        // Minimal config with a ${VAR} placeholder elsewhere that MUST survive.
+        let initial = r#"{
+  "node_name": "test",
+  "listen_addr": "${LISTEN_ADDR}",
+  "backends": [],
+  "flows": []
+}"#;
+        std::fs::write(&path, initial).unwrap();
+
+        let flow = sample_flow("coding_swarm");
+        persist_flows_patch(&path, std::slice::from_ref(&flow)).unwrap();
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk["listen_addr"], "${LISTEN_ADDR}",
+            "env placeholder must be preserved verbatim"
+        );
+        let flows = on_disk["flows"].as_array().unwrap();
+        assert_eq!(flows.len(), 1);
+        assert_eq!(flows[0]["name"], "coding_swarm");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn persist_replaces_existing_flow_by_name() {
+        let dir = std::env::temp_dir().join(format!("odin_flow_crud_replace_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"flows": []}"#).unwrap();
+
+        let original = sample_flow("coding_swarm");
+        persist_flows_patch(&path, std::slice::from_ref(&original)).unwrap();
+
+        // Replace: same name, different step model.
+        let mut updated = original.clone();
+        updated.steps[0].model = "replaced-model".into();
+        persist_flows_patch(&path, std::slice::from_ref(&updated)).unwrap();
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let flows = on_disk["flows"].as_array().unwrap();
+        assert_eq!(flows.len(), 1, "replace must not duplicate by-name");
+        assert_eq!(flows[0]["steps"][0]["model"], "replaced-model");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn persist_rejects_non_object_root() {
+        let dir = std::env::temp_dir()
+            .join(format!("odin_flow_crud_non_object_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"["not", "an", "object"]"#).unwrap();
+
+        let err = persist_flows_patch(&path, &[sample_flow("x")]).unwrap_err();
+        assert!(err.contains("not a JSON object"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

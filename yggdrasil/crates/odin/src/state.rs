@@ -5,12 +5,13 @@
 ///
 /// All fields are either `Clone` directly or wrapped in `Arc` so the state
 /// can be cheaply cloned when Axum distributes it to handler tasks.
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use ygg_cloud::adapter::{ChatMessage as CloudChatMessage, ChatRequest as CloudChatRequest, CloudAdapter};
-use ygg_domain::config::{BackendType, OdinConfig};
+use ygg_domain::config::{BackendType, FlowConfig, OdinConfig};
 use ygg_ha::HaClient;
 
 use crate::llm_router::LlmRouterClient;
@@ -212,6 +213,14 @@ pub struct AppState {
     pub muninn_url: String,
     /// Full resolved configuration (kept for per-handler access to limits).
     pub config: OdinConfig,
+    /// Hot-swappable flow list. Source of truth for `find_by_intent` /
+    /// `find_by_modality` reads; mutated by `PUT /api/flows/:id` without
+    /// requiring a service restart. Read path is a brief RwLock read + Arc
+    /// clone (refcount bump) — cheap enough for the per-request dispatch.
+    pub flows: Arc<RwLock<Arc<Vec<FlowConfig>>>>,
+    /// Absolute path to the config JSON on disk. Flow CRUD persists mutations
+    /// back here via atomic tempfile-rename so changes survive restarts.
+    pub config_path: PathBuf,
     /// Optional Home Assistant client.  Present when `config.ha` is `Some`.
     pub ha_client: Option<HaClient>,
     /// 60-second cache for the HA domain summary used in the system prompt.

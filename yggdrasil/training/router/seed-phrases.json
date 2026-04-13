@@ -1,0 +1,74 @@
+{
+  "coding": [
+    "write a rust function that",
+    "implement a python class for",
+    "fix the bug in this javascript code",
+    "refactor this code to be more idiomatic",
+    "explain what this function does",
+    "generate unit tests for this module",
+    "convert this snippet from typescript to go",
+    "debug why this is crashing at runtime",
+    "add error handling to this function",
+    "optimize the performance of this loop"
+  ],
+  "home_automation": [
+    "turn on the living room lights",
+    "set the thermostat to 70 degrees",
+    "is the front door locked",
+    "what is the temperature in the bedroom",
+    "dim the kitchen lights to 40 percent",
+    "play music on the living room speaker",
+    "are any windows open right now",
+    "arm the security system",
+    "what sensors are triggered",
+    "close the garage door"
+  ],
+  "reasoning": [
+    "analyze the tradeoffs between these two approaches",
+    "walk me through the implications of this design",
+    "what are the root causes of this failure",
+    "reason step by step about this problem",
+    "compare these two architectures and recommend one",
+    "what would happen if we changed this assumption",
+    "identify the bottleneck in this pipeline",
+    "think carefully about the edge cases here",
+    "justify why this decision is correct",
+    "what are the second-order effects of this change"
+  ],
+  "research": [
+    "search the web for information about",
+    "find recent news on",
+    "look up documentation for the X library",
+    "what does the paper say about Y",
+    "investigate the latest on Z",
+    "gather context on this topic",
+    "summarize the current state of the art for",
+    "pull relevant sources on",
+    "research how others have solved this",
+    "find examples of similar systems"
+  ],
+  "memory": [
+    "what did we decide about X last week",
+    "recall the conversation about Y",
+    "remind me why we picked Z",
+    "search my engram memory for",
+    "what do you remember about this sprint",
+    "find any prior notes on",
+    "look up my past interactions with",
+    "what did I store about that topic",
+    "recall the decision on Q",
+    "find similar problems I've hit before"
+  ],
+  "chat": [
+    "hello",
+    "thanks",
+    "how are you doing today",
+    "good morning",
+    "can we chat about something",
+    "just thinking out loud",
+    "no specific task, just talking",
+    "what is your opinion on",
+    "let us have a general conversation",
+    "nothing urgent, just curious"
+  ]
+}

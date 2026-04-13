@@ -1,7 +1,7 @@
 # Sprint 059 — Hot-Loaded Coding Swarm + Router Fixes + Marketplace Polish
 
 **Started:** 2026-04-13
-**Status:** IN PROGRESS
+**Status:** COMPLETE (close-out 2026-04-13)
 
 ## Objective
 
@@ -96,24 +96,57 @@ Result: `flow engine initialized flows=8`, hybrid SDR + LLM router enabled with 
 - ✅ This `sprint-059.md` doc
 - 🔄 USAGE.md update: pending (next)
 
-## Phase D — Marketplace Polish (PLANNED)
+## Phase D — Marketplace Polish (DONE v0.7.0 + v0.8.0)
 
-Will land in extension v0.7.0 → v1.0.0:
-- 128×128 PNG icon (currently SVG only)
-- README.md, CHANGELOG.md, LICENSE
-- Manifest fields: `repository`, `bugs`, `homepage`, `galleryBanner`
-- Sanitize `10.0.65.x` defaults → `localhost`
-- First-run walkthrough (`contributes.walkthroughs`)
-- Auto-updater: optional Gitea token via SecretStorage so private/sign-in-required Gitea instances work
+Shipped in v0.7.0:
+- 128×128 PNG icon (replaces SVG)
+- README.md rewrite, CHANGELOG.md, LICENSE (MIT)
+- Manifest fields: `repository`, `bugs`, `homepage`, `galleryBanner`, `qna`
+- Sanitized `10.0.65.x` defaults → `localhost` (walkthrough collects real values)
+- First-run walkthrough (`contributes.walkthroughs`, 5 steps)
 - vsce package lint clean (0 warnings)
-- vsce/ovsx publish: deferred until publisher ID registered with Microsoft + Open VSX
 
-## Phase E — Stretch Items
+Shipped in **v0.8.0** (Sprint 059 close-out):
+- `ReleaseProvider` abstraction (`GiteaProvider` + `GithubProvider`) in [`src/autoUpdater.ts`](../extensions/yggdrasil-local/src/autoUpdater.ts). Tokens live in SecretStorage (`yggdrasil.giteaToken` / `yggdrasil.githubToken`) and attach as `Authorization` headers on the API request + first-hop asset download only. Redirects (GitHub's 302 → S3 pre-signed URLs) are followed anonymously so the token never leaks to third-party hosts.
+- Config: `yggdrasil.autoUpdate.provider` (`gitea` | `github`, default `gitea`), `yggdrasil.githubRepo`.
+- HTTP 401/403 surfaces actionable hint in the output channel instead of silently failing.
+- Settings → Secrets tab gains `githubToken`.
+- VSIX: `yggdrasil-local-0.8.0.vsix`, 139.76 KB, 92 files, 0 warnings.
 
-- Odin flow CRUD endpoints (`GET/PUT /api/flows`, `GET /api/backends`) — Rust PR in `crates/odin/`. Unlocks the Settings panel "Save Flow" button.
-- End-to-end extension smoke test (chat streaming, code actions, settings, slash commands)
-- `store_memory` auto-ingest hook investigation (open issue from 2026-04-07)
-- Document Thor WoL physical-debug steps (`docs/HARDWARE_THOR_WOL.md`)
+Deferred to Sprint 060:
+- vsce + ovsx publish (blocked on publisher ID registration with Microsoft + Open VSX).
+
+## Phase E — Stretch Items (DONE in close-out)
+
+- ✅ **Odin flow CRUD endpoints** — `GET /api/flows`, `GET /api/flows/:id`, `PUT /api/flows/:id`, `GET /api/backends`. Handlers in [`crates/odin/src/handlers.rs`](../crates/odin/src/handlers.rs), routes in [`crates/odin/src/main.rs`](../crates/odin/src/main.rs). Hot-swap via `Arc<RwLock<Arc<Vec<FlowConfig>>>>` in `AppState.flows` — PUT validates each step's backend, merges the new flow into an in-memory Vec, persists the full config via atomic tempfile-rename (the `persist_flows_patch` helper parses raw JSON and replaces only the `flows` field so `${ENV_VAR}` placeholders elsewhere in the config are preserved), then swaps the in-memory snapshot. No service restart required. 3 inline unit tests cover persistence, replace-by-name, and non-object-root rejection; full odin suite still passes.
+- ✅ **Extension end-to-end smoke test** — manual runbook committed as [`extensions/yggdrasil-local/SMOKE_TEST.md`](../extensions/yggdrasil-local/SMOKE_TEST.md). 13 sections covering install, walkthrough, activity-bar trees, every `yggdrasil.*` command, chat streaming, slash commands, code actions, all Settings panel tabs, auto-updater (all three scenarios), and existing-feature regression. Sprint 060 can lift this into `@vscode/test-electron` automation.
+- ✅ **`store_memory` auto-ingest hook investigation** — RESOLVED, working. Engram `c7b20ae0` documents that Mimir POST `/api/v1/smart-ingest` responds correctly and sidecar→ingest pairs in the events log with `stored:true`.
+- ✅ **Thor WoL physical-debug runbook** — [`docs/HARDWARE_THOR_WOL.md`](HARDWARE_THOR_WOL.md).
+
+## Phase F — SDR Prototype Seeding (NEW in close-out)
+
+Problem: `/var/lib/yggdrasil/odin-sdr-prototypes.json` was `[]`, so the hybrid router's "System 1" SDR classifier was inert and every request fell through to the "System 2" LLM classifier.
+
+Shipped:
+- Curated seed-phrases list at [`training/router/seed-phrases.json`](../training/router/seed-phrases.json) — 6 intents × 10 phrases (coding, home_automation, reasoning, research, memory, chat).
+- Offline seeder at [`crates/odin/examples/seed_prototypes.rs`](../crates/odin/examples/seed_prototypes.rs). Encodes each phrase via Mimir's `/api/v1/embed` endpoint (same pipeline as the live request path), OR-accumulates per intent using `ygg_domain::sdr::binarize` + `sdr::or`, writes a `Vec<IntentPrototype>` JSON. Reuses `odin::sdr_router::IntentPrototype` so there's no drift between seeder output and the on-disk format `SdrRouter::load_from_file` expects.
+- Run: `cargo run --example seed_prototypes --release -- --phrases training/router/seed-phrases.json --mimir-url http://10.0.65.8:9090 --out odin-sdr-prototypes.json`. Then scp to Munin `/var/lib/yggdrasil/`, chown, `systemctl restart yggdrasil-odin.service`.
+
+## Phase G — Fusion V6 API Smoke (NEW in close-out)
+
+Smoke test surfaced **two real bugs**:
+
+1. **Config drift — `fusion-v6` vs `fusion-v6:latest`.** Deployed `/etc/yggdrasil/odin/config.json` on Munin listed the model under `backends[munin-ollama].models` without the `:latest` tag. `/v1/models` showed the model (that endpoint queries Ollama directly) but `/v1/chat/completions` rejected it because `SemanticRouter::resolve_backend_for_model` uses exact-string lookup against the config's static models array. **FIXED live** via jq in-place (backup at `config.json.bak.sprint059`, Odin restarted cleanly). This is the same deployed-config-drift hazard called out in engram `023af5f2`.
+
+2. **Model is completion-style, not chat.** Modelfile has `TEMPLATE {{ .Prompt }}` and `Capabilities: completion`. When routed through Odin's chat handler (`/api/chat`), the model can't parse the chat-template-wrapped prompt and emits ~7 tokens of its own system prompt text. Direct `/api/generate` with an instruction-style prompt (`### Instruction:\n...\n\n### Code:\nimport adsk.core, adsk.fusion\n`) produces valid Fusion 360 Python — 341 tokens of real `adsk.*` code (sketches, points, extrudeFeatures). **Model works; Odin integration is the gap.** Sprint 060 fix options: (a) rewrite the Modelfile with a chat TEMPLATE, or (b) add a `fusion-v6`-specific completion passthrough in Odin.
+
+## Carry to Sprint 060
+
+- **vsce + ovsx publish** (blocked on publisher ID registration with Microsoft + Open VSX).
+- **SDR prototype seeder deployment** — run the example binary locally, scp the prototypes JSON to Munin, restart Odin, verify router logs show `method=SDR` on classified requests.
+- **Fusion V6 chat integration** — replace Modelfile TEMPLATE with a chat-formatted variant OR add a completion-mode passthrough in Odin so the Fusion flow calls `/api/generate` instead of `/api/chat`.
+- **Semantic-diff deploys** — every config push to Munin must go through a jq semantic-diff (this is the second sprint in a row where a deploy drift bit us; consider formalizing as a pre-push check).
+- **Odin flow CRUD binary deployment** — rebuild `odin` from the new code at [`crates/odin/src/handlers.rs`](../crates/odin/src/handlers.rs), scp to Munin, restart service. Until that ships, the extension's Settings → Flows editor still uses the local-JSON fallback.
 
 ## Verification
 
@@ -131,8 +164,4 @@ Will land in extension v0.7.0 → v1.0.0:
 - **Auto-updater silent failure on private Gitea** — surfaced this sprint, fix scoped for v0.7.0
 - **Fusion V6 untested at API level** — model loaded but no Fusion 360 prompt has been run through it via Odin yet. Smoke test in Phase E.
 
-## Carry to next sprint (Sprint 060)
-
-- vsce + ovsx publish (after publisher ID registration)
-- Odin flow CRUD if not landed in Phase E
-- LLM-router prototypes seeding (`/var/lib/yggdrasil/odin-sdr-prototypes.json` is currently `[]`)
+## (Original carry list — all now resolved in Phases E/F/G above)

@@ -47,6 +47,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
         web_search: None,
         llm_router: None,
         flows: vec![],
+        cameras: None,
     };
 
     AppState {
@@ -79,6 +80,9 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
             Arc::new(vec![]),
         )),
         activity_tracker: odin::flow_scheduler::ActivityTracker::new(),
+        camera_cooldown: Arc::new(odin::camera::CooldownTracker::new()),
+        flows: Arc::new(std::sync::RwLock::new(Arc::new(vec![]))),
+        config_path: std::path::PathBuf::from("/tmp/test-odin-config.json"),
     }
 }
 

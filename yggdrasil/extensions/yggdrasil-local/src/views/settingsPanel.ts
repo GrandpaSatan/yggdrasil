@@ -183,7 +183,7 @@ export class SettingsPanel {
 
     const [flows, models] = await Promise.all([odin.listFlows(), odin.listModels()]);
 
-    const secretKeys = ["giteaToken", "haToken", "braveSearchKey"];
+    const secretKeys = ["giteaToken", "githubToken", "haToken", "braveSearchKey"];
     const secrets: Record<string, boolean> = {};
     for (const k of secretKeys) {
       const v = await context.secrets.get(`yggdrasil.${k}`);

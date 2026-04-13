@@ -5,6 +5,16 @@ All notable changes to the Yggdrasil VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-04-13 (Sprint 059 close-out)
+
+### Added
+- **Authenticated auto-update** — new `ReleaseProvider` abstraction with first-class support for Gitea and GitHub. Tokens live in Settings → Secrets (`giteaToken`, `githubToken`) and are attached as `Authorization` headers on the API request + first-hop asset download. Redirects (GitHub's 302 to S3 pre-signed URLs) are followed anonymously so the token cannot leak to third-party hosts.
+- New settings: `yggdrasil.autoUpdate.provider` (`gitea` | `github`, default `gitea`) and `yggdrasil.githubRepo`.
+- Auth-failure surfacing: HTTP 401/403 responses now print an actionable hint in the output channel ("set a Gitea/GitHub token in Yggdrasil → Settings → Secrets") instead of silently swallowing the error.
+
+### Fixed
+- Auto-updater now works against Gitea instances with `REQUIRE_SIGNIN_VIEW` enabled (previously the known issue flagged in 0.7.0).
+
 ## [0.7.0] — 2026-04-13 (Sprint 059)
 
 ### Added
@@ -16,9 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Defaults sanitized** — all `10.0.65.x` homelab IPs in default settings replaced with `localhost` placeholders. The walkthrough collects real values on first run.
-
-### Known Issues
-- Auto-updater does not yet authenticate to Gitea instances with `REQUIRE_SIGNIN_VIEW` enabled. Tracked for v0.8.0.
 
 ## [0.6.0] — 2026-04-13 (Sprint 058)
 

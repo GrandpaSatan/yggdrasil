@@ -132,9 +132,10 @@ pub async fn handle_motion_event(
     info!(camera = camera_name, bytes = snapshot_bytes.len(), "snapshot fetched");
 
     // ── 3. Analyze with perceive flow (Gemma 4 E4B) ───────────────
+    let flows_snapshot = state.flows.read().unwrap().clone();
     let flow = state
         .flow_engine
-        .find_by_modality(&state.config.flows, "omni")
+        .find_by_modality(&flows_snapshot, "omni")
         .ok_or_else(|| OdinError::BadRequest("no 'omni' modality flow configured".into()))?;
 
     let prompt = format!(

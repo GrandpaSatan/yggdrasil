@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil",
   "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "icon": "icon.png",
@@ -292,10 +292,21 @@
           "default": "you/Yggdrasil",
           "description": "Gitea repo (owner/name) for release downloads"
         },
+        "yggdrasil.githubRepo": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub repo (owner/name) for release downloads. Only used when yggdrasil.autoUpdate.provider = github."
+        },
         "yggdrasil.autoUpdate.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically check for extension updates from Gitea"
+          "description": "Automatically check for extension updates once per hour"
+        },
+        "yggdrasil.autoUpdate.provider": {
+          "type": "string",
+          "enum": ["gitea", "github"],
+          "default": "gitea",
+          "description": "Release host to check. Token lives in Settings → Secrets (giteaToken or githubToken)."
         },
         "yggdrasil.hooks.managed": {
           "type": "boolean",
