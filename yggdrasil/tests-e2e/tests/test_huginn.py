@@ -16,10 +16,22 @@ from helpers import MuninnClient
 
 @pytest.mark.required_services("muninn")
 def test_muninn_index_has_chunks_for_this_sprint(muninn_client: MuninnClient) -> None:
-    """Search for a string that must exist in this repo — if the index is populated."""
-    results = muninn_client.search("pytest_configure", limit=5, languages=["python"])
-    assert isinstance(results, list), "search must return a list"
-    # Don't hard-assert Python coverage — indexer may be rust-only by default.
+    """Search for a known-stable Rust symbol — the index MUST surface it.
+
+    Queries ``dispatch_flow`` (Odin's flow router at
+    ``crates/odin/src/handlers.rs``). Deliberately different from the
+    ``assemble_context`` query used in ``test_code_search.py`` — the two tests
+    previously shared a symbol, so renaming it would have silently broken
+    both at once. Now a regression in one location doesn't mask coverage in
+    the other.
+    """
+    results = muninn_client.search(
+        "dispatch_flow handler", limit=5, languages=["rust"]
+    )
+    assert isinstance(results, list) and len(results) >= 1, (
+        "Muninn must return at least one chunk for a known public Rust symbol "
+        f"('dispatch_flow'); got {len(results)} results — index is stale or broken"
+    )
 
 
 @pytest.mark.required_services("muninn")
@@ -31,6 +43,10 @@ def test_huginn_binary_available_on_path_or_skip() -> None:
     import subprocess
 
     result = subprocess.run(["huginn", "--help"], capture_output=True, timeout=5)
-    assert result.returncode in (0, 1, 2), (
-        f"huginn --help must exit cleanly, got {result.returncode}"
+    # Exit 2 is the POSIX convention for usage/arg error — ``--help`` must never
+    # produce it. Accept only 0 (clean success) or 1 (some CLIs use this for
+    # help-exit intentionally).
+    assert result.returncode in (0, 1), (
+        f"huginn --help must exit cleanly (0 or 1); got {result.returncode} "
+        f"(stderr: {result.stderr[:200]!r})"
     )

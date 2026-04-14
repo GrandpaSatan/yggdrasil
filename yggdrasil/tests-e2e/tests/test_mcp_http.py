@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import requests
 
 from helpers import McpHttpClient
 
@@ -27,19 +26,37 @@ def test_mcp_sse_stream_opens(mcp_client: McpHttpClient) -> None:
 
 @pytest.mark.required_services("mcp_http")
 def test_mcp_messages_endpoint_reachable(mcp_client: McpHttpClient) -> None:
-    """A JSON-RPC initialize call must either succeed or return a structured error.
+    """A JSON-RPC initialize call must return a valid JSON-RPC envelope.
 
-    We don't assert session-id semantics because those require the SSE stream
-    to be active in the same client process — that's tested in test_mcp_sse.
+    We intentionally send without a session_id to probe the endpoint directly.
+    The server may legitimately reject this with a JSON-RPC error (session
+    required) OR accept and return a result — either is a healthy response.
+    404 (endpoint missing), 5xx (server broken), or non-JSON bodies are failures.
     """
-    try:
-        resp = mcp_client.send_message(
-            session_id="",
-            payload={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-        )
-    except requests.RequestException as exc:
-        pytest.skip(f"MCP HTTP unreachable: {exc}")
-    # Any 2xx or 4xx with a JSON body is acceptable; 5xx is a real failure.
-    assert resp.status_code < 500, (
-        f"MCP /messages must not 5xx on initialize; got {resp.status_code}: {resp.text[:200]}"
+    resp = mcp_client.send_message(
+        session_id="",
+        payload={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
     )
+    # 404 = endpoint missing; 5xx = server failure. Both are real regressions.
+    assert resp.status_code in (200, 202, 400, 422), (
+        f"MCP /messages must return a structured JSON-RPC response "
+        f"(2xx accept or 4xx typed error), got {resp.status_code}: {resp.text[:200]}"
+    )
+    # The body must be a valid JSON-RPC 2.0 envelope regardless of accept/reject.
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        pytest.fail(f"MCP /messages returned non-JSON body: {exc}; text={resp.text[:200]!r}")
+    assert isinstance(body, dict), f"JSON-RPC body must be an object, got {type(body).__name__}"
+    assert body.get("jsonrpc") == "2.0", f"envelope must declare jsonrpc=2.0; got {body!r}"
+    # Exactly one of `result` or `error` must be present — never both, never neither.
+    has_result = "result" in body
+    has_error = "error" in body
+    assert has_result ^ has_error, (
+        f"JSON-RPC envelope must carry exactly one of result/error; got {body!r}"
+    )
+    if has_error:
+        err = body["error"]
+        assert isinstance(err, dict) and "code" in err and "message" in err, (
+            f"JSON-RPC error must carry code+message; got {err!r}"
+        )

@@ -52,20 +52,33 @@ class McpHttpClient:
         return resp.json()
 
     @staticmethod
-    def parse_sse_event(line: str) -> tuple[str, Any] | None:
-        """Parse a single ``data: ...`` SSE line into (event_type, payload).
+    def parse_sse_block(lines: list[str]) -> tuple[str, Any] | None:
+        """Parse a contiguous SSE block into (event_type, payload).
 
-        Returns None for non-data lines (e.g., ``event:``, ``:`` comments).
+        The SSE spec allows ``data:`` to repeat — consecutive ``data:`` lines
+        are joined with ``\\n`` before the payload is decoded. This is the
+        correct entry point for streams that may emit multi-line JSON events.
+        Returns None if the block contains no ``data:`` lines.
         """
-        if not line or line.startswith(":"):
+        data_parts: list[str] = []
+        for line in lines:
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_parts.append(line[len("data:"):].lstrip())
+        if not data_parts:
             return None
-        if not line.startswith("data:"):
-            return None
-        raw = line[len("data:") :].strip()
-        if not raw:
-            return None
+        raw = "\n".join(data_parts)
         try:
-            obj = json.loads(raw)
-            return ("data", obj)
+            return ("data", json.loads(raw))
         except json.JSONDecodeError:
             return ("data", raw)
+
+    @staticmethod
+    def parse_sse_event(line: str) -> tuple[str, Any] | None:
+        """Back-compat single-line wrapper around :meth:`parse_sse_block`.
+
+        Prefer ``parse_sse_block`` for real streams — a JSON payload split
+        across multiple ``data:`` lines would be lost here.
+        """
+        return McpHttpClient.parse_sse_block([line])

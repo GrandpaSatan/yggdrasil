@@ -27,6 +27,13 @@ def test_flow_detail_has_steps_field(odin_client: OdinClient) -> None:
     if not flows:
         pytest.skip("no flows to inspect")
     flow = flows[0]
-    # Either embedded in the list response or behind a /api/flows/:id GET.
-    steps = flow.get("steps") or flow.get("pipeline") or []
-    assert isinstance(steps, list), "a flow must carry a steps/pipeline list"
+    # Explicit key-presence check — the previous ``... or []`` fallback let a
+    # flow with neither ``steps`` nor ``pipeline`` fields pass ``isinstance([],
+    # list)``, which is a tautology.
+    assert "steps" in flow or "pipeline" in flow, (
+        f"flow must carry a steps/pipeline field; got keys {list(flow)}"
+    )
+    steps = flow.get("steps", flow.get("pipeline"))
+    assert isinstance(steps, list), (
+        f"steps/pipeline must be a list; got {type(steps).__name__} ({steps!r})"
+    )

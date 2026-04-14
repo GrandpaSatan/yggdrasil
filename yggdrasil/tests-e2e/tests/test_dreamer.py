@@ -14,7 +14,7 @@ import requests
 from helpers.services import service_urls
 
 
-@pytest.mark.required_services("odin")
+@pytest.mark.required_services("dreamer")
 def test_dreamer_health_endpoint_reachable() -> None:
     url = service_urls().get("dreamer")
     if not url:
@@ -26,7 +26,7 @@ def test_dreamer_health_endpoint_reachable() -> None:
     assert resp.status_code == 200, f"dreamer /health expected 200, got {resp.status_code}"
 
 
-@pytest.mark.required_services("odin")
+@pytest.mark.required_services("dreamer")
 def test_dreamer_metrics_expose_warmup_counter() -> None:
     url = service_urls().get("dreamer")
     if not url:
@@ -37,7 +37,8 @@ def test_dreamer_metrics_expose_warmup_counter() -> None:
         pytest.skip("ygg-dreamer not reachable")
     assert resp.status_code == 200
     text = resp.text
-    # Accept either warmup_fires or a broader set — we don't want to pin a brittle name.
+    # ``idle_secs`` is too generic — other services emit it too. Keep only names
+    # that are unambiguously dreamer-owned so a misrouted scrape can't pass.
     assert any(
-        key in text for key in ("warmup_fires", "dreamer_warmup", "idle_secs", "dreamer_")
+        key in text for key in ("warmup_fires", "dreamer_warmup", "dreamer_")
     ), "dreamer metrics must expose at least one dreamer-prefixed metric"

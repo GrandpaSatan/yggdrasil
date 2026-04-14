@@ -9,6 +9,23 @@ import requests
 from .services import check_response, retry_policy
 
 
+def _extract_list(payload: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:
+    """Return the first present key's value as a list, else ``[]``.
+
+    Uses explicit ``in`` membership rather than truthiness chaining — a legitimate
+    empty list under ``events`` would otherwise fall through to a populated
+    ``results`` field and silently hide a schema regression.
+    """
+    for k in keys:
+        if k in payload:
+            v = payload[k]
+            return v if isinstance(v, list) else []
+    return []
+
+
+_LIST_KEYS = ("events", "results", "engrams")
+
+
 class MimirClient:
     def __init__(self, base_url: str, vault_token: str | None = None, timeout: float = 20.0):
         self.base_url = base_url.rstrip("/")
@@ -74,12 +91,7 @@ class MimirClient:
         )
         resp.raise_for_status()
         payload = resp.json()
-        return (
-            payload.get("events")
-            or payload.get("results")
-            or payload.get("engrams")
-            or []
-        )
+        return _extract_list(payload, _LIST_KEYS)
 
     def get_engram(self, engram_id: str) -> dict[str, Any] | None:
         resp = requests.get(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
@@ -89,6 +101,22 @@ class MimirClient:
         return resp.json()
 
     def delete_engram(self, engram_id: str) -> bool:
+        """Return True only for 200/204 (actually removed something).
+
+        404 is intentionally NOT a success: if the caller is asserting "delete
+        worked" and the engram never existed (because a silent store failure
+        upstream), we'd otherwise return True and mask the real bug. Callers
+        doing idempotent cleanup should tolerate ``False`` explicitly via
+        :meth:`delete_engram_idempotent`.
+        """
+        resp = requests.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
+        return resp.status_code in (200, 204)
+
+    def delete_engram_idempotent(self, engram_id: str) -> bool:
+        """Cleanup-friendly delete: treats 404 as success.
+
+        Used by bulk tag-purge on teardown where "already gone" is fine.
+        """
         resp = requests.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
         return resp.status_code in (200, 204, 404)
 
@@ -102,7 +130,13 @@ class MimirClient:
         return resp.status_code != 405
 
     def delete_by_tag(self, tag: str, project: str = "yggdrasil") -> int:
-        """Best-effort cleanup helper. Returns count of deletions attempted.
+        """Best-effort cleanup helper. Returns count of successful deletions.
+
+        Recall is a SEMANTIC search — it may surface engrams that share SDR
+        overlap with the tag string but were created by other tests. We
+        therefore require the result's ``tags`` field to literally contain
+        ``tag`` before deleting. The idempotent delete variant treats 404 as
+        success so a racing cleanup doesn't double-count.
 
         Silently no-ops if DELETE is not supported on this Mimir build (405).
         """
@@ -112,20 +146,17 @@ class MimirClient:
         try:
             resp = requests.post(self._url("/api/v1/recall"), json=body, timeout=10.0)
             resp.raise_for_status()
-            payload = resp.json()
-            engrams = (
-                payload.get("events")
-                or payload.get("results")
-                or payload.get("engrams")
-                or []
-            )
+            engrams = _extract_list(resp.json(), _LIST_KEYS)
         except requests.RequestException:
             return 0
 
         count = 0
         for e in engrams:
+            tags = e.get("tags") or []
+            if tag not in tags:
+                continue  # semantic match but not actually tagged — skip
             eid = e.get("id") or e.get("engram_id")
-            if eid and self.delete_engram(eid):
+            if eid and self.delete_engram_idempotent(eid):
                 count += 1
         return count
 
@@ -147,13 +178,7 @@ class MimirClient:
             body["before"] = before
         resp = requests.post(self._url("/api/v1/timeline"), json=body, timeout=self.timeout)
         resp.raise_for_status()
-        payload = resp.json()
-        return (
-            payload.get("events")
-            or payload.get("results")
-            or payload.get("engrams")
-            or []
-        )
+        return _extract_list(resp.json(), _LIST_KEYS)
 
     def stats(self) -> dict[str, Any]:
         resp = requests.get(self._url("/api/v1/stats"), timeout=5.0)
@@ -170,7 +195,7 @@ class MimirClient:
     def vault_get(self, key: str, *, token: str | None = None) -> requests.Response:
         return requests.post(
             self._url("/api/v1/vault"),
-            json={"op": "get", "key": key},
+            json={"action": "get", "key": key},
             headers=self._vault_headers(token),
             timeout=10.0,
         )
@@ -178,7 +203,7 @@ class MimirClient:
     def vault_set(self, key: str, value: str, *, token: str | None = None) -> requests.Response:
         return requests.post(
             self._url("/api/v1/vault"),
-            json={"op": "set", "key": key, "value": value},
+            json={"action": "set", "key": key, "value": value},
             headers=self._vault_headers(token),
             timeout=10.0,
         )
@@ -186,7 +211,7 @@ class MimirClient:
     def vault_delete(self, key: str, *, token: str | None = None) -> requests.Response:
         return requests.post(
             self._url("/api/v1/vault"),
-            json={"op": "delete", "key": key},
+            json={"action": "delete", "key": key},
             headers=self._vault_headers(token),
             timeout=10.0,
         )

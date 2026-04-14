@@ -39,9 +39,14 @@ from helpers import (
     ServiceHealth,
     wait_for_ready,
 )
+from helpers.paths import repo_root
 from helpers.services import probe, service_urls
 
-LOCKFILE = Path("/tmp/yggdrasil-e2e.lock")
+# Project-local lockfile. /tmp is NFS-mounted in some container/shared-fs setups
+# where O_CREAT|O_EXCL is non-atomic; keeping the lock on the repo filesystem
+# sidesteps that. The .e2e.lock filename is gitignored via the repo's .gitignore
+# rule for .*.lock / .e2e.lock.
+LOCKFILE = Path(__file__).parent / ".e2e.lock"
 ENV_TEST_PATH = Path(__file__).parent / ".env.test"
 HOOK_CONTEXT_ENV = "E2E_HOOK_CONTEXT"
 DESTRUCTIVE_ENV = "E2E_DESTRUCTIVE"
@@ -99,7 +104,10 @@ def _release_lock() -> None:
     try:
         if LOCKFILE.exists():
             content = LOCKFILE.read_text().splitlines()
-            if content and content[0].strip() == str(os.getpid()):
+            own = [str(os.getpid()), socket.gethostname()]
+            # Only unlink if BOTH pid and hostname match — a same-pid collision
+            # on a different host would otherwise delete the other host's lock.
+            if content[:2] == own:
                 LOCKFILE.unlink()
     except OSError:
         pass
@@ -131,7 +139,14 @@ class CleanScope:
 # ───────────────────────── pytest session hooks ────────────────────────────
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Validate concurrency gates and acquire the cross-process lock."""
+    """Validate concurrency gates and acquire the cross-process lock.
+
+    Important: ``pytest_configure`` runs in the main controller AND in every
+    xdist worker process. The controller acquires the lock; workers must skip
+    the acquisition or they'd collide with the controller (which already holds
+    it) and crash on the ``FileExistsError`` path.
+    ``PYTEST_XDIST_WORKER`` is set on worker subprocesses only.
+    """
     if _pytest_xdist_enabled() and os.environ.get(PARALLEL_OK_ENV) != "1":
         raise pytest.UsageError(
             "pytest-xdist is enabled but E2E_PARALLEL_OK=1 is not set. "
@@ -140,13 +155,15 @@ def pytest_configure(config: pytest.Config) -> None:
             "for the test_concurrency.py stress harness."
         )
 
-    if not _acquire_lock():
-        # Another pytest process owns the fleet right now.
-        content = LOCKFILE.read_text(errors="replace") if LOCKFILE.exists() else "(unknown)"
-        raise pytest.UsageError(
-            f"Another pytest run holds {LOCKFILE}:\n  {content}\n"
-            "Wait for it to finish, or rm the file if stale."
-        )
+    # Skip lock acquisition on xdist worker processes — only the controller
+    # owns the lock for the whole session.
+    if os.environ.get("PYTEST_XDIST_WORKER") is None:
+        if not _acquire_lock():
+            content = LOCKFILE.read_text(errors="replace") if LOCKFILE.exists() else "(unknown)"
+            raise pytest.UsageError(
+                f"Another pytest run holds {LOCKFILE}:\n  {content}\n"
+                "Wait for it to finish, or rm the file if stale."
+            )
 
     # Record the hook context (if any) for introspection from tests.
     config.stash[pytest.StashKey[str]()] = os.environ.get(HOOK_CONTEXT_ENV, "")
@@ -191,8 +208,7 @@ def run_scope() -> RunScope:
 
 def _detect_sprint_id() -> str | None:
     """Read the newest sprints/sprint-NNN.md filename as the current sprint."""
-    repo_root = Path(__file__).parent.parent.parent
-    sprint_dir = repo_root / "sprints"
+    sprint_dir = repo_root() / "yggdrasil" / "sprints"
     if not sprint_dir.is_dir():
         return None
     candidates = sorted(sprint_dir.glob("sprint-*.md"), reverse=True)
@@ -290,17 +306,34 @@ def require_destructive() -> None:
 
 # ───────────────────────── required_services marker support ────────────────
 
+_SESSION_HEALTH_CACHE: dict[str, ServiceHealth] = {}
+
+
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Skip tests whose required_services marker lists an unreachable service."""
+    """Skip tests whose required_services marker lists an unreachable service.
+
+    Uses a session-scoped cache so each service is probed at most once per
+    session. The previous implementation hit ``/health`` on every required
+    service for every test — a 20-test Mimir-heavy suite ran 20 HTTP probes
+    purely for setup. The cache preserves the original "skip if down"
+    semantics while cutting setup latency dramatically.
+    """
     marker = item.get_closest_marker("required_services")
     if marker is None:
         return
 
     required = set(marker.args)
-    health_map: dict[str, ServiceHealth] = {
-        name: probe(name, url) for name, url in service_urls().items() if name in required
-    }
-    down = [h for h in health_map.values() if not h.ok]
+    urls = service_urls()
+    down: list[ServiceHealth] = []
+    for name in required:
+        if name not in _SESSION_HEALTH_CACHE:
+            url = urls.get(name, "")
+            _SESSION_HEALTH_CACHE[name] = probe(name, url) if url else ServiceHealth(
+                name=name, ok=False, detail="no URL configured"
+            )
+        health = _SESSION_HEALTH_CACHE[name]
+        if not health.ok:
+            down.append(health)
     if down:
         names = ", ".join(f"{h.name} ({h.detail})" for h in down)
         pytest.skip(f"required service(s) unreachable: {names}")

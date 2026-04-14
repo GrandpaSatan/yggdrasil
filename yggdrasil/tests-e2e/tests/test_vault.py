@@ -37,20 +37,28 @@ def test_vault_set_and_get_with_bearer_succeeds(
 @pytest.mark.required_services("mimir")
 def test_vault_without_bearer_is_rejected(mimir_client: MimirClient) -> None:
     resp = mimir_client.vault_get("anything", token="")
-    # 422 is also a rejection (server-side schema validation fires before auth).
-    # Either layer rejecting the unauth request is acceptable; what matters is the
-    # request did NOT succeed.
-    assert resp.status_code in (401, 403, 422), (
-        f"vault without bearer must be 401/403, got {resp.status_code}"
+    # Two-layer assertion: first "the request did not succeed", then specifically
+    # "the auth middleware rejected it". A 422 would mean schema validation fired
+    # before auth — the request is still rejected, but this probe isn't testing
+    # auth anymore.
+    assert resp.status_code not in (200, 201), (
+        f"vault without bearer MUST NOT succeed; got {resp.status_code}: {resp.text[:200]}"
+    )
+    assert resp.status_code in (401, 403), (
+        f"expected auth-layer rejection (401/403); got {resp.status_code}. "
+        "If this is 422, schema validation fires before auth — acceptable as a "
+        "defense-in-depth, but it means this probe is no longer testing the auth "
+        "middleware and should be rewritten to defeat the schema validator first."
     )
 
 
 @pytest.mark.required_services("mimir")
 def test_vault_with_bad_bearer_is_rejected(mimir_client: MimirClient) -> None:
     resp = mimir_client.vault_get("anything", token="not-a-real-token")
-    # 422 is also a rejection (server-side schema validation fires before auth).
-    # Either layer rejecting the unauth request is acceptable; what matters is the
-    # request did NOT succeed.
-    assert resp.status_code in (401, 403, 422), (
-        f"vault with invalid bearer must be 401/403, got {resp.status_code}"
+    assert resp.status_code not in (200, 201), (
+        f"vault with invalid bearer MUST NOT succeed; got {resp.status_code}: {resp.text[:200]}"
+    )
+    assert resp.status_code in (401, 403), (
+        f"expected auth-layer rejection (401/403); got {resp.status_code}. "
+        "A 422 here means schema validation shadowed the auth middleware."
     )

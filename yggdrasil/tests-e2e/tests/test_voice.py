@@ -14,6 +14,7 @@ import pytest
 import requests
 import websockets
 
+from fixtures.voice import synthetic_speech_wav
 from helpers import OdinClient
 from helpers.services import service_urls
 
@@ -36,7 +37,17 @@ def test_voice_debug_ui_served(odin_client: OdinClient) -> None:
     if resp.status_code == 404:
         pytest.skip("/v1/voice/ui not exposed on this Odin build (audit listed it as optional)")
     assert resp.status_code == 200, f"/v1/voice/ui must serve debug HTML, got {resp.status_code}"
-    assert "<html" in resp.text.lower() or "voice" in resp.text.lower()
+    body = resp.text.lower()
+    # Require BOTH signals. An OR was too weak — "voice service unavailable"
+    # error pages would satisfy ``"voice" in body`` while being clearly broken.
+    assert "<html" in body, (
+        f"/v1/voice/ui must serve an HTML page (got 200 but no <html tag); "
+        f"body prefix: {resp.text[:200]!r}"
+    )
+    assert "voice" in body, (
+        "HTML page must reference the word 'voice' — otherwise it's the wrong "
+        "page served under the right route"
+    )
 
 
 @pytest.mark.required_services("odin")
@@ -51,32 +62,101 @@ def test_voice_websocket_accepts_connection(odin_client: OdinClient) -> None:
     async def _drive() -> dict:
         async with websockets.connect(ws_url, open_timeout=10, close_timeout=2) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            try:
-                return json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                return {"raw": raw}
+            return json.loads(raw)
 
+    # If the server sends a non-JSON first frame, json.loads raises and the
+    # test fails loudly — that's the point. The previous ``"raw" in payload``
+    # fallback accepted ANY garbage frame (error text, truncated JSON, random
+    # bytes) as a valid greeting.
     payload = asyncio.run(_drive())
-    # Accept either structured 'ready' or any first-frame greeting.
+    assert isinstance(payload, dict), f"first WS frame must be a JSON object; got {type(payload).__name__}"
     kind = payload.get("type") or payload.get("event") or ""
-    assert kind in ("ready", "hello", "session") or "raw" in payload, (
-        f"first WS frame must be a known greeting; got {payload!r}"
+    assert kind in ("ready", "hello", "session"), (
+        f"first WS frame must be a known greeting type ('ready'|'hello'|'session'); got {payload!r}"
     )
+    if kind == "ready":
+        assert payload.get("session_id"), (
+            f"'ready' frame must carry a session_id per the WS protocol; got {payload!r}"
+        )
 
 
 @pytest.mark.slow
 @pytest.mark.required_services("odin", "voice")
 @pytest.mark.skipif(os.environ.get("E2E_VOICE_WAV") != "1", reason="set E2E_VOICE_WAV=1 to drive real audio")
-def test_voice_wav_round_trip_placeholder() -> None:
-    """Drive a WAV fixture through the WS and assert a transcript comes back.
+def test_voice_wav_round_trip_produces_transcript(odin_client: OdinClient) -> None:
+    """Stream a synthetic tone burst through /v1/voice and verify the VAD
+    pipeline advances through ``ready → listening → processing`` and emits a
+    ``transcript`` (or structured ``error``) as its terminal frame.
 
-    Fixture lives at tests-e2e/fixtures/voice/silence.wav (intentionally not
-    committed — synthesize locally with sox or record a quick sample).
+    The fixture is generated in-process (:func:`fixtures.voice.synthetic_speech_wav`)
+    — no binary committed to git. Silence alone would be filtered by the VAD
+    pre-stage, so the waveform includes a 0.8 s 440 Hz tone above the onset
+    threshold.
     """
-    from pathlib import Path
+    ws_url = odin_client._url("/v1/voice").replace("http://", "ws://").replace("https://", "wss://")
+    wav_bytes = synthetic_speech_wav()
+    # Strip the 44-byte PCM WAV header — the server expects raw s16le frames.
+    pcm = wav_bytes[44:]
+    frame_bytes = 8192  # 4096 samples × 2 bytes = 256 ms per binary frame
 
-    wav = Path(__file__).parent.parent / "fixtures" / "voice" / "silence.wav"
-    if not wav.exists():
-        pytest.skip(f"WAV fixture missing at {wav}; run fixtures/voice/README.md setup first")
-    # Intentionally left as a scaffolded stub — real WAV driver lives in Phase 2b.
-    pytest.skip("WAV driver pending Phase 2b implementation")
+    async def _drive() -> list[dict]:
+        async with websockets.connect(ws_url, open_timeout=10, close_timeout=2) as ws:
+            # Handshake.
+            ready = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert ready.get("type") == "ready" and ready.get("session_id"), (
+                f"expected 'ready' with session_id; got {ready!r}"
+            )
+
+            # Stream PCM in ~256 ms frames. A brief sleep between sends keeps the
+            # server's ring buffer ingest honest (VAD runs on real-time windows,
+            # not batched bursts).
+            for offset in range(0, len(pcm), frame_bytes):
+                await ws.send(pcm[offset:offset + frame_bytes])
+                await asyncio.sleep(0.05)
+            # Explicit VAD-end signal (the server's silence detector will also
+            # fire after the trailing 1 s silence, but this makes the test
+            # resilient to clock skew).
+            await ws.send(json.dumps({"type": "vad_end"}))
+
+            # Collect response frames. We cap at 20 s total — LLaMA-Omni2
+            # cold-start + TTS is ~10-15 s, so 20 s is a generous ceiling.
+            loop = asyncio.get_running_loop()
+            messages: list[dict] = []
+            deadline = loop.time() + 20.0
+            while loop.time() < deadline:
+                remaining = deadline - loop.time()
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=max(remaining, 0.1))
+                except asyncio.TimeoutError:
+                    break
+                if isinstance(raw, (bytes, bytearray)):
+                    # Binary TTS audio chunk — not what we're asserting on.
+                    continue
+                try:
+                    messages.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    continue
+                # Terminal states — stop collecting once the pipeline closes out.
+                last = messages[-1].get("type")
+                if last in ("audio_end", "error"):
+                    break
+            return messages
+
+    messages = asyncio.run(_drive())
+    types = [m.get("type") for m in messages]
+    assert "listening" in types, (
+        f"VAD never transitioned to 'listening' — the tone burst didn't cross the "
+        f"onset threshold or the server's VAD is broken. frames={types!r}"
+    )
+    assert "processing" in types, (
+        f"VAD never reached 'processing' — endpoint detection didn't fire after "
+        f"the trailing silence + explicit vad_end. frames={types!r}"
+    )
+    # Terminal states: either the pipeline returned a transcript/response, or
+    # it produced a structured error. A hang (no terminal frame at all) is a
+    # pipeline regression.
+    terminal_ok = any(t in ("transcript", "response", "audio_end", "error") for t in types)
+    assert terminal_ok, (
+        f"voice pipeline advanced past VAD but never produced a terminal frame "
+        f"(transcript/response/audio_end/error); got types={types!r}"
+    )
