@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<!--
+  Virtual scroll stress test — Sprint 063 P6c
+  Open in a browser (e.g. file:// or local dev server).
+  Results are printed to #results and the browser console.
+
+  Assertions:
+    - DOM node count <= 100 at any scroll position
+    - Per-frame render time <= 16ms (measured via PerformanceObserver)
+
+  Usage:
+    1. Open this file in Chrome/Firefox DevTools
+    2. Click "Run stress test"
+    3. Read console + Results panel
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Virtual Scroll Stress — Sprint 063 P6c</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #09090b;
+    color: #e4e4e7;
+    font-family: 'JetBrains Mono', monospace, system-ui;
+    font-size: 13px;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Messages container (mirrors chat.css) ── */
+  #messages {
+    border-right: 1px solid #27272a;
+    overflow-y: auto;
+    padding: 8px;
+    height: 100vh;
+    /* will-change: transform activates GPU compositing layer */
+    will-change: transform;
+    contain: strict;
+  }
+
+  .msg {
+    background: #0c0c0f;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .msg.user { border-left: 2px solid #3b82f6; }
+  .msg.assistant { border-left: 2px solid #22c55e; }
+  .msg-avatar { color: #52525b; margin-right: 6px; display: inline; }
+  .msg-content { white-space: pre-wrap; word-break: break-word; }
+  .msg-placeholder { background: transparent; }
+
+  pre { background: #18181b; border: 1px solid #27272a; border-radius: 4px; padding: 8px; overflow-x: auto; margin: 4px 0; font-size: 11px; }
+  code { background: #18181b; padding: 1px 3px; border-radius: 2px; font-size: 11px; }
+
+  /* ── Control panel ── */
+  #panel {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #fafafa; }
+  h2 { font-size: 11px; font-weight: 600; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  button {
+    background: #1e40af;
+    border: 1px solid #3b82f6;
+    color: #dbeafe;
+    padding: 8px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    width: 100%;
+  }
+  button:hover { background: #1e3a8a; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .metric {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    border-bottom: 1px solid #27272a;
+    font-size: 11px;
+  }
+  .metric-label { color: #71717a; }
+  .metric-value { font-weight: 600; color: #fafafa; font-family: 'JetBrains Mono', monospace; }
+  .metric-value.pass { color: #86efac; }
+  .metric-value.fail { color: #fca5a5; }
+
+  #log {
+    background: #0c0c0f;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 10px;
+    color: #71717a;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+
+  .progress {
+    height: 3px;
+    background: #27272a;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    background: #3b82f6;
+    transition: width 0.1s;
+    width: 0%;
+  }
+</style>
+</head>
+<body>
+
+<div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
+
+<div id="panel">
+  <h1>Virtual Scroll Stress</h1>
+  <p style="font-size:11px;color:#71717a;">1500 messages, alternating user/assistant, varied lengths 50–2000 chars. Some have code blocks.</p>
+
+  <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+
+  <button id="run-btn">Run stress test</button>
+  <button id="clear-btn" style="background:#18181b;border-color:#27272a;color:#a1a1aa;">Clear</button>
+
+  <div>
+    <h2 style="margin-bottom:8px;">Results</h2>
+    <div id="results">
+      <div class="metric"><span class="metric-label">Total messages</span><span class="metric-value" id="r-total">—</span></div>
+      <div class="metric"><span class="metric-label">Max DOM nodes</span><span class="metric-value" id="r-maxdom">—</span></div>
+      <div class="metric"><span class="metric-label">Max frame time</span><span class="metric-value" id="r-maxframe">—</span></div>
+      <div class="metric"><span class="metric-label">DOM nodes assertion</span><span class="metric-value" id="r-dompass">—</span></div>
+      <div class="metric"><span class="metric-label">Frame time assertion</span><span class="metric-value" id="r-framepass">—</span></div>
+      <div class="metric"><span class="metric-label">Scroll duration</span><span class="metric-value" id="r-scrolldur">—</span></div>
+    </div>
+  </div>
+
+  <div>
+    <h2 style="margin-bottom:6px;">Log</h2>
+    <div id="log">Ready.</div>
+  </div>
+</div>
+
+<script>
+// ── Virtual scroll constants (match chat.js production values) ──
+const VS_THRESHOLD = 50;
+const VS_BUFFER = 30;
+
+let vsMessages = [];
+let vsWindowStart = 0;
+let vsWindowEnd = 0;
+let vsHeights = [];
+let vsAvgHeight = 80;
+let vsObserver = null;
+
+const messagesEl = document.getElementById("messages");
+
+// ── Message rendering (mirrors chat.js renderMessage) ──────────
+function escHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+// Cache: skip re-render when content unchanged
+const _renderCache = new Map(); // index -> rendered HTML
+
+function renderMessage(m, index) {
+  const cached = _renderCache.get(index);
+  if (cached && cached.content === m.content) return cached.html;
+
+  const glyph = m.role === "user" ? "›" : "‹";
+  const content = renderMarkdown(m.content);
+  const html = `<div class="msg ${escHtml(m.role)}" data-role="${escHtml(m.role)}">` +
+    `<span class="msg-avatar" aria-hidden="true">${glyph}</span>` +
+    `<div class="msg-content">${content}</div>` +
+    `</div>`;
+
+  _renderCache.set(index, { content: m.content, html });
+  return html;
+}
+
+/** Simple markdown: code fences → <pre>, inline code → <code>. No Prism (benchmark clean baseline). */
+function renderMarkdown(text) {
+  // Code fences
+  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) =>
+    `<pre><code class="lang-${escHtml(lang)}">${escHtml(code)}</code></pre>`
+  );
+  // Inline code
+  text = text.replace(/`([^`]+)`/g, (_m, code) => `<code>${escHtml(code)}</code>`);
+  // Escape remaining HTML (already escaped via individual calls above for fences)
+  // Plain paragraphs
+  return text;
+}
+
+// ── Virtual DOM builder ────────────────────────────────────────
+function buildVirtualDom() {
+  if (!messagesEl) return;
+
+  const topHeight = vsHeights.slice(0, vsWindowStart).reduce((s, h) => s + h, 0);
+  const botHeight = vsHeights.slice(vsWindowEnd).reduce((s, h) => s + h, 0);
+
+  let html = topHeight > 0
+    ? `<div class="msg-placeholder" id="vs-top-sentinel" style="height:${topHeight}px"></div>`
+    : `<div id="vs-top-sentinel" style="height:1px"></div>`;
+
+  for (let i = vsWindowStart; i < vsWindowEnd && i < vsMessages.length; i++) {
+    html += `<div data-vs-idx="${i}">${renderMessage(vsMessages[i], i)}</div>`;
+  }
+
+  html += botHeight > 0
+    ? `<div class="msg-placeholder" id="vs-bot-sentinel" style="height:${botHeight}px"></div>`
+    : `<div id="vs-bot-sentinel" style="height:1px"></div>`;
+
+  messagesEl.innerHTML = html;
+
+  // Sample heights
+  messagesEl.querySelectorAll("[data-vs-idx]").forEach((el) => {
+    const idx = parseInt(el.dataset.vsIdx, 10);
+    if (!isNaN(idx)) vsHeights[idx] = el.offsetHeight || vsAvgHeight;
+  });
+  updateAvg();
+}
+
+function updateAvg() {
+  const sample = vsHeights.filter((h) => h > 0);
+  if (sample.length > 0) vsAvgHeight = sample.reduce((a, b) => a + b, 0) / sample.length;
+}
+
+function disconnectObserver() {
+  if (vsObserver) { vsObserver.disconnect(); vsObserver = null; }
+}
+
+function setupObserver() {
+  disconnectObserver();
+  vsObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      if (entry.target.id === "vs-top-sentinel" && vsWindowStart > 0) {
+        vsWindowStart = Math.max(0, vsWindowStart - VS_BUFFER);
+        buildVirtualDom();
+        setupObserver();
+      }
+      if (entry.target.id === "vs-bot-sentinel" && vsWindowEnd < vsMessages.length) {
+        vsWindowEnd = Math.min(vsMessages.length, vsWindowEnd + VS_BUFFER);
+        buildVirtualDom();
+        setupObserver();
+      }
+    }
+  }, { root: messagesEl, rootMargin: "200px" });
+
+  const top = document.getElementById("vs-top-sentinel");
+  const bot = document.getElementById("vs-bot-sentinel");
+  if (top) vsObserver.observe(top);
+  if (bot) vsObserver.observe(bot);
+}
+
+function renderVirtual(messages) {
+  vsMessages = messages;
+  vsHeights = new Array(messages.length).fill(vsAvgHeight);
+  vsWindowEnd = messages.length;
+  vsWindowStart = Math.max(0, vsWindowEnd - VS_BUFFER * 2);
+  buildVirtualDom();
+  setupObserver();
+}
+
+// ── Message generator ──────────────────────────────────────────
+const CODE_SAMPLE = `fn compute_sdr(text: &str) -> Vec<u32> {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    let seed = hasher.finish();
+    (0..SDR_SIZE).filter(|i| (seed >> (i % 64)) & 1 == 1).collect()
+}`;
+
+const LONG_PARA = "Yggdrasil is a cooperative local-AI ecosystem designed for high-throughput inference with multi-model coordination. " +
+  "The architecture uses Odin as the router, Mimir for engram memory, and Huginn/Muninn for specialized workloads. " +
+  "Sprint 063 introduces the Vault UI, test harness, lock-file safety for hookManager, and virtual scroll stress testing. " +
+  "Performance targets: DOM node count ≤ 100, per-frame time ≤ 16ms. ";
+
+function randomMessage(index) {
+  const role = index % 2 === 0 ? "user" : "assistant";
+  const len = 50 + Math.floor(Math.abs(Math.sin(index * 1.618)) * 1950);
+  let content;
+
+  if (index % 7 === 0) {
+    // Code block every 7th message
+    content = `Here is the implementation:\n\`\`\`rust\n${CODE_SAMPLE}\n\`\`\`\nThis uses the Rayon parallel iterator for SIMD-friendly batching.`;
+  } else if (index % 13 === 0) {
+    // Inline code
+    content = `The \`vault_tool\` action \`"set"\` stores AES-256-GCM encrypted values scoped to \`${["global","project:ygg","user:jhernandez"][index % 3]}\`. Tags are comma-delimited strings.`;
+  } else {
+    // Plain text of varying length
+    content = (LONG_PARA + LONG_PARA).slice(0, len);
+  }
+
+  return { role, content, id: `msg-${index}`, timestamp: Date.now() - (1500 - index) * 1000 };
+}
+
+// ── Stress test runner ─────────────────────────────────────────
+let maxDomNodes = 0;
+let maxFrameTime = 0;
+const frameTimes = [];
+
+function countDomNodes() {
+  return messagesEl.querySelectorAll("*").length;
+}
+
+function log(msg) {
+  const el = document.getElementById("log");
+  if (el) {
+    el.textContent += "\n" + msg;
+    el.scrollTop = el.scrollHeight;
+  }
+  console.log("[stress]", msg);
+}
+
+function setMetric(id, value, pass) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value;
+  el.className = "metric-value" + (pass === true ? " pass" : pass === false ? " fail" : "");
+}
+
+async function runStressTest() {
+  const runBtn = document.getElementById("run-btn");
+  const progressBar = document.getElementById("progress-bar");
+
+  runBtn.disabled = true;
+  maxDomNodes = 0;
+  maxFrameTime = 0;
+  frameTimes.length = 0;
+  _renderCache.clear();
+
+  log("Generating 1500 messages...");
+  const messages = Array.from({ length: 1500 }, (_, i) => randomMessage(i));
+
+  log("Rendering via virtual scroll...");
+  renderVirtual(messages);
+
+  setMetric("r-total", messages.length, null);
+
+  // ── Scroll from top to bottom programmatically ──────────────
+  log("Scrolling top → bottom...");
+  const scrollStart = performance.now();
+
+  messagesEl.scrollTop = 0;
+
+  // Sample DOM nodes + frame times during scroll
+  const SCROLL_STEPS = 60;
+  const totalScrollHeight = () => messagesEl.scrollHeight - messagesEl.clientHeight;
+
+  for (let step = 0; step <= SCROLL_STEPS; step++) {
+    const frameStart = performance.now();
+
+    const target = Math.floor((step / SCROLL_STEPS) * totalScrollHeight());
+    messagesEl.scrollTop = target;
+
+    // Force layout
+    void messagesEl.scrollTop;
+
+    // Allow IntersectionObserver to fire and rerender
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => requestAnimationFrame(r));
+
+    const frameEnd = performance.now();
+    const frameTime = frameEnd - frameStart;
+    frameTimes.push(frameTime);
+    maxFrameTime = Math.max(maxFrameTime, frameTime);
+
+    const nodes = countDomNodes();
+    maxDomNodes = Math.max(maxDomNodes, nodes);
+
+    const pct = Math.round((step / SCROLL_STEPS) * 100);
+    if (progressBar) progressBar.style.width = pct + "%";
+
+    if (step % 10 === 0) {
+      log(`  step ${step}/${SCROLL_STEPS}: scroll=${target}px nodes=${nodes} frame=${frameTime.toFixed(1)}ms`);
+    }
+  }
+
+  const scrollDuration = performance.now() - scrollStart;
+
+  // ── Assertions ─────────────────────────────────────────────
+  const DOM_NODE_LIMIT = 100;
+  const FRAME_TIME_LIMIT_MS = 16;
+
+  const domPass = maxDomNodes <= DOM_NODE_LIMIT;
+  const framePass = maxFrameTime <= FRAME_TIME_LIMIT_MS;
+
+  setMetric("r-maxdom", `${maxDomNodes} nodes`, domPass);
+  setMetric("r-maxframe", `${maxFrameTime.toFixed(1)}ms`, framePass);
+  setMetric("r-dompass", domPass ? "PASS" : "FAIL", domPass);
+  setMetric("r-framepass", framePass ? "PASS" : "FAIL", framePass);
+  setMetric("r-scrolldur", `${(scrollDuration / 1000).toFixed(2)}s`, null);
+
+  const avgFrame = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+  log(`Done. maxDomNodes=${maxDomNodes}, maxFrameTime=${maxFrameTime.toFixed(1)}ms, avgFrameTime=${avgFrame.toFixed(1)}ms`);
+  log(`DOM assertion: ${domPass ? "PASS" : "FAIL (>100 nodes — virtual scroll not working)"}`);
+  log(`Frame assertion: ${framePass ? "PASS" : "FAIL (>16ms — jank detected)"}`);
+
+  if (!framePass) {
+    log("");
+    log("JANK DETECTED. Likely causes:");
+    log("  1. Markdown re-parse on every buildVirtualDom call");
+    log("  2. Prism re-highlight without content caching");
+    log("  3. DOM churn — too many innerHTML replacements");
+    log("Fixes applied in this harness: content cache per message index.");
+    log("Apply same cache to chat.js renderMessage (Sprint 063 P6c patch).");
+  }
+
+  if (progressBar) progressBar.style.width = "100%";
+  runBtn.disabled = false;
+
+  console.table({
+    totalMessages: messages.length,
+    maxDomNodes,
+    maxFrameMs: maxFrameTime.toFixed(1),
+    avgFrameMs: avgFrame.toFixed(1),
+    scrollDurationMs: scrollDuration.toFixed(0),
+    domAssertionPass: domPass,
+    frameAssertionPass: framePass,
+  });
+}
+
+document.getElementById("run-btn").addEventListener("click", () => {
+  runStressTest().catch((err) => {
+    log("Error: " + err.message);
+    document.getElementById("run-btn").disabled = false;
+  });
+});
+
+document.getElementById("clear-btn").addEventListener("click", () => {
+  disconnectObserver();
+  messagesEl.innerHTML = "";
+  vsMessages = [];
+  vsHeights = [];
+  _renderCache.clear();
+  document.getElementById("log").textContent = "Cleared.";
+  ["r-total","r-maxdom","r-maxframe","r-dompass","r-framepass","r-scrolldur"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = "—"; el.className = "metric-value"; }
+  });
+  document.getElementById("progress-bar").style.width = "0%";
+});
+</script>
+</body>
+</html>

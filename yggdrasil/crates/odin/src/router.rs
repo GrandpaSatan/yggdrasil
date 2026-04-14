@@ -36,6 +36,10 @@ pub enum RouterMethod {
     LlmOverride,
     /// Client specified the model explicitly.
     Explicit,
+    /// Sprint 063 P1: client specified a flow via `flow` param — dispatched
+    /// directly without intent classification. Distinct from `Explicit` so
+    /// observability can tell model-pin apart from flow-pin.
+    ExplicitFlow,
     /// All routers failed — used keyword fallback.
     Fallback,
 }
@@ -74,6 +78,10 @@ pub struct RoutingDecision {
     pub keyword_match_count: u32,
     /// Origin category of the keyword classifier verdict (Sprint 062 P1a).
     pub keyword_match_kind: KeywordMatchKind,
+    /// Sprint 063 P1: name of the explicitly pinned flow, when the caller set
+    /// `ChatCompletionRequest.flow`. `None` on every classification-driven path.
+    /// `Some(name)` only when `router_method == RouterMethod::ExplicitFlow`.
+    pub explicit_flow: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -423,6 +431,7 @@ impl SemanticRouter {
                     backend_type: rule.backend_type.clone(),
                     keyword_match_count: count as u32,
                     keyword_match_kind: KeywordMatchKind::Matched,
+                    explicit_flow: None,
                 }
             }
             None => {
@@ -447,6 +456,7 @@ impl SemanticRouter {
                     backend_type: self.default_backend_type.clone(),
                     keyword_match_count: 0,
                     keyword_match_kind: kind,
+                    explicit_flow: None,
                 }
             }
         }
@@ -474,6 +484,7 @@ impl SemanticRouter {
             backend_type,
             keyword_match_count: 0,
             keyword_match_kind: KeywordMatchKind::None,
+            explicit_flow: None,
         })
     }
 
@@ -497,7 +508,33 @@ impl SemanticRouter {
                 backend_type: rule.backend_type.clone(),
                 keyword_match_count: 0,
                 keyword_match_kind: KeywordMatchKind::None,
+                explicit_flow: None,
             })
+    }
+
+    /// Sprint 063 P1: build a `RoutingDecision` that pins execution to a named
+    /// flow without running intent classification.
+    ///
+    /// The resulting decision uses `RouterMethod::ExplicitFlow` with
+    /// `explicit_flow = Some(flow_name)`, intent = "explicit_flow", and
+    /// default model/backend (the flow itself drives actual model selection
+    /// per-step). This is a bookkeeping decision — `handlers.rs` dispatches
+    /// via `flow_engine.find_by_name()` before touching the model/backend
+    /// fields.
+    #[must_use]
+    pub fn explicit_flow_decision(&self, flow_name: &str) -> RoutingDecision {
+        RoutingDecision {
+            intent: "explicit_flow".to_string(),
+            confidence: None,
+            router_method: RouterMethod::ExplicitFlow,
+            model: self.default_model.clone(),
+            backend_url: self.default_backend_url.clone(),
+            backend_name: self.default_backend_name.clone(),
+            backend_type: self.default_backend_type.clone(),
+            keyword_match_count: 0,
+            keyword_match_kind: KeywordMatchKind::None,
+            explicit_flow: Some(flow_name.to_string()),
+        }
     }
 }
 
@@ -616,5 +653,279 @@ mod tests {
             "expected HA keywords to win with count >= 2, got {}",
             decision.keyword_match_count
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Sprint 063 P5d — Router adversarial regression suite
+    //
+    // Each case below either:
+    //   (a) asserts a specific intent/keyword_match_kind, OR
+    //   (b) asserts that classify() returns a valid decision without
+    //       panicking / allocating unreasonably.
+    // None may crash. The default model/backend are always a safe fallback.
+    // ─────────────────────────────────────────────────────────────
+
+    /// P5d-01: classic HA query must remain HA across config iterations.
+    #[test]
+    fn p5d_ha_plain_turn_on_lights() {
+        let router = build_test_router();
+        let d = router.classify("turn on the lights");
+        assert_eq!(d.intent, "home_automation");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::Matched);
+    }
+
+    /// P5d-02: HA + gaming node name suppresses to default (Sprint 062 P1a).
+    #[test]
+    fn p5d_ha_plus_gaming_vm_suppressed() {
+        let router = build_test_router();
+        let d = router.classify("turn on thor and launch the gaming VM");
+        assert_eq!(d.intent, "default");
+        assert_ne!(d.keyword_match_kind, KeywordMatchKind::Matched);
+    }
+
+    /// P5d-03: HA + coding ask — the coding verb "implement" plus "kitchen
+    /// light" should resolve to the higher-match intent. "light" counts as
+    /// HA but "implement" is coding, so the classifier picks whichever rule
+    /// hit more keywords. The invariant is merely: we don't crash and we
+    /// don't return an intent we never declared.
+    #[test]
+    fn p5d_ha_plus_coding_implement_kitchen_light_handler() {
+        let router = build_test_router();
+        let d = router.classify("implement the kitchen light handler");
+        assert!(["home_automation", "coding", "default"].contains(&d.intent.as_str()));
+        assert!(!d.backend_url.is_empty(), "must pick a concrete backend");
+    }
+
+    /// P5d-04: "turn on the debugger" — ambiguous tool word. "turn on"
+    /// is HA; "debugger" is coding-flavored. Don't crash; return SOME
+    /// decision with a non-empty backend.
+    #[test]
+    fn p5d_ambiguous_turn_on_the_debugger() {
+        let router = build_test_router();
+        let d = router.classify("turn on the debugger");
+        assert!(!d.backend_url.is_empty());
+        assert!(!d.model.is_empty());
+    }
+
+    /// P5d-05: empty input — must not panic, returns default with
+    /// `keyword_match_kind == None`.
+    #[test]
+    fn p5d_empty_input() {
+        let router = build_test_router();
+        let d = router.classify("");
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+        assert_eq!(d.keyword_match_count, 0);
+    }
+
+    /// P5d-06: whitespace-only input.
+    #[test]
+    fn p5d_whitespace_only_input() {
+        let router = build_test_router();
+        let d = router.classify("   \n\t   ");
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+    }
+
+    /// P5d-07: unicode + emoji input — classifier must not panic on
+    /// char-boundary arithmetic.
+    #[test]
+    fn p5d_unicode_and_emoji() {
+        let router = build_test_router();
+        let d = router.classify("🏠 turn on the 灯 light please 🚀💡");
+        // HA keywords ("turn on", "light") should still match.
+        assert_eq!(d.intent, "home_automation");
+    }
+
+    /// P5d-08: mixed-case doesn't break lowercasing.
+    #[test]
+    fn p5d_mixed_case_turn_on() {
+        let router = build_test_router();
+        let d = router.classify("TURN ON the Kitchen LIGHT");
+        assert_eq!(d.intent, "home_automation");
+    }
+
+    /// P5d-09: single-word input "lights" — matches HA even without a verb.
+    #[test]
+    fn p5d_single_word_lights() {
+        let router = build_test_router();
+        let d = router.classify("lights");
+        // "lights" contains "light" substring → HA match.
+        assert_eq!(d.intent, "home_automation");
+    }
+
+    /// P5d-10: single bare verb "implement".
+    #[test]
+    fn p5d_single_word_implement() {
+        let router = build_test_router();
+        let d = router.classify("implement");
+        assert_eq!(d.intent, "coding");
+    }
+
+    /// P5d-11: multi-intent mash — "turn off lights and write code".
+    /// The classifier picks the rule with the highest count; ties break
+    /// on rule order. Must be a declared intent.
+    #[test]
+    fn p5d_multi_intent_lights_and_code() {
+        let router = build_test_router();
+        let d = router.classify("turn off the lights and write some code");
+        assert!(
+            ["home_automation", "coding"].contains(&d.intent.as_str()),
+            "got unexpected intent {}",
+            d.intent
+        );
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::Matched);
+    }
+
+    /// P5d-12: SQL-injection attempt — treated as plain text.
+    #[test]
+    fn p5d_sql_injection_attempt() {
+        let router = build_test_router();
+        let d = router.classify("'; DROP TABLE engrams; -- turn on the light");
+        // "turn on" + "light" still match HA; the SQL is meaningless here.
+        assert_eq!(d.intent, "home_automation");
+    }
+
+    /// P5d-13: 10KB input — must not OOM or time out.
+    #[test]
+    fn p5d_10kb_input() {
+        let router = build_test_router();
+        let big = "turn on the light ".repeat(600); // ~10.8 KB
+        assert!(big.len() >= 10_000);
+        let d = router.classify(&big);
+        assert_eq!(d.intent, "home_automation");
+        assert!(d.keyword_match_count > 0);
+    }
+
+    /// P5d-14: purely numeric input.
+    #[test]
+    fn p5d_purely_numeric() {
+        let router = build_test_router();
+        let d = router.classify("12345 67890 3.14159");
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+    }
+
+    /// P5d-15: purely punctuation.
+    #[test]
+    fn p5d_purely_punctuation() {
+        let router = build_test_router();
+        let d = router.classify("!@#$%^&*()-=_+[]{}|;:',.<>?/`~");
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+    }
+
+    /// P5d-16: HTML-looking input falls through gracefully. The
+    /// classifier is substring-based so tag names that happen to overlap
+    /// real keywords (e.g. `<script>` matches the HA `script` keyword,
+    /// `class="..."` matches the coding `class` keyword) are expected —
+    /// the invariant we enforce is that the classifier produces a
+    /// non-crashing decision with a valid backend regardless.
+    #[test]
+    fn p5d_html_looking_input() {
+        let router = build_test_router();
+        let d = router.classify("<span>hello</span><br/>");
+        // No HA/coding/reasoning keywords hit here → default.
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+    }
+
+    /// P5d-17: gaming keyword alone with no HA verbs — default.
+    #[test]
+    fn p5d_gaming_node_alone() {
+        let router = build_test_router();
+        let d = router.classify("how's Thor doing today?");
+        // "thor" is a gaming keyword, but no HA keywords match, so there's
+        // nothing to suppress. Falls through to default via None path.
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+    }
+
+    /// P5d-18: gaming keyword with HA verb — Suppressed kind.
+    #[test]
+    fn p5d_gaming_plus_ha_verb_is_suppressed() {
+        let router = build_test_router();
+        let d = router.classify("turn on thor for gaming");
+        assert_eq!(d.intent, "default");
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::Suppressed);
+        assert_eq!(d.keyword_match_count, 0);
+    }
+
+    /// P5d-19: every configured backend has a non-empty URL. A classify
+    /// result with an empty backend_url would break dispatch downstream.
+    #[test]
+    fn p5d_classify_never_returns_empty_backend_url() {
+        let router = build_test_router();
+        for input in [
+            "",
+            "turn on the lights",
+            "implement a function",
+            "explain how it works",
+            "thor launch harpy",
+            "\u{0}",                // NUL
+            "a".repeat(20_000).as_str(),
+        ] {
+            let d = router.classify(input);
+            assert!(!d.backend_url.is_empty(), "empty backend_url for input: {input:?}");
+            assert!(!d.backend_name.is_empty(), "empty backend_name for input: {input:?}");
+            assert!(!d.model.is_empty(), "empty model for input: {input:?}");
+        }
+    }
+
+    /// P5d-20: embedded control characters — no panics.
+    #[test]
+    fn p5d_control_characters() {
+        let router = build_test_router();
+        let d = router.classify("turn on the \x00light\x07please");
+        // "turn on" + "light" still substring-match → HA.
+        assert_eq!(d.intent, "home_automation");
+    }
+
+    /// P5d-21: very long single word (pathological substring probe).
+    #[test]
+    fn p5d_pathological_long_word() {
+        let router = build_test_router();
+        let huge_word = "a".repeat(100_000);
+        let d = router.classify(&huge_word);
+        // No keyword matches; default — but it MUST complete.
+        assert_eq!(d.intent, "default");
+    }
+
+    /// P5d-22: `resolve_backend_for_model` with nonexistent model returns
+    /// None — caller is responsible for translating into HTTP 400.
+    #[test]
+    fn p5d_explicit_model_unknown_returns_none() {
+        let router = build_test_router();
+        assert!(router.resolve_backend_for_model("no-such-model-ever").is_none());
+    }
+
+    /// P5d-23: `resolve_backend_for_model` for a configured model returns
+    /// the right backend.
+    #[test]
+    fn p5d_explicit_model_known_resolves() {
+        let router = build_test_router();
+        let d = router.resolve_backend_for_model("coder-model").expect("model exists");
+        assert_eq!(d.router_method, RouterMethod::Explicit);
+        assert_eq!(d.intent, "explicit");
+        assert_eq!(d.model, "coder-model");
+        assert_eq!(d.backend_name, "coder-backend");
+        assert!(d.explicit_flow.is_none());
+    }
+
+    /// P5d-24: Sprint 063 P1 explicit-flow helper produces the expected
+    /// decision shape — ExplicitFlow method, explicit_flow = Some(name),
+    /// default backend (flow drives actual model selection per-step).
+    #[test]
+    fn p5d_explicit_flow_decision_shape() {
+        let router = build_test_router();
+        let d = router.explicit_flow_decision("dream_exploration");
+        assert_eq!(d.router_method, RouterMethod::ExplicitFlow);
+        assert_eq!(d.intent, "explicit_flow");
+        assert_eq!(d.explicit_flow.as_deref(), Some("dream_exploration"));
+        assert_eq!(d.keyword_match_count, 0);
+        assert_eq!(d.keyword_match_kind, KeywordMatchKind::None);
+        // Model/backend default through — flow engine picks per-step.
+        assert_eq!(d.model, "default-model");
+        assert_eq!(d.backend_name, "default-backend");
     }
 }

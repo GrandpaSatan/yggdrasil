@@ -689,3 +689,209 @@ To enable this functionality, ensure:
 3. Claude Code is configured to use the `yggdrasil` MCP server with the appropriate URL
 
 The `context_bridge_tool` allows sharing context between different IDE windows by bridging them through the Antigravity infrastructure.
+
+---
+
+## Mimir Vault Operations
+
+### Vault key location
+
+`/etc/systemd/system/yggdrasil-mimir.service.d/vault.conf` on Munin (10.0.65.8). Contains:
+
+```
+[Service]
+Environment="MIMIR_VAULT_KEY=<32-byte base64 key>"
+```
+
+### Backup requirement
+
+The vault key is LOAD-BEARING. If lost, all encrypted secrets are unrecoverable.
+Store a copy in your password manager under a clearly-named entry
+("Yggdrasil Mimir Vault Key YYYY-MM-DD").
+
+### Seeding secrets
+
+```bash
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set","key":"gitea_user","value":"jesus"}'
+
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set","key":"gitea_password","value":"<password>"}'
+
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set","key":"gitea_url","value":"http://10.0.65.11:3000"}'
+
+# Optional — required for GitHub releases:
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set","key":"github_token","value":"ghp_..."}'
+```
+
+### Reading a secret
+
+```bash
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"get","key":"gitea_user"}'
+```
+
+### Listing all secret keys
+
+```bash
+curl -X POST http://10.0.65.8:9090/api/v1/vault \
+  -H "Content-Type: application/json" \
+  -d '{"action":"list"}'
+```
+
+### Rotation procedure
+
+Use `scripts/ops/vault-rotate.sh` — generates new key, re-encrypts all secrets,
+updates the drop-in, restarts mimir. REQUIRES sudo on Munin.
+
+```bash
+# Dry run first (no changes):
+DRY_RUN=1 bash scripts/ops/vault-rotate.sh
+
+# Live rotation (interactive confirmation prompt):
+bash scripts/ops/vault-rotate.sh
+```
+
+### Restore from drop-in (if key lost)
+
+Impossible. The drop-in file IS the only copy on the server.
+Restore from password-manager backup OR reseed all secrets from source systems:
+
+1. Recover the key from your password manager entry "Yggdrasil Mimir Vault Key YYYY-MM-DD".
+2. Write the recovered key back to the drop-in:
+   ```bash
+   ssh jhernandez@10.0.65.8 "echo 723559 | sudo -S bash -c \
+     'printf \"[Service]\nEnvironment=\\\"MIMIR_VAULT_KEY=<key>\\\"\n\" \
+     > /etc/systemd/system/yggdrasil-mimir.service.d/vault.conf'"
+   ssh jhernandez@10.0.65.8 "echo 723559 | sudo -S systemctl daemon-reload \
+     && echo 723559 | sudo -S systemctl restart yggdrasil-mimir"
+   ```
+3. If the key is truly unrecoverable: delete the drop-in, restart mimir with a fresh key,
+   and reseed all secrets manually via the `set` action above.
+
+---
+
+## Extension Release Procedure
+
+### Package and publish (Sprint 063+)
+
+```bash
+# Dry run — prints the plan without publishing:
+DRY_RUN=1 bash scripts/release/publish.sh 0.12.0
+
+# Create git tag automatically and publish:
+ALLOW_TAG=1 bash scripts/release/publish.sh 0.12.0
+
+# Publish (tag must already exist):
+bash scripts/release/publish.sh 0.12.0
+```
+
+Secrets (`gitea_user`, `gitea_password`, `gitea_url`, optionally `github_token`) are
+read from the Mimir vault. Seed them before first use (see "Seeding secrets" above).
+
+---
+
+## Auto-Update Dry Run Procedure
+
+Tests the full extension auto-update cycle end-to-end before a real release.
+
+### Prerequisites
+
+- Workstation A: current stable install (e.g. `0.11.0`) via VSCode Extensions panel.
+- Workstation B (dev): the Yggdrasil repo checked out, `npm run compile` passing.
+- Gitea reachable at `http://10.0.65.11:3000`.
+- Vault secrets seeded (see "Mimir Vault Operations" above).
+
+### Steps
+
+**Step 1 — Verify baseline on workstation A.**
+
+Open VS Code Extensions panel → search "yggdrasil-local" → confirm version `0.11.0` is
+installed and active. Confirm chat panel works (`Ctrl+Shift+I`, send "hello").
+
+**Step 2 — Prepare pre-release on workstation B.**
+
+```bash
+# Bump version in package.json
+cd extensions/yggdrasil-local
+# Edit package.json: "version": "0.12.0-pre.1"
+
+# Build and package
+npm run compile
+npx @vscode/vsce package --no-dependencies --out dist/yggdrasil-local-0.12.0-pre.1.vsix
+
+# Publish to Gitea (creates a pre-release tag and release)
+cd ../..
+ALLOW_TAG=1 bash scripts/release/publish.sh 0.12.0-pre.1
+```
+
+**Step 3 — Trigger update check on workstation A.**
+
+The auto-updater polls once per hour. Force an immediate check via the command palette:
+
+```
+Yggdrasil: Check for Updates
+```
+
+If the command does not appear, the auto-updater is not yet wired to a manual trigger.
+In that case, set `autoUpdate.lastCheck` to `0` in VS Code globalState via the
+Developer Tools console to reset the cooldown, then reload the window.
+
+**Step 4 — Observe update flow.**
+
+Expected sequence:
+1. Extension fetches `GET /api/v1/repos/jesus/Yggdrasil/releases/latest` from Gitea.
+2. Detects `0.12.0-pre.1 > 0.11.0` (semver compare in `autoUpdater.ts:isNewer`).
+3. Downloads `.vsix` asset.
+4. Calls `vscode.commands.executeCommand("workbench.action.installExtension", ...)`.
+5. Shows "Yggdrasil updated to v0.12.0-pre.1. Reload to activate?" toast.
+6. Click **Reload**.
+
+**Step 5 — Verify post-update.**
+
+- Extensions panel shows `0.12.0-pre.1`.
+- Chat panel, voice, and flows still work.
+- Output channel "Yggdrasil" shows no stack traces.
+
+**Step 6 — Rollback.**
+
+```bash
+code --install-extension dist/yggdrasil-local-0.11.0.vsix --force
+# Reload VS Code window
+```
+
+### Known gotcha: pre-release semver in `isNewer`
+
+`autoUpdater.ts:isNewer` (line ~197) splits on `.` and calls `Number()` on each
+segment. The version string `0.12.0-pre.1` splits into `["0","12","0-pre","1"]` —
+`Number("0-pre")` returns `NaN`, which compares as `false` in all numeric comparisons.
+
+**Consequence:** the updater will NOT detect `0.12.0-pre.1` as newer than `0.11.0` when
+pre-release suffixes are present. Before running this dry run, verify or patch
+`isNewer` to strip pre-release suffixes:
+
+```typescript
+// In autoUpdater.ts, replace the isNewer body:
+private isNewer(remote: string, current: string): boolean {
+  // Strip pre-release suffix (e.g. "0.12.0-pre.1" → "0.12.0")
+  const strip = (v: string) => v.replace(/-.*$/, "");
+  const r = strip(remote).split(".").map(Number);
+  const c = strip(current).split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const rv = r[i] || 0;
+    const cv = c[i] || 0;
+    if (rv > cv) return true;
+    if (rv < cv) return false;
+  }
+  return false;
+}
+```
+
+Fix this before running the dry run if using `-pre.N` version strings.

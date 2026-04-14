@@ -98,6 +98,7 @@ fn test_decision(ollama_url: &str) -> RoutingDecision {
         backend_type: BackendType::Ollama,
         keyword_match_count: 0,
         keyword_match_kind: odin::router::KeywordMatchKind::None,
+        explicit_flow: None,
     }
 }
 

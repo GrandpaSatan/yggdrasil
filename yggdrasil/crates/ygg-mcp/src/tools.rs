@@ -99,6 +99,43 @@ fn tool_ok(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text.into())])
 }
 
+/// Sprint 063 P3a — pick the final `effect` text for a sprint-end archival.
+///
+/// The archival pipeline MUST never fail with Mimir's
+/// "effect must not be empty" error just because the summarizer returned
+/// whitespace. We fall back through three layers, each emitting a warn log
+/// so the operator sees why a degraded effect landed:
+///   1. The summarizer output (if non-empty after trim).
+///   2. The raw `sprint_content`, capped at 2000 chars.
+///   3. A synthesized placeholder referencing the sprint id.
+///
+/// Pure function — extracted from `sync_docs_sprint_end` so the fallback
+/// policy is unit-testable in isolation (Mimir + Odin are not required).
+pub(crate) fn sprint_end_effect_fallback(
+    summary_text_raw: &str,
+    sprint_content: &str,
+    sprint_id: &str,
+) -> String {
+    if !summary_text_raw.trim().is_empty() {
+        return summary_text_raw.to_string();
+    }
+
+    let raw_fallback: String = sprint_content.chars().take(2000).collect();
+    if !raw_fallback.trim().is_empty() {
+        tracing::warn!(
+            sprint_id = %sprint_id,
+            "summarizer returned empty summary — falling back to raw sprint_content",
+        );
+        return raw_fallback;
+    }
+
+    tracing::warn!(
+        sprint_id = %sprint_id,
+        "summarizer output empty AND sprint_content empty — archiving with synthesized effect",
+    );
+    format!("Sprint {sprint_id} archived with no summary or content available.")
+}
+
 // ---------------------------------------------------------------------------
 // Tool: search_code
 // ---------------------------------------------------------------------------
@@ -1243,7 +1280,7 @@ async fn sync_docs_sprint_end(
     )
     .await;
 
-    let summary_text = if summary_result.is_error.unwrap_or(false) {
+    let summary_text_raw = if summary_result.is_error.unwrap_or(false) {
         // Fall back to raw sprint content if summarization fails.
         params.sprint_content.chars().take(2000).collect::<String>()
     } else {
@@ -1254,6 +1291,12 @@ async fn sync_docs_sprint_end(
             .and_then(|c| c.raw.as_text().map(|t| t.text.clone()))
             .unwrap_or_else(|| params.sprint_content.chars().take(2000).collect())
     };
+
+    // Sprint 063 P3a: ensure the archive succeeds even when the summarizer
+    // returns empty/whitespace output. See `sprint_end_effect_fallback`
+    // for the fallback policy.
+    let summary_text =
+        sprint_end_effect_fallback(&summary_text_raw, &params.sprint_content, &params.sprint_id);
 
     // Step 2: Archive sprint to Mimir via Odin proxy.
     let store_url = format!(
@@ -4800,6 +4843,103 @@ fn real() {}
         // "rust" has no dot, so it's treated as a language tag and skipped
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].0, "src/real.rs");
+    }
+
+    // ── Sprint 063 P3a — sprint-end effect fallback ───────────────
+
+    /// Pre-063 regression: a valid summarizer output is used verbatim.
+    /// We must NEVER mutate a non-empty summary.
+    #[test]
+    fn sprint_end_fallback_passes_summary_through() {
+        let out = sprint_end_effect_fallback(
+            "- bullet one\n- bullet two",
+            "full sprint doc here",
+            "063",
+        );
+        assert_eq!(out, "- bullet one\n- bullet two");
+    }
+
+    /// P3a core: empty summarizer output falls back to sprint_content
+    /// instead of aborting the archive with "effect must not be empty".
+    #[test]
+    fn test_archive_accepts_empty_summary() {
+        let out = sprint_end_effect_fallback(
+            "   \n  \t  ",
+            "Sprint 063 plan: P1, P2, P3, P5d.",
+            "063",
+        );
+        assert_eq!(out, "Sprint 063 plan: P1, P2, P3, P5d.");
+        assert!(!out.trim().is_empty(), "effect must not be empty after fallback");
+    }
+
+    /// Degenerate case: both summary AND sprint_content are empty. The
+    /// archive must STILL produce a non-empty effect — we synthesize a
+    /// placeholder rather than crashing.
+    #[test]
+    fn sprint_end_fallback_synthesises_when_all_empty() {
+        let out = sprint_end_effect_fallback("", "   \n", "063");
+        assert!(out.contains("063"));
+        assert!(!out.trim().is_empty());
+    }
+
+    /// Pure-whitespace summary with substantial sprint content must fall
+    /// back to the content (capped at 2000 chars) — not to the synthesized
+    /// placeholder. Regression for confusing the two fallback tiers.
+    #[test]
+    fn sprint_end_fallback_prefers_content_over_synthesis() {
+        let long_content = "x".repeat(5000);
+        let out = sprint_end_effect_fallback("  \t  ", &long_content, "063");
+        assert_eq!(out.len(), 2000, "content fallback must cap at 2000 chars");
+        assert!(out.chars().all(|c| c == 'x'));
+    }
+
+    // ── Sprint 063 P3b — StoreMemoryParams tags serde round-trip ──
+
+    /// P3b core: `store_memory cause="x" effect="y" tags=["a","b"]` must
+    /// deserialize cleanly against the MCP schema. Regression for a bug
+    /// where MCP clients sending explicit tags were rejected.
+    #[test]
+    fn test_store_memory_with_tags_roundtrip() {
+        use ygg_domain::tool_params::StoreMemoryParams;
+        let body = serde_json::json!({
+            "cause": "x",
+            "effect": "y",
+            "tags": ["a", "b"],
+        });
+        let params: StoreMemoryParams =
+            serde_json::from_value(body).expect("tags array must deserialize");
+        assert_eq!(params.cause, "x");
+        assert_eq!(params.effect, "y");
+        assert_eq!(params.tags.as_deref(), Some(&["a".to_string(), "b".to_string()][..]));
+        assert!(params.id.is_none());
+        assert!(params.force.is_none());
+    }
+
+    /// Tags omitted entirely must still deserialize — regression for the
+    /// same P3b bug manifesting as "required field 'tags' missing" from
+    /// stricter downstream consumers of the JSON schema.
+    #[test]
+    fn store_memory_params_without_tags_deserializes() {
+        use ygg_domain::tool_params::StoreMemoryParams;
+        let body = serde_json::json!({ "cause": "x", "effect": "y" });
+        let params: StoreMemoryParams =
+            serde_json::from_value(body).expect("missing tags must be allowed");
+        assert!(params.tags.is_none());
+    }
+
+    /// Explicit null tags must be accepted — some MCP clients emit `null`
+    /// rather than omitting optional fields.
+    #[test]
+    fn store_memory_params_with_null_tags_deserializes() {
+        use ygg_domain::tool_params::StoreMemoryParams;
+        let body = serde_json::json!({
+            "cause": "x",
+            "effect": "y",
+            "tags": serde_json::Value::Null,
+        });
+        let params: StoreMemoryParams =
+            serde_json::from_value(body).expect("null tags must be allowed");
+        assert!(params.tags.is_none());
     }
 }
 

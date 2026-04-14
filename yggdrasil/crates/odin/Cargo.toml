@@ -40,6 +40,7 @@ base64 = { workspace = true }
 rustfft = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+cron = "0.12"
 
 [dev-dependencies]
 ygg-test-harness = { path = "../ygg-test-harness" }

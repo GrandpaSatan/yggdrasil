@@ -398,6 +398,7 @@ export class ChatPanel {
           temperature: 0.3,
           max_tokens: 4096,
           stream: true,
+          flow: effectiveFlow,
         },
         (delta) => {
           if (aborted) return;

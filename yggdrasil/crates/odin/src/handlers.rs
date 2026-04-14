@@ -656,6 +656,7 @@ fn maybe_summarize_session(
                     project_id: None,
                     tools: None,
                     tool_choice: None,
+                    flow: None,
                 };
                 proxy::generate_chat_openai(&http_client, &backend_url, req)
                     .await
@@ -869,6 +870,7 @@ pub async fn process_chat_text(
                 project_id: None,
                 tools: None,
                 tool_choice: None,
+                flow: None,
             };
 
             let gen_start = std::time::Instant::now();
@@ -1119,6 +1121,55 @@ pub async fn chat_handler(
         .and_then(|r| r.query_sdr_hex.as_ref())
         .and_then(|hex| ygg_domain::sdr::from_hex(hex));
 
+    // ── 5a. Sprint 063 P1: explicit flow pin ────────────────────
+    // When the caller sets `ChatCompletionRequest.flow`, bypass intent
+    // classification entirely and dispatch directly to the named flow
+    // (provided its trigger is `Manual` or `Intent(_)` — cron-only flows
+    // are rejected because they must not be user-invocable).
+    if let Some(ref flow_name) = request.flow {
+        let flows_snapshot = state.flows.read().unwrap().clone();
+        match crate::flow::classify_explicit_flow(&flows_snapshot, flow_name) {
+            crate::flow::ExplicitFlowVerdict::NotFound => {
+                return Err(OdinError::BadRequest(format!("flow not found: {flow_name}")));
+            }
+            crate::flow::ExplicitFlowVerdict::CronOnly => {
+                return Err(OdinError::BadRequest(format!(
+                    "flow '{flow_name}' is cron-only, not user-invocable"
+                )));
+            }
+            crate::flow::ExplicitFlowVerdict::NotInvocable => {
+                return Err(OdinError::BadRequest(format!(
+                    "flow '{flow_name}' is not user-invocable (trigger type cannot be pinned)"
+                )));
+            }
+            crate::flow::ExplicitFlowVerdict::Dispatch => {
+                // Safe to unwrap — classify_explicit_flow already verified it exists.
+                let flow = state
+                    .flow_engine
+                    .find_by_name(&flows_snapshot, flow_name)
+                    .expect("flow existence was verified by classify_explicit_flow");
+                tracing::info!(flow = %flow_name, "explicit flow invocation");
+                let flow_cloned = flow.clone();
+                let pinned_images: Option<Vec<String>> = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::User)
+                    .and_then(|m| m.images.clone())
+                    .filter(|imgs| !imgs.is_empty());
+                return Ok(dispatch_flow(
+                    state.clone(),
+                    flow_cloned,
+                    last_user_message.clone(),
+                    pinned_images,
+                    session_id.clone(),
+                    request.stream,
+                )
+                .await);
+            }
+        }
+    }
+
     // ── 5b. Hybrid SDR + LLM routing (Sprint 052) ────────────────
     let mut decision = if let Some(ref model) = request.model {
         state.router.resolve_backend_for_model(model).ok_or_else(|| {
@@ -1304,6 +1355,7 @@ pub async fn chat_handler(
                 project_id: None, // Don't forward project_id to backend
                 tools: None,
                 tool_choice: None,
+                flow: None,
             };
 
             if request.stream {
@@ -2998,6 +3050,7 @@ pub async fn agent_stream_handler(
             backend_type: BackendType::Ollama,
             keyword_match_count: 0,
             keyword_match_kind: crate::router::KeywordMatchKind::None,
+            explicit_flow: None,
         };
 
         let completion_id = format!("agent-stream-{}", Uuid::new_v4());

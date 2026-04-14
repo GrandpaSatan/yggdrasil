@@ -152,6 +152,12 @@ pub struct ChatCompletionRequest {
     /// Controls how the model selects tools: "auto", "none", or a specific tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<JsonValue>,
+    /// Sprint 063 P1: explicit flow pin. When present, the handler bypasses
+    /// intent classification and dispatches directly to the named flow,
+    /// provided the flow's trigger is `Manual` or `Intent(_)`. Cron-only
+    /// flows are rejected with 400.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<String>,
 }
 
 fn default_stream() -> bool {

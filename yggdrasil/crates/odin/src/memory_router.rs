@@ -129,6 +129,7 @@ mod tests {
             backend_type: BackendType::Ollama,
             keyword_match_count: 0,
             keyword_match_kind: crate::router::KeywordMatchKind::None,
+            explicit_flow: None,
         }
     }
 

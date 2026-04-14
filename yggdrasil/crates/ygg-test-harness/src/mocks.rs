@@ -64,6 +64,26 @@ impl MockOllamaBuilder {
         self
     }
 
+    /// Queue multiple canned step responses for a multi-step flow test.
+    ///
+    /// Each tuple is `(step_name, response_content)`.  The `step_name` is
+    /// embedded in the response `model` field so assertions can verify which
+    /// step executed which model.  The `response_content` is the assistant
+    /// message text returned for that step.
+    ///
+    /// Use alongside `flow_assertions::assert_flow_executed` to validate
+    /// that the correct number of steps ran with the expected output.
+    pub fn expect_flow_steps(mut self, steps: Vec<(&str, &str)>) -> Self {
+        for (step_name, content) in steps {
+            self.responses.push_back(serde_json::json!({
+                "model": step_name,
+                "message": { "role": "assistant", "content": content },
+                "done": true
+            }));
+        }
+        self
+    }
+
     /// Spawn the mock server. Returns a handle with URL and response queue.
     pub async fn start(self) -> MockOllama {
         let queue = Arc::new(Mutex::new(self.responses));
@@ -145,6 +165,23 @@ impl MockMimirBuilder {
     /// Set the fallback response when the queue is empty.
     pub fn with_default_response(mut self, value: JsonValue) -> Self {
         self.default_response = Some(value);
+        self
+    }
+
+    /// Pre-configure vault CRUD responses for vault-aware flow tests.
+    ///
+    /// Queues a standard vault list response followed by an upsert acknowledgement.
+    /// This covers the common pattern: flow step reads vault entries, then stores
+    /// a new insight back.  Extend with `.with_response()` for additional calls.
+    pub fn mock_mimir_vault(mut self) -> Self {
+        // Vault list response: one existing entry.
+        self.responses.push_back(serde_json::json!({
+            "entries": [
+                { "key": "test_vault_key", "value": "existing vault value", "updated_at": 0 }
+            ]
+        }));
+        // Vault upsert acknowledgement.
+        self.responses.push_back(serde_json::json!({ "ok": true }));
         self
     }
 

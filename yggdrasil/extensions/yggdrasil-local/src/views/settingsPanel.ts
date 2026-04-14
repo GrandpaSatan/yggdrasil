@@ -14,11 +14,16 @@
 
 import * as vscode from "vscode";
 import { OdinClient, Flow } from "../api/odinClient";
+import { MimirClient } from "../api/mimirClient";
 import type { HookManager } from "../hookManager";
+
+/** Clipboard auto-clear timers keyed by `"${scope}:${key}"`. */
+const clipboardTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export class SettingsPanel {
   private static panel: vscode.WebviewPanel | undefined;
   private static readonly viewType = "yggdrasil.settingsPanel";
+  private static mimir = new MimirClient();
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -171,6 +176,138 @@ export class SettingsPanel {
         });
         return;
       }
+
+      // ─── Mimir Vault ───────────────────────────────────────────
+
+      case "vaultList": {
+        try {
+          const result = await SettingsPanel.mimir.listVault();
+          panel.webview.postMessage({ type: "vaultList", secrets: result.secrets, count: result.count });
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          panel.webview.postMessage({ type: "toast", message: `Vault list failed: ${m}`, kind: "fail" });
+        }
+        return;
+      }
+
+      case "vaultSet": {
+        const key = String(msg.key ?? "");
+        const value = String(msg.value ?? "");
+        const scope = String(msg.scope ?? "global");
+        const rawTags = String(msg.tags ?? "");
+        const tags = rawTags
+          .split(",")
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+
+        if (!key || !value) {
+          panel.webview.postMessage({ type: "toast", message: "Key and value are required", kind: "fail" });
+          return;
+        }
+
+        // Security: never log the value — only key + scope metadata
+        try {
+          await SettingsPanel.mimir.setVault(key, value, scope, tags);
+          panel.webview.postMessage({
+            type: "toast",
+            message: `Vault: stored "${key}" (scope: ${scope})`,
+            kind: "ok",
+          });
+          // Refresh vault list
+          const result = await SettingsPanel.mimir.listVault();
+          panel.webview.postMessage({ type: "vaultList", secrets: result.secrets, count: result.count });
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          panel.webview.postMessage({ type: "toast", message: `Vault set failed: ${m}`, kind: "fail" });
+        }
+        return;
+      }
+
+      case "vaultDelete": {
+        const key = String(msg.key ?? "");
+        const scope = String(msg.scope ?? "global");
+        try {
+          await SettingsPanel.mimir.deleteVault(key, scope);
+          panel.webview.postMessage({
+            type: "toast",
+            message: `Vault: deleted "${key}" (scope: ${scope})`,
+            kind: "ok",
+          });
+          const result = await SettingsPanel.mimir.listVault();
+          panel.webview.postMessage({ type: "vaultList", secrets: result.secrets, count: result.count });
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          panel.webview.postMessage({ type: "toast", message: `Vault delete failed: ${m}`, kind: "fail" });
+        }
+        return;
+      }
+
+      case "vaultCopy": {
+        const key = String(msg.key ?? "");
+        const scope = String(msg.scope ?? "global");
+        try {
+          const secret = await SettingsPanel.mimir.getVault(key, scope);
+          await vscode.env.clipboard.writeText(secret.value);
+
+          // Show initial toast
+          panel.webview.postMessage({
+            type: "toast",
+            message: `Vault: "${key}" copied — clipboard clears in 30s`,
+            kind: "ok",
+          });
+
+          // Cancel any previous timer for this key
+          const timerKey = `${scope}:${key}`;
+          const existing = clipboardTimers.get(timerKey);
+          if (existing) clearTimeout(existing);
+
+          // Schedule clipboard clear with progress toasts
+          const t10 = setTimeout(() => {
+            panel.webview.postMessage({
+              type: "toast",
+              message: `Vault: clipboard clears in 10s (key: ${key})`,
+              kind: "ok",
+            });
+          }, 20_000);
+
+          const t3 = setTimeout(() => {
+            panel.webview.postMessage({
+              type: "toast",
+              message: `Vault: clipboard clears in 3s (key: ${key})`,
+              kind: "ok",
+            });
+          }, 27_000);
+
+          const tClear = setTimeout(async () => {
+            clipboardTimers.delete(timerKey);
+            const current = await vscode.env.clipboard.readText();
+            if (current === secret.value) {
+              await vscode.env.clipboard.writeText("");
+              panel.webview.postMessage({
+                type: "vaultClipboardCleared",
+                scope,
+                key,
+              });
+              panel.webview.postMessage({
+                type: "toast",
+                message: `Vault: clipboard cleared (key: ${key})`,
+                kind: "ok",
+              });
+            }
+          }, 30_000);
+
+          // Store the primary clear timer so we can cancel it
+          clipboardTimers.set(timerKey, tClear);
+
+          // Ensure sub-timers also get cleaned up if caller cancels early
+          // (they'll fire harmlessly if not cleared, so no strict need)
+          void t10; void t3;
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          panel.webview.postMessage({ type: "toast", message: `Vault copy failed: ${m}`, kind: "fail" });
+        }
+        return;
+      }
     }
   }
 
@@ -191,6 +328,17 @@ export class SettingsPanel {
     }
 
     const backends = collectBackends(flows, models);
+
+    // Load vault secret list (metadata only — never values)
+    let vaultSecrets: unknown[] = [];
+    let vaultCount = 0;
+    try {
+      const vaultResult = await SettingsPanel.mimir.listVault();
+      vaultSecrets = vaultResult.secrets;
+      vaultCount = vaultResult.count;
+    } catch {
+      // Mimir may not be reachable — fail silently, vault section shows empty
+    }
 
     panel.webview.postMessage({
       type: "state",
@@ -213,6 +361,7 @@ export class SettingsPanel {
         models,
         backends,
         secrets,
+        vault: { secrets: vaultSecrets, count: vaultCount },
       },
     });
   }
@@ -368,6 +517,57 @@ export class SettingsPanel {
       <p class="sub">Stored via VS Code SecretStorage — persisted to the OS keychain (libsecret / Credential Vault / Keychain). Never written to settings.json.</p>
 
       <div id="secrets-list"></div>
+    </div>
+
+    <div class="section vault-section">
+      <h2>Mimir Vault</h2>
+      <p class="sub">AES-256-GCM encrypted secrets stored in Mimir. Scoped by global / project / user. Values are never rendered in the UI — copy to clipboard only.</p>
+
+      <div id="vault-list" class="vault-list">
+        <div class="vault-empty">Loading vault…</div>
+      </div>
+
+      <div class="vault-divider"></div>
+
+      <div class="vault-form">
+        <div class="vault-form-title">Add / Update Secret</div>
+        <div class="vault-form-grid">
+          <div class="vault-form-field full">
+            <label>Scope</label>
+            <div class="vault-scope-group" id="vault-scope-radios">
+              <label class="vault-scope-option">
+                <input type="radio" name="vault-scope" value="global" checked> global
+              </label>
+              <label class="vault-scope-option">
+                <input type="radio" name="vault-scope" value="project-auto"> project: <span id="vault-scope-project-auto-label" class="vault-scope-auto-label">auto</span>
+              </label>
+              <label class="vault-scope-option">
+                <input type="radio" name="vault-scope" value="project-custom"> project:
+                <input type="text" id="vault-scope-project-custom" class="vault-scope-text" placeholder="my-project" disabled>
+              </label>
+              <label class="vault-scope-option">
+                <input type="radio" name="vault-scope" value="user"> user: <span id="vault-scope-user-label" class="vault-scope-auto-label">os-user</span>
+              </label>
+            </div>
+          </div>
+          <div class="vault-form-field">
+            <label>Key</label>
+            <input type="text" id="vault-key" placeholder="api_key_name" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="vault-form-field">
+            <label>Value</label>
+            <input type="password" id="vault-value" placeholder="secret value" autocomplete="new-password">
+          </div>
+          <div class="vault-form-field full">
+            <label>Tags <span style="font-size:9px;color:#52525b;font-weight:400;">(comma-separated, optional)</span></label>
+            <input type="text" id="vault-tags" placeholder="env:prod, service:openai" autocomplete="off">
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" id="vault-save">Save to Vault</button>
+          <button class="btn" id="vault-refresh">Refresh</button>
+        </div>
+      </div>
     </div>
   </div>
 

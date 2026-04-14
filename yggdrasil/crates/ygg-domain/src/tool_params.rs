@@ -55,6 +55,14 @@ pub struct QueryMemoryParams {
 }
 
 /// Parameters for the `store_memory` tool.
+///
+/// Sprint 063 P3b: `tags`, `id`, and `force` carry `#[serde(default)]` so
+/// the generated JSON schema marks them as NOT required. Without this,
+/// schemars emits a schema that requires the fields to be present (even
+/// as JSON `null`), causing strict MCP clients to reject calls like
+/// `store_memory(cause="x", effect="y")` — and, perversely, also to
+/// reject calls that supply `tags=["a","b"]` when the serialized form
+/// omits `id`/`force`. Matching the pattern used by `QueryMemoryParams`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StoreMemoryParams {
     /// The trigger or question (what happened).
@@ -62,10 +70,13 @@ pub struct StoreMemoryParams {
     /// The outcome or answer (what resulted).
     pub effect: String,
     /// Optional tags for categorization.
+    #[serde(default)]
     pub tags: Option<Vec<String>>,
     /// Optional engram UUID for update-by-ID.
+    #[serde(default)]
     pub id: Option<String>,
     /// Set to true to bypass the novelty gate.
+    #[serde(default)]
     pub force: Option<bool>,
 }
 

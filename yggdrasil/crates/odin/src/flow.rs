@@ -357,6 +357,7 @@ impl FlowEngine {
             backend_name: backend.name.clone(),
             keyword_match_count: 0,
             keyword_match_kind: crate::router::KeywordMatchKind::None,
+            explicit_flow: None,
         };
 
         // Use step's agent_config or sensible defaults for flow steps.
@@ -483,6 +484,7 @@ impl FlowEngine {
                     project_id: None,
                     tools: None,
                     tool_choice: None,
+                    flow: None,
                 };
 
                 let resp =
@@ -982,6 +984,7 @@ impl FlowEngine {
                     project_id: None,
                     tools: None,
                     tool_choice: None,
+                    flow: None,
                 };
 
                 let mut stream = proxy::stream_tokens_openai(
@@ -1012,6 +1015,46 @@ impl FlowEngine {
                 Ok(final_text)
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Sprint 063 P1 — explicit /flow pinning gate
+// ─────────────────────────────────────────────────────────────────
+
+/// Outcome of validating a caller-supplied `flow` name against the flow
+/// catalog. Returned by `classify_explicit_flow` so `handlers.rs` can
+/// translate the verdict into an HTTP response without owning trigger logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplicitFlowVerdict {
+    /// Flow exists and its trigger permits explicit user invocation —
+    /// handler should dispatch directly, skipping intent classification.
+    Dispatch,
+    /// No flow with this name is loaded.
+    NotFound,
+    /// Flow exists but is `Cron { schedule }` — rejected because cron flows
+    /// must not be user-invocable (they run on the scheduler only).
+    CronOnly,
+    /// Flow exists but its trigger is a system-only type (`Modality`,
+    /// `Idle`). Not user-invocable via `/flow`.
+    NotInvocable,
+}
+
+/// Sprint 063 P1: validate a caller-supplied flow name against the loaded
+/// flow catalog and classify whether it may be invoked explicitly.
+///
+/// Pure function — no I/O, no state mutation — so it is fully unit-testable.
+/// `handlers.rs` calls this first when `ChatCompletionRequest.flow` is set
+/// and branches on the returned verdict.
+pub fn classify_explicit_flow(flows: &[FlowConfig], name: &str) -> ExplicitFlowVerdict {
+    let Some(flow) = flows.iter().find(|f| f.name == name) else {
+        return ExplicitFlowVerdict::NotFound;
+    };
+
+    match &flow.trigger {
+        FlowTrigger::Manual | FlowTrigger::Intent(_) => ExplicitFlowVerdict::Dispatch,
+        FlowTrigger::Cron { .. } => ExplicitFlowVerdict::CronOnly,
+        FlowTrigger::Modality(_) | FlowTrigger::Idle { .. } => ExplicitFlowVerdict::NotInvocable,
     }
 }
 
@@ -1188,5 +1231,93 @@ mod tests {
         };
 
         assert!(engine.resolve_input(&input, "query", &outputs).is_err());
+    }
+
+    // ── Sprint 063 P1 — explicit /flow pinning gate ──────────────
+
+    fn fixture_flow(name: &str, trigger: FlowTrigger) -> FlowConfig {
+        FlowConfig {
+            name: name.to_string(),
+            trigger,
+            steps: vec![],
+            timeout_secs: 60,
+            max_step_output_chars: 4096,
+            loop_config: None,
+        }
+    }
+
+    /// P1 test 1: a manual-trigger flow dispatches — this proves explicit
+    /// invocation bypasses intent classification (the handler picks the
+    /// `Dispatch` branch before the router is ever consulted).
+    #[test]
+    fn test_explicit_flow_bypasses_classification() {
+        let flows = vec![fixture_flow(
+            "dream_exploration",
+            FlowTrigger::Manual,
+        )];
+        let verdict = classify_explicit_flow(&flows, "dream_exploration");
+        assert_eq!(verdict, ExplicitFlowVerdict::Dispatch);
+    }
+
+    /// P1 test 2: an unknown flow name is rejected with `NotFound`, which
+    /// `handlers.rs` translates into HTTP 400 `"flow not found: <name>"`.
+    #[test]
+    fn test_explicit_flow_unknown_returns_400() {
+        let flows = vec![fixture_flow(
+            "dream_exploration",
+            FlowTrigger::Manual,
+        )];
+        let verdict = classify_explicit_flow(&flows, "no_such_flow");
+        assert_eq!(verdict, ExplicitFlowVerdict::NotFound);
+    }
+
+    /// P1 test 3: a cron-triggered flow is rejected with `CronOnly`, which
+    /// `handlers.rs` translates into HTTP 400 `"flow '<name>' is cron-only,
+    /// not user-invocable"`. Cron flows must run from the scheduler only.
+    #[test]
+    fn test_explicit_flow_cron_only_rejected() {
+        let flows = vec![fixture_flow(
+            "dream_self_improvement",
+            FlowTrigger::Cron { schedule: "0 3 * * *".to_string() },
+        )];
+        let verdict = classify_explicit_flow(&flows, "dream_self_improvement");
+        assert_eq!(verdict, ExplicitFlowVerdict::CronOnly);
+    }
+
+    /// P1 test 4: a flow whose primary trigger is an intent can still be
+    /// invoked explicitly — the user may pin it for a single turn even if
+    /// it would normally auto-fire on that intent's keyword set.
+    #[test]
+    fn test_explicit_flow_intent_trigger_allowed() {
+        let flows = vec![fixture_flow(
+            "home_automation",
+            FlowTrigger::Intent("home_automation".to_string()),
+        )];
+        let verdict = classify_explicit_flow(&flows, "home_automation");
+        assert_eq!(verdict, ExplicitFlowVerdict::Dispatch);
+    }
+
+    /// P1 auxiliary: `Modality` and `Idle` triggers are system-only and
+    /// must be rejected. Modality flows auto-route on images; Idle flows
+    /// run from the scheduler. Neither is pinnable via `/flow`.
+    #[test]
+    fn test_explicit_flow_modality_and_idle_not_invocable() {
+        let modality = vec![fixture_flow(
+            "perceive",
+            FlowTrigger::Modality("omni".to_string()),
+        )];
+        assert_eq!(
+            classify_explicit_flow(&modality, "perceive"),
+            ExplicitFlowVerdict::NotInvocable,
+        );
+
+        let idle = vec![fixture_flow(
+            "dream_consolidate",
+            FlowTrigger::Idle { min_idle_secs: 300 },
+        )];
+        assert_eq!(
+            classify_explicit_flow(&idle, "dream_consolidate"),
+            ExplicitFlowVerdict::NotInvocable,
+        );
     }
 }

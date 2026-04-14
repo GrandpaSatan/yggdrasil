@@ -340,3 +340,173 @@ input[type="checkbox"] {
 
 .secret-status.set { background: #14532d; color: #86efac; }
 .secret-status.unset { background: #27272a; color: #71717a; }
+
+/* ── Mimir Vault subsection ── */
+.vault-section { margin-top: 0; }
+
+.vault-divider {
+  border-top: 1px solid #27272a;
+  margin: 16px 0;
+}
+
+.vault-empty {
+  font-size: 11px;
+  color: #52525b;
+  padding: 12px 0;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+}
+
+.vault-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+
+.vault-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  background: #0c0c0f;
+  border: 1px solid #27272a;
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.vault-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vault-key {
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  color: #e4e4e7;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-scope-badge {
+  font-size: 9px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  background: #1c1917;
+  border: 1px solid #3f3f46;
+  color: #a1a1aa;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.vault-tags {
+  font-size: 9px;
+  color: #71717a;
+  white-space: nowrap;
+}
+
+.vault-updated {
+  font-size: 9px;
+  color: #3f3f46;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.vault-value-mask {
+  font-size: 13px;
+  color: #3f3f46;
+  letter-spacing: 2px;
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  user-select: none;
+}
+
+.vault-row-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.vault-copy-btn.vault-copied {
+  background: #14532d;
+  border-color: #166534;
+  color: #86efac;
+}
+
+.vault-form-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+}
+
+.vault-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+}
+
+.vault-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vault-form-field.full {
+  grid-column: 1 / -1;
+}
+
+.vault-form-field label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #71717a;
+  font-weight: 500;
+}
+
+.vault-scope-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.vault-scope-option {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+
+.vault-scope-option input[type="radio"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.vault-scope-auto-label {
+  font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: #71717a;
+}
+
+.vault-scope-text {
+  width: 120px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.vault-scope-text:disabled {
+  opacity: 0.4;
+}

@@ -42,6 +42,10 @@
   let vsAvgHeight = 80;
   let vsObserver = null;
 
+  // P6c: render cache — skip Prism re-highlight when message content unchanged.
+  // Key: message array index. Invalidated on thread load (vsRenderCache.clear()).
+  const vsRenderCache = new Map(); // index -> { content, html }
+
   // P2 slash autocomplete state
   let slashMenuActive = false;
   let slashMenuIdx = 0;
@@ -444,7 +448,9 @@
     vsEnabled = true;
     vsMessages = messages;
 
+    // P6c: clear render cache on new thread load (message indices reset)
     if (vsHeights.length !== messages.length) {
+      vsRenderCache.clear();
       vsHeights = new Array(messages.length).fill(vsAvgHeight);
     }
 
@@ -470,7 +476,17 @@
     }
 
     for (let i = vsWindowStart; i < vsWindowEnd && i < vsMessages.length; i++) {
-      html += `<div data-vs-idx="${i}">${renderMessage(vsMessages[i])}</div>`;
+      // P6c: skip re-render when message content is unchanged (avoids Prism re-highlight churn)
+      const msg = vsMessages[i];
+      const cached = vsRenderCache.get(i);
+      const msgHtml = (cached && cached.content === msg.content)
+        ? cached.html
+        : (() => {
+            const h = renderMessage(msg);
+            vsRenderCache.set(i, { content: msg.content, html: h });
+            return h;
+          })();
+      html += `<div data-vs-idx="${i}">${msgHtml}</div>`;
     }
 
     if (botHeight > 0) {

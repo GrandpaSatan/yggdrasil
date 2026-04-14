@@ -16,6 +16,7 @@
     models: [],
     backends: [],
     secrets: {},
+    vault: { secrets: [], count: 0 },
   };
   let currentFlowName = null;
   let currentFlowDraft = null;
@@ -60,6 +61,14 @@
       case "secretUpdated":
         state.secrets[msg.key] = msg.set === true;
         renderSecrets();
+        break;
+      case "vaultList":
+        state.vault = { secrets: msg.secrets ?? [], count: msg.count ?? 0 };
+        renderVault();
+        break;
+      case "vaultClipboardCleared":
+        // Update any copy-button badge if present
+        updateVaultCopyBadge(msg.scope, msg.key, false);
         break;
     }
   });
@@ -449,6 +458,149 @@
   }
 
   // ─────────────────────────────────────────────────────────────
+  // VAULT subsection (Mimir AES-256-GCM vault)
+  // ─────────────────────────────────────────────────────────────
+
+  // Detect workspace scope: Yggdrasil regex or folder basename
+  function detectProjectScope() {
+    // The webview cannot read the filesystem directly.
+    // We embed the detected scope as a data attribute on the body
+    // (set by the extension host via the HTML template or postMessage state).
+    // Fallback: "project".
+    return state.endpoints?.detectedWorkspace ?? "project";
+  }
+
+  function initVaultForm() {
+    // Populate auto project label
+    const autoLabel = document.getElementById("vault-scope-project-auto-label");
+    if (autoLabel) autoLabel.textContent = detectProjectScope();
+
+    // Populate user label with os-user placeholder (extension host sets via state)
+    const userLabel = document.getElementById("vault-scope-user-label");
+    if (userLabel) userLabel.textContent = state.endpoints?.osUser ?? "os-user";
+
+    // Enable/disable project-custom text field when radio changes
+    const radios = document.querySelectorAll('input[name="vault-scope"]');
+    const customInput = document.getElementById("vault-scope-project-custom");
+    radios.forEach((r) => {
+      r.addEventListener("change", () => {
+        if (customInput) {
+          customInput.disabled = r.value !== "project-custom" || !r.checked;
+        }
+      });
+    });
+  }
+
+  function resolveVaultScope() {
+    const selected = document.querySelector('input[name="vault-scope"]:checked');
+    if (!selected) return "global";
+    const val = selected.value;
+    if (val === "global") return "global";
+    if (val === "project-auto") return `project:${detectProjectScope()}`;
+    if (val === "project-custom") {
+      const custom = document.getElementById("vault-scope-project-custom")?.value?.trim();
+      return custom ? `project:${custom}` : "project";
+    }
+    if (val === "user") {
+      const userLabel = document.getElementById("vault-scope-user-label")?.textContent?.trim();
+      return userLabel ? `user:${userLabel}` : "user";
+    }
+    return "global";
+  }
+
+  function renderVault() {
+    const container = document.getElementById("vault-list");
+    if (!container) return;
+
+    const secrets = state.vault?.secrets ?? [];
+    if (secrets.length === 0) {
+      container.innerHTML = '<div class="vault-empty">No secrets stored in Mimir vault.</div>';
+      return;
+    }
+
+    container.innerHTML = secrets.map((s) => {
+      const tagsHtml = s.tags && s.tags.length > 0
+        ? `<span class="vault-tags">${esc(s.tags.join(", "))}</span>`
+        : "";
+      const scope = esc(s.scope ?? "global");
+      const key = esc(s.key ?? "");
+      const updatedAt = s.updated_at
+        ? new Date(s.updated_at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })
+        : "";
+      return `<div class="vault-row" data-scope="${scope}" data-key="${key}">
+        <div class="vault-row-meta">
+          <span class="vault-key">${key}</span>
+          <span class="vault-scope-badge">${scope}</span>
+          ${tagsHtml}
+          ${updatedAt ? `<span class="vault-updated">${esc(updatedAt)}</span>` : ""}
+        </div>
+        <div class="vault-value-mask">•••••</div>
+        <div class="vault-row-actions">
+          <button class="btn vault-copy-btn" data-vault-copy-key="${key}" data-vault-copy-scope="${s.scope ?? "global"}" title="Copy to clipboard (clears in 30s)">copy</button>
+          <button class="btn danger vault-del-btn" data-vault-del-key="${key}" data-vault-del-scope="${s.scope ?? "global"}" title="Delete secret">del</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    // Wire copy buttons
+    container.querySelectorAll(".vault-copy-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.vaultCopyKey;
+        const scope = btn.dataset.vaultCopyScope;
+        updateVaultCopyBadge(scope, key, true);
+        vscode.postMessage({ type: "vaultCopy", key, scope });
+      });
+    });
+
+    // Wire delete buttons
+    container.querySelectorAll(".vault-del-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = btn.dataset.vaultDelKey;
+        const scope = btn.dataset.vaultDelScope;
+        if (confirm(`Delete vault secret "${key}" (scope: ${scope})?`)) {
+          vscode.postMessage({ type: "vaultDelete", key, scope });
+        }
+      });
+    });
+  }
+
+  function updateVaultCopyBadge(scope, key, active) {
+    const btn = document.querySelector(
+      `[data-vault-copy-key="${CSS.escape(key)}"][data-vault-copy-scope="${CSS.escape(scope)}"]`
+    );
+    if (!btn) return;
+    if (active) {
+      btn.textContent = "copied";
+      btn.classList.add("vault-copied");
+    } else {
+      btn.textContent = "copy";
+      btn.classList.remove("vault-copied");
+    }
+  }
+
+  // Save button
+  document.getElementById("vault-save")?.addEventListener("click", () => {
+    const key = document.getElementById("vault-key")?.value?.trim();
+    const value = document.getElementById("vault-value")?.value;
+    const scope = resolveVaultScope();
+    const tags = document.getElementById("vault-tags")?.value?.trim() ?? "";
+
+    if (!key) { showToast("Key is required", "fail"); return; }
+    if (!value) { showToast("Value is required", "fail"); return; }
+
+    vscode.postMessage({ type: "vaultSet", key, value, scope, tags });
+
+    // Clear the value field immediately — never leave plaintext in DOM
+    const valueEl = document.getElementById("vault-value");
+    if (valueEl) valueEl.value = "";
+  });
+
+  // Refresh button
+  document.getElementById("vault-refresh")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "vaultList" });
+  });
+
+  // ─────────────────────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────────────────────
   function setVal(id, v) {
@@ -485,6 +637,8 @@
     renderFlowEditor();
     renderNotifications();
     renderSecrets();
+    initVaultForm();
+    renderVault();
   }
 
   // Ready

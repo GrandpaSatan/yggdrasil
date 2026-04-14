@@ -20,6 +20,16 @@ import * as http from "http";
 import * as vscode from "vscode";
 import type { OutputChannelManager } from "./outputChannel";
 
+// ─── Lock file types ──────────────────────────────────────────
+interface LockFileContent {
+  pid: number;
+  ts: number;   // unix ms
+  hostname: string;
+}
+
+/** How long a lock is considered fresh (ms). After this, any writer steals it. */
+const LOCK_TTL_MS = 30_000;
+
 export type HealthStatus = "green" | "yellow" | "red";
 export type WriteMode = "replace" | "merge";
 
@@ -53,6 +63,7 @@ export class HookManager implements vscode.Disposable {
   private deployDir: string;
   private scriptTarget: string;
   private settingsPath: string;
+  private lockPath: string;
   private hookChannel: vscode.OutputChannel;
 
   constructor(
@@ -62,7 +73,97 @@ export class HookManager implements vscode.Disposable {
     this.deployDir = path.join(os.homedir(), ".yggdrasil");
     this.scriptTarget = path.join(this.deployDir, "ygg-memory.sh");
     this.settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+    this.lockPath = path.join(os.homedir(), ".claude", ".yggdrasil-hook.lock");
     this.hookChannel = vscode.window.createOutputChannel("yggdrasil.hookManager");
+  }
+
+  // ─── Lock file helpers ────────────────────────────────────────
+
+  /**
+   * Try to acquire the PID-stamped lock.
+   * Returns true if the lock was acquired; false if another live process holds it.
+   *
+   * Strategy:
+   *  1. Atomic create with "wx" flag — fails if file exists.
+   *  2. If exists: read it. If PID is dead (kill(pid, 0) throws) OR ts is older
+   *     than LOCK_TTL_MS → steal the lock (overwrite).
+   *  3. Else: skip write, log the holder PID.
+   */
+  public tryAcquireLock(): boolean {
+    const payload = JSON.stringify({
+      pid: process.pid,
+      ts: Date.now(),
+      hostname: os.hostname(),
+    } satisfies LockFileContent);
+
+    // Attempt atomic create
+    try {
+      fs.writeFileSync(this.lockPath, payload, { flag: "wx", encoding: "utf-8" });
+      return true; // created — we own the lock
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        // Unexpected error — fail safe, allow write
+        this.hookChannel.appendLine(
+          `hookManager: unexpected lock error (${String(err)}), proceeding without lock`
+        );
+        return true;
+      }
+    }
+
+    // File exists — read it and decide
+    let existing: LockFileContent | null = null;
+    try {
+      existing = JSON.parse(fs.readFileSync(this.lockPath, "utf-8")) as LockFileContent;
+    } catch {
+      // Corrupt/empty lock — steal it
+      this.writeLock(payload);
+      return true;
+    }
+
+    // Check TTL
+    if (Date.now() - existing.ts > LOCK_TTL_MS) {
+      this.hookChannel.appendLine(
+        `hookManager: lock held by PID ${existing.pid} is stale (${LOCK_TTL_MS}ms TTL exceeded), stealing`
+      );
+      this.writeLock(payload);
+      return true;
+    }
+
+    // Check if holding PID is still alive
+    const pidAlive = isPidAlive(existing.pid);
+    if (!pidAlive) {
+      this.hookChannel.appendLine(
+        `hookManager: lock held by PID ${existing.pid} (dead), stealing`
+      );
+      this.writeLock(payload);
+      return true;
+    }
+
+    // Live process holds the lock
+    this.hookChannel.appendLine(
+      `hookManager: lock held by PID ${existing.pid} on ${existing.hostname}, skipping this window`
+    );
+    return false;
+  }
+
+  /** Release the lock (only if we still own it). */
+  public releaseLock(): void {
+    try {
+      const content = JSON.parse(fs.readFileSync(this.lockPath, "utf-8")) as LockFileContent;
+      if (content.pid === process.pid) {
+        fs.unlinkSync(this.lockPath);
+      }
+    } catch {
+      // Lock already gone or unreadable — no-op
+    }
+  }
+
+  private writeLock(payload: string): void {
+    try {
+      fs.writeFileSync(this.lockPath, payload, { encoding: "utf-8" });
+    } catch {
+      // Non-fatal — worst case two windows race but we've tried our best
+    }
   }
 
   async initialize(): Promise<void> {
@@ -155,28 +256,38 @@ export class HookManager implements vscode.Disposable {
       return;
     }
 
-    // Backup before writing.
-    if (fs.existsSync(this.settingsPath)) {
-      const backupPath = `${this.settingsPath}.bak.${Date.now()}`;
-      fs.copyFileSync(this.settingsPath, backupPath);
+    // Acquire lock before writing — prevents multi-window race.
+    const lockAcquired = this.tryAcquireLock();
+    if (!lockAcquired) {
+      return; // Another VSCode window is writing; skip — it will write consistent state.
     }
 
-    const merged = { ...existing, hooks: applied };
-    fs.writeFileSync(
-      this.settingsPath,
-      JSON.stringify(merged, null, 2) + "\n",
-      "utf-8"
-    );
+    try {
+      // Backup before writing.
+      if (fs.existsSync(this.settingsPath)) {
+        const backupPath = `${this.settingsPath}.bak.${Date.now()}`;
+        fs.copyFileSync(this.settingsPath, backupPath);
+      }
 
-    const hookCount = Object.values(applied).reduce(
-      (sum, arr) => sum + arr.reduce((n, m) => n + m.hooks.length, 0),
-      0
-    );
-    const msg = `hookManager: wrote ${hookCount} hooks (managed=true, mode=${mode})`;
-    this.hookChannel.appendLine(msg);
-    this.outputChannel.append(msg);
-    this.outputChannel.append(`  Path: ${this.settingsPath}`);
-    this.outputChannel.append(`  Script: ${this.scriptTarget}`);
+      const merged = { ...existing, hooks: applied };
+      fs.writeFileSync(
+        this.settingsPath,
+        JSON.stringify(merged, null, 2) + "\n",
+        "utf-8"
+      );
+
+      const hookCount = Object.values(applied).reduce(
+        (sum, arr) => sum + arr.reduce((n, m) => n + m.hooks.length, 0),
+        0
+      );
+      const msg = `hookManager: wrote ${hookCount} hooks (managed=true, mode=${mode})`;
+      this.hookChannel.appendLine(msg);
+      this.outputChannel.append(msg);
+      this.outputChannel.append(`  Path: ${this.settingsPath}`);
+      this.outputChannel.append(`  Script: ${this.scriptTarget}`);
+    } finally {
+      this.releaseLock();
+    }
   }
 
   /**
@@ -476,6 +587,24 @@ export class HookManager implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.releaseLock();
     this.hookChannel.dispose();
+  }
+}
+
+/**
+ * Check if a PID is alive by sending signal 0.
+ * Returns false if the process does not exist (ESRCH).
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ESRCH") {
+      return false;
+    }
+    // EPERM means the process exists but we can't signal it — still alive
+    return true;
   }
 }

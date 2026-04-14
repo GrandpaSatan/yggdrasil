@@ -224,7 +224,7 @@
       "name": "dream_self_improvement",
       "trigger": {
         "cron": {
-          "schedule": "every_1440m"
+          "schedule": "0 3 * * *"
         }
       },
       "timeout_secs": 600,

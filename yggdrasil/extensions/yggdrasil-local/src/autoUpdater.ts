@@ -195,14 +195,18 @@ export class AutoUpdater implements vscode.Disposable {
   }
 
   private isNewer(remote: string, current: string): boolean {
-    const r = remote.split(".").map(Number);
-    const c = current.split(".").map(Number);
+    const strip = (v: string) => v.split("-")[0].split("+")[0];
+    const r = strip(remote).split(".").map((s) => parseInt(s, 10) || 0);
+    const c = strip(current).split(".").map((s) => parseInt(s, 10) || 0);
     for (let i = 0; i < 3; i++) {
       const rv = r[i] || 0;
       const cv = c[i] || 0;
       if (rv > cv) return true;
       if (rv < cv) return false;
     }
+    const rp = remote.includes("-");
+    const cp = current.includes("-");
+    if (!rp && cp) return true;
     return false;
   }
 

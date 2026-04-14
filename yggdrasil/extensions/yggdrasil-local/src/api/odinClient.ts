@@ -42,6 +42,12 @@ export interface ChatRequest {
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
+  /**
+   * Sprint 063 P1: explicit flow pin. When set, Odin bypasses intent
+   * classification and dispatches directly to the named flow. The flow's
+   * trigger must be `Manual` or `Intent(_)`; cron-only flows return 400.
+   */
+  flow?: string;
 }
 
 /**

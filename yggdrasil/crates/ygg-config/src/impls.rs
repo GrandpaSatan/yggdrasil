@@ -170,6 +170,7 @@ mod tests {
                 default_model: "test".to_string(),
                 default_backend: None,
                 rules: vec![],
+                intent_default: None,
             },
             mimir: MimirClientConfig {
                 url: "http://localhost:9090".to_string(),
@@ -189,6 +190,7 @@ mod tests {
             web_search: None,
             llm_router: None,
             flows: vec![],
+            cameras: None,
         }
     }
 

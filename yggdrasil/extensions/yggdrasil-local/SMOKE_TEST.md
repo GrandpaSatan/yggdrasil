@@ -227,6 +227,33 @@ on Munin + Hugin.
 - [ ] Memory push: after a chat, check `tail /tmp/ygg-hooks/memory-events.jsonl`
       → new `sidecar→ingest` pair appears with `stored:true`.
 
+## 15. Voice Push-to-Talk Round-Trip (Sprint 062 feature, Sprint 063 E2E)
+
+Manual only — requires a physical microphone. Not automated in CI.
+
+**Prereqs:** Odin running Sprint 062 build; `yggdrasil.voice.enabled=true` in
+settings; Odin voice WebSocket reachable at `ws://10.0.65.8:8080/v1/voice`.
+
+- [ ] Set `yggdrasil.voice.enabled=true` in extension settings (Settings panel →
+      Endpoints tab or via VS Code settings JSON).
+- [ ] Reload the chat panel — mic button appears in the chat titlebar.
+- [ ] Click mic button → browser microphone permission prompt appears on first run.
+      Grant the permission.
+- [ ] Hold (or toggle) mic button → status indicator shows `●REC` state.
+- [ ] Release mic → status transitions to `processing` → transcript text appears
+      in the chat input or as a user message within ~2 s.
+- [ ] Assistant response generates → TTS audio plays back through system audio
+      within ~2 s of the response completing.
+- [ ] Keyboard hotkey `Ctrl+Shift+Space` (macOS: `Cmd+Shift+Space`) triggers the
+      same record→transcribe→respond flow as the mic button.
+- [ ] Simulate network interruption mid-session (e.g.
+      `nmcli device disconnect <iface>` then reconnect, or disable/enable Wi-Fi)
+      — the voice WebSocket reconnects within 60 s and the same `session_id` is
+      reused. Verify in Odin logs: `journalctl -u yggdrasil-odin | grep session_id`.
+- [ ] During the entire voice session, the VS Code Developer Tools console
+      (`Help → Toggle Developer Tools → Console`) shows **zero** lines beginning
+      with `Content Security Policy` or `Refused to load`.
+
 ---
 
 ## Result
