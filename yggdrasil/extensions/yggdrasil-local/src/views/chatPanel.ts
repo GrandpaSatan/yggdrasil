@@ -11,7 +11,7 @@
  */
 
 import * as vscode from "vscode";
-import { OdinClient, ChatMessage } from "../api/odinClient";
+import { OdinClient, ChatMessage, SwarmEvent } from "../api/odinClient";
 import { ChatHistory, ChatMsg, ChatThread } from "../chat/history";
 import { preprocess } from "../chat/slashCommands";
 import { ChatSeed, getSelectionContext } from "../chat/codeActions";
@@ -45,10 +45,33 @@ export class ChatPanel {
 
     this.panel.onDidDispose(() => {
       this.abortCurrent?.();
+      this.configSub?.dispose();
       ChatPanel.instance = undefined;
     });
 
     this.panel.webview.onDidReceiveMessage((m) => this.handleMessage(m));
+
+    this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        e.affectsConfiguration("yggdrasil.chat.theme") ||
+        e.affectsConfiguration("yggdrasil.chat.crtEffects") ||
+        e.affectsConfiguration("yggdrasil.chat.font")
+      ) {
+        const t = this.readChatTheme();
+        this.panel.webview.postMessage({ type: "themeChange", ...t });
+      }
+    });
+  }
+
+  private configSub: vscode.Disposable | undefined;
+
+  private readChatTheme(): { theme: string; crtEffects: boolean; font: string } {
+    const cfg = vscode.workspace.getConfiguration("yggdrasil.chat");
+    return {
+      theme: cfg.get<string>("theme", "classic"),
+      crtEffects: cfg.get<boolean>("crtEffects", false),
+      font: cfg.get<string>("font", "system"),
+    };
   }
 
   static show(context: vscode.ExtensionContext, odin: OdinClient, history: ChatHistory, seed?: ChatSeed): ChatPanel {
@@ -266,6 +289,11 @@ export class ChatPanel {
         (delta) => {
           if (aborted) return;
           this.panel.webview.postMessage({ type: "streamDelta", delta });
+        },
+        undefined,
+        (swarmEvent: SwarmEvent) => {
+          if (aborted) return;
+          this.panel.webview.postMessage({ type: "swarmEvent", event: swarmEvent });
         }
       );
       if (!aborted) {
@@ -325,13 +353,29 @@ export class ChatPanel {
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, "media");
     const cssUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "chat.css"));
     const jsUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "chat.js"));
+    const themePipboyUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "themes", "pipboy-green.css")
+    );
+    const themeBbsUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "themes", "bbs-cyan.css")
+    );
+    const crtUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "themes", "crt-effects.css")
+    );
+    const retroTypographyUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "themes", "retro-typography.css")
+    );
     const nonce = getNonce();
     const csp = [
       `default-src 'none'`,
       `img-src ${this.panel.webview.cspSource} data:`,
       `style-src ${this.panel.webview.cspSource} 'unsafe-inline'`,
+      `font-src ${this.panel.webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
     ].join("; ");
+
+    const { theme, crtEffects, font } = this.readChatTheme();
+    const crtOverlayHtml = crtEffects ? `<div class="crt-overlay" id="crt-overlay"></div>` : "";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -340,8 +384,14 @@ export class ChatPanel {
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <title>Yggdrasil Chat</title>
 <link rel="stylesheet" href="${cssUri}">
+<link rel="stylesheet" href="${crtUri}">
+<link rel="stylesheet" href="${themePipboyUri}">
+<link rel="stylesheet" href="${themeBbsUri}">
+<link rel="stylesheet" href="${retroTypographyUri}">
 </head>
-<body>
+<body data-theme="${theme}" data-font="${font}" data-crt="${crtEffects ? "on" : "off"}">
+
+${crtOverlayHtml}
 
 <div class="header">
   <div class="thread-picker">

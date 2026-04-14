@@ -1,0 +1,70 @@
+{
+  "_comment": "Sprint 061 — Swarm chat: drafter streams to user, reviewer critiques in parallel under the thinking fold, refiner runs only if reviewer does NOT say LGTM. Drafter and refiner share the same system prompt and the drafter's user_message is the prefix of the refiner's input, so Ollama's KV prefix cache hits between them (same model on Munin).",
+  "_models": {
+    "drafter": "nemotron-3-nano:4b @ Munin — fast concise answers; streams to user as assistant role",
+    "reviewer": "gemma4:e4b @ Hugin — different architecture catches different issues; streams to thinking fold",
+    "refiner": "nemotron-3-nano:4b @ Munin — same model as drafter → KV prefix cache hit for ~50ms prefill savings"
+  },
+  "_latency": "L1 drafter streams immediately (TTFT ~200-400ms); L4 LGTM sentinel short-circuits refiner for clean drafts; L3 deterministic prefix shared between drafter and refiner.",
+  "flows": [
+    {
+      "name": "swarm_chat",
+      "trigger": {
+        "intent": "chat"
+      },
+      "timeout_secs": 120,
+      "max_step_output_chars": 8000,
+      "steps": [
+        {
+          "name": "draft",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are Yggdrasil, a concise and accurate assistant. Answer the user's question directly. Prefer short, well-structured responses over long ones.",
+          "input": "user_message",
+          "output_key": "draft",
+          "max_tokens": 1024,
+          "temperature": 0.3,
+          "stream_role": "assistant",
+          "stream_label": "Thinking…"
+        },
+        {
+          "name": "review",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a concise reviewer. Read the draft below. If it is accurate, complete, and clearly answers the user's question, reply with exactly LGTM. Otherwise, list specific concrete corrections (one per line, starting with a dash). Do not repeat the draft. Do not praise the draft. Be terse.",
+          "input": {
+            "template": {
+              "template": "User question: {user_message}\n\nDraft answer:\n{draft.output}"
+            }
+          },
+          "output_key": "review",
+          "max_tokens": 512,
+          "temperature": 0.1,
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Cross-checking…",
+          "parallel_with": "draft",
+          "watches": "draft",
+          "sentinel": "(?i)\\bLGTM\\b",
+          "sentinel_skips": ["refine"]
+        },
+        {
+          "name": "refine",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You are Yggdrasil, a concise and accurate assistant. Answer the user's question directly. Prefer short, well-structured responses over long ones.",
+          "input": {
+            "template": {
+              "template": "{user_message}\n\n<!-- prior draft -->\n{draft.output}\n\n<!-- reviewer notes -->\n{review.output}"
+            }
+          },
+          "output_key": "final",
+          "max_tokens": 1024,
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Correcting…"
+        }
+      ]
+    }
+  ]
+}

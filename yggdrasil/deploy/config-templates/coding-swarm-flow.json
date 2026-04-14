@@ -30,7 +30,9 @@
           "input": "user_message",
           "output_key": "generated_code",
           "max_tokens": 4096,
-          "temperature": 0.2
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Generating…"
         },
         {
           "name": "review",
@@ -45,7 +47,11 @@
           "output_key": "review",
           "max_tokens": 1024,
           "temperature": 0.1,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Reviewing…",
+          "sentinel": "(?i)\\b(LGTM|APPROVED|NO_ISSUES)\\b",
+          "sentinel_skips": ["refine"]
         },
         {
           "name": "refine",
@@ -59,7 +65,9 @@
           },
           "output_key": "refined_code",
           "max_tokens": 4096,
-          "temperature": 0.1
+          "temperature": 0.1,
+          "stream_role": "assistant",
+          "stream_label": "Refining…"
         }
       ]
     }

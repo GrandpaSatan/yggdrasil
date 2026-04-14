@@ -1,5 +1,5 @@
 {
-  "_comment": "Sprint 058 \u2014 Code QA flow. Fetch code, analyze coverage, write tests, validate. Reviewer != coder.",
+  "_comment": "Sprint 058 — Code QA flow. Fetch code, analyze coverage, write tests, validate. Reviewer != coder.",
   "flows": [
     {
       "name": "code_qa",
@@ -28,7 +28,9 @@
             "temperature": 0.1,
             "tool_output_max_chars": 4000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Fetching code…"
         },
         {
           "name": "analyze_coverage",
@@ -43,7 +45,9 @@
           "output_key": "coverage_analysis",
           "max_tokens": 2048,
           "temperature": 0.2,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Analyzing coverage…"
         },
         {
           "name": "write_tests",
@@ -57,7 +61,9 @@
           },
           "output_key": "test_code",
           "max_tokens": 4096,
-          "temperature": 0.2
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Writing tests…"
         },
         {
           "name": "validate",
@@ -72,7 +78,9 @@
           "output_key": "validation",
           "max_tokens": 1024,
           "temperature": 0.1,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Validating…"
         }
       ]
     }

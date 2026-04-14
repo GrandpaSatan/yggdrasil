@@ -448,6 +448,204 @@ pub async fn stream_chat_openai(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Token-level streaming helpers (Sprint 061)
+// ─────────────────────────────────────────────────────────────────
+
+/// Incremental token event emitted by the low-level token-streaming helpers.
+/// Used by the flow engine to forward per-token content to its StreamEvent sink.
+#[derive(Debug, Clone)]
+pub enum TokenEvent {
+    /// A non-empty content fragment (one or more tokens).
+    Content(String),
+    /// Stream finished. Carries the full accumulated text for post-stream
+    /// consumers (engram store, session update, flow step output).
+    Done(String),
+}
+
+/// Stream content tokens from an Ollama `/api/chat` backend.
+///
+/// Mirrors [`stream_chat`] but emits `TokenEvent`s instead of SSE `Event`s,
+/// suitable for the flow engine which wraps tokens in higher-level
+/// `StreamEvent`s. Owned arguments keep the returned stream `'static`.
+pub async fn stream_tokens_ollama(
+    client: reqwest::Client,
+    backend_url: String,
+    request: OllamaChatRequest,
+) -> Result<impl Stream<Item = Result<TokenEvent, OdinError>>, OdinError> {
+    let url = format!("{backend_url}/api/chat");
+    tracing::debug!(url = %url, model = %request.model, "token-streaming chat request to Ollama");
+
+    let response = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("ollama connection failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(OdinError::Upstream(format!(
+            "ollama returned {status}: {body}"
+        )));
+    }
+
+    let mut byte_buf: Vec<u8> = Vec::new();
+    let accumulator: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let acc_clone = accumulator.clone();
+    let byte_stream = response.bytes_stream();
+
+    let token_stream = byte_stream
+        .map(move |chunk_result| -> Vec<Result<TokenEvent, OdinError>> {
+            let bytes: Bytes = match chunk_result {
+                Ok(b) => b,
+                Err(e) => {
+                    return vec![Err(OdinError::Upstream(format!(
+                        "stream read error: {e}"
+                    )))];
+                }
+            };
+            byte_buf.extend_from_slice(&bytes);
+
+            const MAX_LINE_BUF: usize = 10 * 1024 * 1024;
+            if byte_buf.len() > MAX_LINE_BUF {
+                byte_buf.clear();
+                return vec![Err(OdinError::Upstream(
+                    "stream line buffer exceeded 10MB — aborting".to_string(),
+                ))];
+            }
+
+            let mut events = Vec::new();
+            while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                let line_bytes = byte_buf.drain(..=pos).collect::<Vec<u8>>();
+                let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+
+                let stream_line: OllamaStreamLine = match serde_json::from_str(&line) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::warn!(line = %line, error = %e, "failed to parse Ollama stream line — skipping");
+                        continue;
+                    }
+                };
+
+                let done = stream_line.done;
+                let content = stream_line.message.content.clone();
+
+                if !content.is_empty() {
+                    if let Ok(mut acc) = acc_clone.lock() {
+                        acc.push_str(&content);
+                    }
+                    events.push(Ok(TokenEvent::Content(content)));
+                }
+
+                if done {
+                    let full = acc_clone.lock().map(|g| g.clone()).unwrap_or_default();
+                    events.push(Ok(TokenEvent::Done(full)));
+                }
+            }
+            events
+        })
+        .flat_map(futures::stream::iter);
+
+    Ok(token_stream)
+}
+
+/// Stream content tokens from an OpenAI-compatible `/v1/chat/completions`
+/// backend. Parses SSE data frames and extracts `choices[0].delta.content`.
+pub async fn stream_tokens_openai(
+    client: reqwest::Client,
+    backend_url: String,
+    request: crate::openai::ChatCompletionRequest,
+) -> Result<impl Stream<Item = Result<TokenEvent, OdinError>>, OdinError> {
+    let url = format!("{backend_url}/v1/chat/completions");
+    tracing::debug!(url = %url, "token-streaming chat request to OpenAI-compatible backend");
+
+    let response = client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| OdinError::Upstream(format!("openai backend connection failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(OdinError::Upstream(format!(
+            "openai backend returned {status}: {body}"
+        )));
+    }
+
+    let mut byte_buf: Vec<u8> = Vec::new();
+    let accumulator: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let acc_clone = accumulator.clone();
+    let byte_stream = response.bytes_stream();
+
+    let token_stream = byte_stream
+        .map(move |chunk_result| -> Vec<Result<TokenEvent, OdinError>> {
+            let bytes: Bytes = match chunk_result {
+                Ok(b) => b,
+                Err(e) => {
+                    return vec![Err(OdinError::Upstream(format!(
+                        "stream read error: {e}"
+                    )))];
+                }
+            };
+            byte_buf.extend_from_slice(&bytes);
+
+            const MAX_LINE_BUF: usize = 10 * 1024 * 1024;
+            if byte_buf.len() > MAX_LINE_BUF {
+                byte_buf.clear();
+                return vec![Err(OdinError::Upstream(
+                    "stream line buffer exceeded 10MB — aborting".to_string(),
+                ))];
+            }
+
+            let mut events = Vec::new();
+            while let Some(pos) = byte_buf.iter().position(|&b| b == b'\n') {
+                let line_bytes = byte_buf.drain(..=pos).collect::<Vec<u8>>();
+                let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+
+                let data = if let Some(stripped) = line.strip_prefix("data: ") {
+                    stripped.to_string()
+                } else if let Some(stripped) = line.strip_prefix("data:") {
+                    stripped.to_string()
+                } else {
+                    continue;
+                };
+
+                if data == "[DONE]" {
+                    let full = acc_clone.lock().map(|g| g.clone()).unwrap_or_default();
+                    events.push(Ok(TokenEvent::Done(full)));
+                    continue;
+                }
+
+                if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data) {
+                    if let Some(choice) = chunk.choices.first() {
+                        if let Some(ref content) = choice.delta.content {
+                            if !content.is_empty() {
+                                if let Ok(mut acc) = acc_clone.lock() {
+                                    acc.push_str(content);
+                                }
+                                events.push(Ok(TokenEvent::Content(content.clone())));
+                            }
+                        }
+                    }
+                }
+            }
+            events
+        })
+        .flat_map(futures::stream::iter);
+
+    Ok(token_stream)
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Non-streaming chat (OpenAI-compatible backend)
 // ─────────────────────────────────────────────────────────────────
 

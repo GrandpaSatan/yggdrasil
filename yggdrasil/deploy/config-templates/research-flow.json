@@ -7,7 +7,9 @@
   "flows": [
     {
       "name": "research",
-      "trigger": { "intent": "research" },
+      "trigger": {
+        "intent": "research"
+      },
       "timeout_secs": 600,
       "max_step_output_chars": 16000,
       "steps": [
@@ -20,30 +22,46 @@
           "output_key": "decompose",
           "max_tokens": 512,
           "temperature": 0.3,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Decomposing…"
         },
         {
           "name": "plan",
           "backend": "hugin-ollama",
           "model": "mollysama/rwkv-7-g1e:2.9b",
           "system_prompt": "You are a research planner. Given sub-questions, decide which search sources to use for each: \"memory\" (past knowledge/engrams), \"code\" (codebase search), \"documents\" (ingested docs), or \"web\" (internet search). Output a JSON array: [{\"question\": \"...\", \"sources\": [\"memory\", \"web\"]}]",
-          "input": { "template": { "template": "Original query: {user_message}\n\nSub-questions:\n{decompose.output}\n\nCreate a search plan for each sub-question." } },
+          "input": {
+            "template": {
+              "template": "Original query: {user_message}\n\nSub-questions:\n{decompose.output}\n\nCreate a search plan for each sub-question."
+            }
+          },
           "output_key": "plan",
           "max_tokens": 1024,
           "temperature": 0.2,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Planning searches…"
         },
         {
           "name": "search_internal",
           "backend": "hugin-ollama",
           "model": "gemma4:e4b",
           "system_prompt": "You are a research assistant with access to memory and code search tools. Execute the search plan for internal sources. Call the appropriate tools for each sub-question. Compile all findings into a structured summary organized by sub-question.",
-          "input": { "template": { "template": "Search plan:\n{plan.output}\n\nExecute searches for internal sources (memory, code). Use the available tools to gather information for each sub-question." } },
+          "input": {
+            "template": {
+              "template": "Search plan:\n{plan.output}\n\nExecute searches for internal sources (memory, code). Use the available tools to gather information for each sub-question."
+            }
+          },
           "output_key": "search_internal",
           "max_tokens": 4096,
           "temperature": 0.2,
           "think": false,
-          "tools": ["query_memory", "search_code", "memory_timeline"],
+          "tools": [
+            "query_memory",
+            "search_code",
+            "memory_timeline"
+          ],
           "agent_config": {
             "max_iterations": 5,
             "max_tool_calls_total": 15,
@@ -52,19 +70,27 @@
             "temperature": 0.2,
             "tool_output_max_chars": 4000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Searching internal…"
         },
         {
           "name": "search_external",
           "backend": "hugin-ollama",
           "model": "gemma4:e4b",
           "system_prompt": "You are a web research assistant. Execute web searches for the sub-questions that require external information. Call web_search for each relevant query. Summarize findings per sub-question. If web_search is unavailable, summarize what you know from context.",
-          "input": { "template": { "template": "Search plan:\n{plan.output}\n\nExecute web searches for sub-questions marked for \"web\" source." } },
+          "input": {
+            "template": {
+              "template": "Search plan:\n{plan.output}\n\nExecute web searches for sub-questions marked for \"web\" source."
+            }
+          },
           "output_key": "search_external",
           "max_tokens": 4096,
           "temperature": 0.2,
           "think": false,
-          "tools": ["web_search"],
+          "tools": [
+            "web_search"
+          ],
           "agent_config": {
             "max_iterations": 3,
             "max_tool_calls_total": 6,
@@ -73,30 +99,48 @@
             "temperature": 0.2,
             "tool_output_max_chars": 4000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Searching web…"
         },
         {
           "name": "filter",
           "backend": "hugin-ollama",
           "model": "mollysama/rwkv-7-g1e:2.9b",
           "system_prompt": "You are a research editor. Evaluate the relevance and reliability of each finding. Remove duplicates, flag contradictions, and rank by relevance to the original question. Output only the filtered, high-quality findings organized by topic.",
-          "input": { "accumulated": { "keys": ["search_internal", "search_external"], "separator": "\n\n--- External search results ---\n\n" } },
+          "input": {
+            "accumulated": {
+              "keys": [
+                "search_internal",
+                "search_external"
+              ],
+              "separator": "\n\n--- External search results ---\n\n"
+            }
+          },
           "output_key": "filter",
           "max_tokens": 4096,
           "temperature": 0.1,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Filtering results…"
         },
         {
           "name": "store",
           "backend": "hugin-ollama",
           "model": "gemma4:e4b",
           "system_prompt": "Store the research result as a memory engram. Call store_memory with: cause = the original research question, effect = a concise summary of key findings (max 500 words), tags = [\"research\", \"flow:research\"] plus 2-3 topic-specific tags.",
-          "input": { "template": { "template": "Original question: {user_message}\n\nFiltered findings:\n{filter.output}\n\nStore a concise summary of these research findings as a memory engram." } },
+          "input": {
+            "template": {
+              "template": "Original question: {user_message}\n\nFiltered findings:\n{filter.output}\n\nStore a concise summary of these research findings as a memory engram."
+            }
+          },
           "output_key": "store",
           "max_tokens": 1024,
           "temperature": 0.2,
           "think": false,
-          "tools": ["store_memory"],
+          "tools": [
+            "store_memory"
+          ],
           "agent_config": {
             "max_iterations": 2,
             "max_tool_calls_total": 2,
@@ -105,18 +149,26 @@
             "temperature": 0.2,
             "tool_output_max_chars": 1000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Storing engram…"
         },
         {
           "name": "synthesize",
           "backend": "hugin-ollama",
           "model": "mollysama/rwkv-7-g1e:2.9b",
           "system_prompt": "You are a research synthesizer. Combine the filtered research findings into a comprehensive, well-structured answer to the original question. Use clear sections with headers. Cite sources where available. If findings conflict, note the disagreement.",
-          "input": { "template": { "template": "Original question: {user_message}\n\nFiltered research findings:\n{filter.output}\n\nSynthesize a comprehensive answer." } },
+          "input": {
+            "template": {
+              "template": "Original question: {user_message}\n\nFiltered research findings:\n{filter.output}\n\nSynthesize a comprehensive answer."
+            }
+          },
           "output_key": "synthesize",
           "max_tokens": 8192,
           "temperature": 0.4,
-          "think": false
+          "think": false,
+          "stream_role": "assistant",
+          "stream_label": "Synthesizing…"
         }
       ]
     }

@@ -409,3 +409,77 @@ body {
 }
 
 .notice-banner.show { display: block; }
+
+/* ── Swarm-flow thinking fold (Sprint 061) ──────────────────────── */
+.thinking-fold {
+  margin: 4px 0 10px;
+  border: 1px dashed #3f3f46;
+  border-radius: 6px;
+  background: #0c0c0f;
+  font-size: 12px;
+}
+
+.thinking-fold summary {
+  padding: 6px 10px;
+  color: #a1a1aa;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.thinking-fold[open] summary {
+  border-bottom: 1px dashed #3f3f46;
+}
+
+.thinking-fold .fold-body {
+  padding: 8px 12px;
+}
+
+.thinking-step {
+  margin-bottom: 8px;
+}
+
+.thinking-step:last-child {
+  margin-bottom: 0;
+}
+
+.thinking-step .thinking-label {
+  color: #71717a;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  margin-bottom: 2px;
+}
+
+.thinking-step.active .thinking-label::after {
+  content: " ▋";
+  color: #3b82f6;
+  animation: blink 1s infinite;
+}
+
+.thinking-step .thinking-body {
+  color: #d4d4d8;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.5;
+}
+
+.thinking-error {
+  color: #fca5a5;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.correction-divider {
+  color: #a1a1aa;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  text-align: center;
+  margin: 12px 0 8px;
+  letter-spacing: 1px;
+}

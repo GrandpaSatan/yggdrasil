@@ -4,6 +4,36 @@ All commands and endpoints for running, deploying, and operating the Yggdrasil A
 
 ---
 
+## Streaming Contract (Sprint 061)
+
+`POST /v1/chat/completions` always returns `text/event-stream` when
+`stream: true` (default). Non-flow requests with `stream: false` still
+return JSON. When a flow matches and runs, the SSE stream carries two
+kinds of frames:
+
+- **Default (unnamed) data frames** — standard OpenAI `ChatCompletionChunk`
+  objects. These carry the assistant-facing terminal step's tokens.
+  OpenAI-compliant clients see ONLY these frames and get a normal
+  streamed answer with the swarm invisible.
+- **`event: ygg_step` frames** — Yggdrasil-specific metadata for
+  swarm-aware clients (the VS Code extension). Payload is a
+  `StreamEvent`:
+  ```json
+  {"phase":"step_start","step":"draft","label":"Thinking…","role":"assistant"}
+  {"phase":"step_delta","step":"review","role":"swarm_thinking","content":"…"}
+  {"phase":"step_end","step":"review"}
+  {"phase":"error","step":"review","message":"…"}
+  {"phase":"done"}
+  ```
+  Intermediate steps (`role: "swarm_thinking"`) are rendered in the
+  extension's collapsible "thinking" fold. A second `step_start` with
+  `role: "assistant"` after the first one ended is a refiner
+  continuation and gets a `── correction ──` divider in the main bubble.
+
+The stream terminates with the standard `data: [DONE]`.
+
+---
+
 ## Service Endpoints
 
 ### Odin — LLM Orchestrator (Munin :8080)
@@ -230,6 +260,28 @@ sudo systemctl start ollama
 
 # Check status
 sudo systemctl status yggdrasil-huginn yggdrasil-muninn
+```
+
+### Ollama warm-up (Sprint 061)
+
+Both Munin and Hugin run `yggdrasil-ollama-warm.timer` which fires
+`yggdrasil-ollama-warm.service` 30s after boot and every 30 minutes
+thereafter. Each firing sends a single-token `/api/chat` request to each
+model listed in `YGGDRASIL_WARM_MODELS` (default `nemotron-3-nano:4b
+gemma4:e4b`) with `keep_alive=-1`. Purpose: keep swarm models resident in
+VRAM and populate Ollama's prefix KV cache against the canonical
+system-prompt bytes so that the drafter/refiner steps in `swarm_chat`
+skip prefill on warm calls.
+
+```bash
+# Enable and start on a new node
+sudo systemctl enable --now yggdrasil-ollama-warm.timer
+
+# Force an immediate warm-up (doesn't wait for the 30-min cadence)
+sudo systemctl start yggdrasil-ollama-warm.service
+
+# Override the model list per-node via /opt/yggdrasil/.env:
+# YGGDRASIL_WARM_MODELS="nemotron-3-nano:4b review-1.2b:latest"
 ```
 
 ### Local development (workstation)

@@ -151,7 +151,73 @@ Scenario C — GitHub provider (skip until we actually publish to GitHub):
 - [ ] Switching `yggdrasil.autoUpdate.provider` to `github` and setting
       `yggdrasil.githubRepo` + a `githubToken` works the same way.
 
-## 13. Regression — existing features
+## 13a. Retro chat themes (Sprint 061 — v0.9.x)
+
+- [ ] `yggdrasil.chat.theme: "classic"` (default) — chat panel unchanged from v0.8.x.
+- [ ] `yggdrasil.chat.theme: "pipboy-green"` — phosphor-green-on-black with
+      glow text-shadow on every visible element; monospace font; typography
+      bumped (body 17px, code 16px, headings 20px).
+- [ ] `yggdrasil.chat.theme: "bbs-cyan"` — cyan-on-near-black equivalent.
+      Change switches live (no panel reopen) and persists across reloads.
+- [ ] `yggdrasil.chat.crtEffects: true` — scanline overlay appears with
+      animated sweep line and edge vignette; subtle flicker. Toggling false
+      removes the `.crt-overlay` DOM node entirely (no compositing cost).
+- [ ] `yggdrasil.chat.font: "vt323"` — bundled pixel font renders; VT323-only
+      +2px bump applies (body 19px, code 17px).
+- [ ] `yggdrasil.chat.font: "jetbrains-mono"` — JetBrains Mono stack falls
+      back gracefully when the system lacks the font.
+- [ ] Classic theme with any font setting: typography bumps do NOT apply
+      (bumps are gated on retro themes).
+
+## 13b. Swarm chat (Sprint 061 — streaming flows)
+
+**Prereqs:** Odin running a build with Sprint 061 changes; `swarm_chat`
+flow PUT to `/api/flows/swarm_chat`; `yggdrasil-ollama-warm.timer` active
+on Munin + Hugin.
+
+- [ ] Send "hello, who are you?" in Chat (any theme).
+  - [ ] First visible tokens are drafter content in the main bubble
+        (assistant stream) within ~800ms TTFT.
+  - [ ] A collapsible "thinking" fold appears above the bubble with a
+        `Cross-checking…` section streaming reviewer tokens.
+  - [ ] Reviewer emits `LGTM` → refiner is skipped; no `── correction ──`
+        divider appears; final bubble equals the drafter's output.
+  - [ ] `journalctl -u yggdrasil-odin` shows
+        `sentinel matched — skipping downstream steps skips=["refine"]`.
+- [ ] Send an ambiguous query ("Is X better than Y? Explain with sources.").
+  - [ ] Drafter streams; reviewer streams into fold; sentinel does NOT fire.
+  - [ ] Refiner starts; `── correction ──` divider inserted into the main
+        bubble; refiner's content continues below the divider.
+- [ ] SSE contract: `curl -Ns http://$ODIN/v1/chat/completions -d '{...}'`
+      against the same prompt shows:
+  - [ ] Intermediate `event: ygg_step` frames with `phase:step_start|step_delta|step_end`.
+  - [ ] Unnamed `data: {ChatCompletionChunk}` frames only for drafter (and
+        refiner when it runs).
+  - [ ] Stream terminates with `data: [DONE]`.
+- [ ] `stream: false` non-flow request: `curl -X POST
+      /v1/chat/completions` with explicit `"model":"nemotron-3-nano:4b"` and
+      `"stream":false` still returns a single JSON object (backwards compat).
+- [ ] `intent_default: "chat"` in Odin config: low-confidence /
+      no-clear-intent queries route to `swarm_chat`; `journalctl` shows
+      `intent=chat method=Fallback` for such queries.
+- [ ] Prefix cache hit: send two chats in quick succession with the same
+      session; drafter's second run Ollama logs show
+      `prompt_eval_count: 0` for the system-prompt tokens (cache hit).
+- [ ] Retro theme + swarm chat together: thinking fold inherits
+      phosphor/cyan color; scanlines pass through the fold; correction
+      divider is legible.
+
+## 13c. Ollama warm-up timer
+
+- [ ] `systemctl status yggdrasil-ollama-warm.timer` on Munin and Hugin
+      shows `active (waiting)` with a next-fire timestamp.
+- [ ] `sudo systemctl start yggdrasil-ollama-warm.service` returns exit 0
+      and `journalctl -u yggdrasil-ollama-warm` shows
+      `warming <model>...` for each model in `YGGDRASIL_WARM_MODELS`.
+- [ ] Offline model in the list does NOT block other models
+      (`SuccessExitStatus=0 1` + best-effort curl).
+
+## 14. Regression — existing features
 
 - [ ] Fusion V6 smoke: send "Write a Fusion 360 Python snippet that creates a
       10mm cube." through `/model fusion-v6:latest` → returns valid `adsk.*`

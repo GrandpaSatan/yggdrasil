@@ -1,5 +1,5 @@
 {
-  "_comment": "Sprint 058 \u2014 DevOps flow. Analyze infra state, generate config, review for safety.",
+  "_comment": "Sprint 058 — DevOps flow. Analyze infra state, generate config, review for safety.",
   "flows": [
     {
       "name": "devops",
@@ -32,13 +32,15 @@
             "temperature": 0.1,
             "tool_output_max_chars": 3000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Analyzing infrastructure…"
         },
         {
           "name": "generate_config",
           "backend": "munin-ollama",
           "model": "nemotron-3-nano:4b",
-          "system_prompt": "You are a DevOps engineer for the Yggdrasil homelab. Generate the requested deployment configuration (systemd unit, Docker Compose, deploy script, config file). Follow Yggdrasil conventions: binaries at /opt/yggdrasil/bin/, configs at /etc/yggdrasil/<service>/config.json, services run as yggdrasil user, env from /opt/yggdrasil/.env. NEVER hardcode IPs \u2014 use ${VAR} expansion. Deploy via /tmp then sudo cp. Output ONLY the config files, no explanations.",
+          "system_prompt": "You are a DevOps engineer for the Yggdrasil homelab. Generate the requested deployment configuration (systemd unit, Docker Compose, deploy script, config file). Follow Yggdrasil conventions: binaries at /opt/yggdrasil/bin/, configs at /etc/yggdrasil/<service>/config.json, services run as yggdrasil user, env from /opt/yggdrasil/.env. NEVER hardcode IPs — use ${VAR} expansion. Deploy via /tmp then sudo cp. Output ONLY the config files, no explanations.",
           "input": {
             "template": {
               "template": "User request: {user_message}\n\nCurrent infrastructure state:\n{infra_state.output}\n\nGenerate the deployment configuration."
@@ -46,7 +48,9 @@
           },
           "output_key": "config",
           "max_tokens": 4096,
-          "temperature": 0.2
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Generating config…"
         },
         {
           "name": "review",
@@ -61,7 +65,9 @@
           "output_key": "review",
           "max_tokens": 1024,
           "temperature": 0.1,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Safety review…"
         }
       ]
     }

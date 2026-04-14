@@ -91,6 +91,10 @@ export class HookManager implements vscode.Disposable {
     const envPrefix = `MUNIN_IP=${mimirIp} HUGIN_IP=${huginIp}`;
     const script = this.scriptTarget;
 
+    // Sprint 061: hook timeouts are GENEROUS — never tuned to p95. Tight
+    // timeouts cause silent fallbacks to degraded paths (e.g. RWKV-7
+    // classifier killed at 1.5s when its real p95 is ~3.4s). Rule of thumb:
+    // set 3-10× observed p95. See engram "stop tuning timeouts to measured p95".
     const expectedHooks = {
       SessionStart: [
         {
@@ -98,7 +102,7 @@ export class HookManager implements vscode.Disposable {
             {
               type: "command",
               command: `${envPrefix} ${script} init`,
-              timeout: 5000,
+              timeout: 30000,
             },
           ],
         },
@@ -110,7 +114,7 @@ export class HookManager implements vscode.Disposable {
             {
               type: "command",
               command: `${envPrefix} ${script} sidecar`,
-              timeout: 1500,
+              timeout: 30000,
             },
           ],
         },
@@ -132,7 +136,7 @@ export class HookManager implements vscode.Disposable {
             {
               type: "command",
               command: `${envPrefix} ${script} post`,
-              timeout: 5000,
+              timeout: 30000,
             },
           ],
         },
@@ -154,7 +158,7 @@ export class HookManager implements vscode.Disposable {
             {
               type: "command",
               command: `${envPrefix} ${script} sleep`,
-              timeout: 15000,
+              timeout: 60000,
             },
           ],
         },

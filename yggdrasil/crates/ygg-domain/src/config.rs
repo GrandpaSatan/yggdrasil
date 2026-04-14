@@ -329,6 +329,14 @@ pub struct RoutingConfig {
     #[serde(default)]
     pub default_backend: Option<String>,
     pub rules: Vec<RoutingRule>,
+    /// Sprint 061: when both LLM and SDR classification are unavailable or
+    /// low-confidence, resolve routing to this intent instead of falling
+    /// back to keyword classification. Typically `"chat"` so that ambiguous
+    /// queries hit the `swarm_chat` flow and get the multi-model treatment.
+    /// When `None`, classic keyword fallback is used (preserves pre-Sprint-061
+    /// behavior; the flag is opt-in).
+    #[serde(default)]
+    pub intent_default: Option<String>,
 }
 
 /// A single routing rule mapping intent to model.
@@ -792,6 +800,40 @@ pub struct FlowStep {
     /// Falls back to sensible defaults when omitted.
     #[serde(default)]
     pub agent_config: Option<AgentLoopConfig>,
+    /// SSE streaming role for this step (Sprint 061).
+    /// "assistant" = user-visible terminal stream (standard OpenAI chunks).
+    /// "swarm_thinking" = routed to the collapsible thinking fold via
+    /// `event: ygg_step` frames. When `None`, inferred at runtime: the last
+    /// step in the flow defaults to "assistant"; all prior steps default to
+    /// "swarm_thinking".
+    #[serde(default)]
+    pub stream_role: Option<String>,
+    /// UI label emitted on step_start (e.g. "Drafting…", "Cross-checking…").
+    /// When `None`, defaults to a title-cased variant of the step name.
+    #[serde(default)]
+    pub stream_label: Option<String>,
+    /// Sprint 061: name of another step this step runs concurrently with.
+    /// Accepted in config for forward-compatibility; execution is currently
+    /// sequential because Ollama lacks streaming prompt updates. True parallel
+    /// pipelining requires vLLM/SGLang — tracked for Sprint 062.
+    #[serde(default)]
+    pub parallel_with: Option<String>,
+    /// Sprint 061: name of another step whose streamed output this step
+    /// consumes incrementally. Currently a config-only marker (see
+    /// `parallel_with` note above); today the watcher reads the referenced
+    /// step's final output like a normal `FlowInput::StepOutput`.
+    #[serde(default)]
+    pub watches: Option<String>,
+    /// Sprint 061: regex pattern evaluated against this step's final output.
+    /// On match, steps named in `sentinel_skips` are skipped by the engine
+    /// (the LGTM short-circuit that eliminates the refiner when the reviewer
+    /// approves the draft).
+    #[serde(default)]
+    pub sentinel: Option<String>,
+    /// Sprint 061: step names to skip when `sentinel` matches this step's
+    /// output. Typically `["refine"]` for a swarm flow.
+    #[serde(default)]
+    pub sentinel_skips: Option<Vec<String>>,
 }
 
 /// Input source for a flow step.

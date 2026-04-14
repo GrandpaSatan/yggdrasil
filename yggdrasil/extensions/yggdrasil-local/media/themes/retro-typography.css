@@ -1,0 +1,118 @@
+/* Yggdrasil retro typography — larger, easier-to-read sizes when a retro
+   color theme or pixel font is active. Classic theme is unaffected.
+   +4px baseline bump over stock; +2px more for VT323 since its pixel grid
+   renders smaller than equivalent-size system monospace. */
+
+body[data-theme="pipboy-green"],
+body[data-theme="bbs-cyan"] {
+  font-size: 17px;
+}
+
+body[data-theme="pipboy-green"] .msg-content,
+body[data-theme="bbs-cyan"] .msg-content,
+body[data-theme="pipboy-green"] .input-wrap textarea,
+body[data-theme="bbs-cyan"] .input-wrap textarea {
+  font-size: 17px !important;
+  line-height: 1.55 !important;
+}
+
+body[data-theme="pipboy-green"] .header select,
+body[data-theme="bbs-cyan"] .header select,
+body[data-theme="pipboy-green"] .thread-picker .title,
+body[data-theme="bbs-cyan"] .thread-picker .title,
+body[data-theme="pipboy-green"] .thread-picker select,
+body[data-theme="bbs-cyan"] .thread-picker select {
+  font-size: 15px !important;
+}
+
+body[data-theme="pipboy-green"] .msg-meta,
+body[data-theme="bbs-cyan"] .msg-meta,
+body[data-theme="pipboy-green"] .input-bar .hint,
+body[data-theme="bbs-cyan"] .input-bar .hint {
+  font-size: 14px !important;
+}
+
+body[data-theme="pipboy-green"] .msg-content pre code,
+body[data-theme="bbs-cyan"] .msg-content pre code,
+body[data-theme="pipboy-green"] .msg-content code.inline,
+body[data-theme="bbs-cyan"] .msg-content code.inline {
+  font-size: 16px !important;
+}
+
+body[data-theme="pipboy-green"] .input-bar .btn,
+body[data-theme="bbs-cyan"] .input-bar .btn,
+body[data-theme="pipboy-green"] .chip,
+body[data-theme="bbs-cyan"] .chip {
+  font-size: 15px !important;
+}
+
+body[data-theme="pipboy-green"] .empty-state h2,
+body[data-theme="bbs-cyan"] .empty-state h2 {
+  font-size: 20px !important;
+}
+
+body[data-theme="pipboy-green"] .empty-state p,
+body[data-theme="bbs-cyan"] .empty-state p {
+  font-size: 16px !important;
+}
+
+body[data-theme="pipboy-green"] .empty-state .shortcuts,
+body[data-theme="bbs-cyan"] .empty-state .shortcuts {
+  font-size: 15px !important;
+}
+
+body[data-theme="pipboy-green"] .error-banner,
+body[data-theme="bbs-cyan"] .error-banner {
+  font-size: 16px !important;
+}
+
+body[data-theme="pipboy-green"] .notice-banner,
+body[data-theme="bbs-cyan"] .notice-banner {
+  font-size: 15px !important;
+}
+
+body[data-theme="pipboy-green"] .icon-btn,
+body[data-theme="bbs-cyan"] .icon-btn {
+  font-size: 18px !important;
+}
+
+/* VT323's pixel design renders smaller than equivalent-size system monospace.
+   Extra bump when it's the active font. */
+body[data-font="vt323"] .msg-content,
+body[data-font="vt323"] .input-wrap textarea {
+  font-size: 19px !important;
+  line-height: 1.45 !important;
+}
+
+body[data-font="vt323"] .msg-content pre code,
+body[data-font="vt323"] .msg-content code.inline {
+  font-size: 17px !important;
+}
+
+body[data-font="vt323"] .header select,
+body[data-font="vt323"] .thread-picker .title,
+body[data-font="vt323"] .thread-picker select {
+  font-size: 16px !important;
+}
+
+body[data-font="vt323"] .msg-meta,
+body[data-font="vt323"] .input-bar .hint {
+  font-size: 15px !important;
+}
+
+body[data-font="vt323"] .input-bar .btn,
+body[data-font="vt323"] .chip {
+  font-size: 16px !important;
+}
+
+body[data-font="vt323"] .empty-state h2 {
+  font-size: 22px !important;
+}
+
+body[data-font="vt323"] .empty-state p {
+  font-size: 18px !important;
+}
+
+body[data-font="vt323"] .empty-state .shortcuts {
+  font-size: 17px !important;
+}

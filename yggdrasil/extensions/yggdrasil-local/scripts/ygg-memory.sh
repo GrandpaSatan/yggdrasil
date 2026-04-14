@@ -113,7 +113,12 @@ Write 1-2 short search queries to find relevant past knowledge for this task.
 Decide if this action is important enough to save as a memory (true/false).
 Reply with ONLY a JSON object like: {\"category\": \"infra\", \"queries\": [\"odin service status munin\"], \"store_worthy\": false}"
 
-    rwkv_response=$(curl -sf --max-time 1.2 \
+    # Sprint 061: timeouts are GENEROUS by design — never tune them to p95.
+    # RWKV-7 p95 is ~3.4s but cold-starts, prompt-size variance, Ollama queue
+    # waits, and weight swaps can blow any tight budget. 25s gives real headroom.
+    # Progress feedback lives in the chat UI (thinking fold), not in tight
+    # timeouts. See feedback engram "stop tuning timeouts to measured p95".
+    rwkv_response=$(curl -sf --max-time 25 \
         -H "Content-Type: application/json" \
         -d "$(jq -n \
             --arg model "$RWKV_MODEL" \

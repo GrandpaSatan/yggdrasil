@@ -19,6 +19,10 @@
   let streamBuf = "";
   let streamingEl = null;
   let generating = false;
+  // Sprint 061 swarm-flow UI state
+  let thinkingFoldEl = null;   // <details> element inside .msg-body
+  let currentThinkStep = null; // active .thinking-step DOM node
+  let assistantHasStreamed = false; // has any assistant content arrived on THIS message?
 
   // ─────────────────────────────────────────────────────────────
   // DOM refs
@@ -54,6 +58,9 @@
       case "streamDelta":
         appendDelta(msg.delta);
         break;
+      case "swarmEvent":
+        handleSwarmEvent(msg.event);
+        break;
       case "streamEnd":
         finishStream(msg);
         break;
@@ -64,6 +71,24 @@
       case "notice":
         showNotice(msg.text ?? "");
         break;
+      case "themeChange": {
+        const theme = String(msg.theme ?? "classic");
+        const font = String(msg.font ?? "system");
+        const crt = msg.crtEffects ? "on" : "off";
+        document.body.dataset.theme = theme;
+        document.body.dataset.font = font;
+        document.body.dataset.crt = crt;
+        let overlay = document.getElementById("crt-overlay");
+        if (msg.crtEffects && !overlay) {
+          overlay = document.createElement("div");
+          overlay.className = "crt-overlay";
+          overlay.id = "crt-overlay";
+          document.body.insertBefore(overlay, document.body.firstChild);
+        } else if (!msg.crtEffects && overlay) {
+          overlay.remove();
+        }
+        break;
+      }
       case "seed": {
         const seed = msg.seed ?? {};
         if (seed.contextBlock) {
@@ -257,6 +282,9 @@
     updateButtons();
     clearError();
     streamBuf = "";
+    thinkingFoldEl = null;
+    currentThinkStep = null;
+    assistantHasStreamed = false;
 
     const emptyState = messagesEl.querySelector(".empty-state");
     if (emptyState) emptyState.remove();
@@ -280,9 +308,97 @@
   function appendDelta(delta) {
     if (!streamingEl) return;
     streamBuf += delta;
+    assistantHasStreamed = true;
     const content = streamingEl.querySelector(".msg-content");
     if (content) content.innerHTML = renderMarkdown(streamBuf);
     scrollToBottom();
+  }
+
+  // Sprint 061: route swarm-flow "thinking" events into a collapsible fold
+  // above the main message content. Assistant-role events (step_start after
+  // the first, typically the refiner) insert a "── correction ──" divider
+  // into the main bubble to frame the continuation additively.
+  function handleSwarmEvent(ev) {
+    if (!streamingEl || !ev || typeof ev.phase !== "string") return;
+
+    if (ev.phase === "step_start") {
+      if (ev.role === "swarm_thinking") {
+        ensureThinkingFold();
+        const section = document.createElement("div");
+        section.className = "thinking-step active";
+        section.dataset.step = String(ev.step || "");
+        section.innerHTML = `<div class="thinking-label">${esc(ev.label || ev.step || "…")}</div><div class="thinking-body"></div>`;
+        thinkingFoldEl.querySelector(".fold-body").appendChild(section);
+        currentThinkStep = section;
+      } else if (ev.role === "assistant") {
+        // Second assistant step after main stream = refiner correction
+        if (assistantHasStreamed) {
+          streamBuf += "\n\n<!--correction-->\n\n";
+          const content = streamingEl.querySelector(".msg-content");
+          if (content) {
+            const divider = document.createElement("div");
+            divider.className = "correction-divider";
+            divider.textContent = `── ${ev.label || "correction"} ──`;
+            content.appendChild(divider);
+          }
+        }
+      }
+      scrollToBottom();
+      return;
+    }
+
+    if (ev.phase === "step_delta" && ev.role === "swarm_thinking") {
+      if (!currentThinkStep) {
+        ensureThinkingFold();
+        const section = document.createElement("div");
+        section.className = "thinking-step active";
+        section.dataset.step = String(ev.step || "");
+        section.innerHTML = `<div class="thinking-label">${esc(ev.step || "…")}</div><div class="thinking-body"></div>`;
+        thinkingFoldEl.querySelector(".fold-body").appendChild(section);
+        currentThinkStep = section;
+      }
+      const body = currentThinkStep.querySelector(".thinking-body");
+      if (body) body.textContent += String(ev.content || "");
+      scrollToBottom();
+      return;
+    }
+
+    if (ev.phase === "step_end") {
+      if (currentThinkStep && currentThinkStep.dataset.step === String(ev.step || "")) {
+        currentThinkStep.classList.remove("active");
+        currentThinkStep = null;
+      }
+      return;
+    }
+
+    if (ev.phase === "error") {
+      if (thinkingFoldEl) {
+        const err = document.createElement("div");
+        err.className = "thinking-error";
+        err.textContent = `error in ${ev.step || "flow"}: ${ev.message}`;
+        thinkingFoldEl.querySelector(".fold-body").appendChild(err);
+      }
+      showError(ev.message || "swarm flow error");
+      return;
+    }
+
+    if (ev.phase === "done") {
+      if (currentThinkStep) {
+        currentThinkStep.classList.remove("active");
+        currentThinkStep = null;
+      }
+    }
+  }
+
+  function ensureThinkingFold() {
+    if (thinkingFoldEl || !streamingEl) return;
+    const body = streamingEl.querySelector(".msg-body");
+    if (!body) return;
+    const fold = document.createElement("details");
+    fold.className = "thinking-fold";
+    fold.innerHTML = `<summary>thinking</summary><div class="fold-body"></div>`;
+    body.insertBefore(fold, body.querySelector(".msg-content"));
+    thinkingFoldEl = fold;
   }
 
   function finishStream(meta) {
@@ -294,6 +410,9 @@
       streamingEl = null;
     }
     streamBuf = "";
+    thinkingFoldEl = null;
+    currentThinkStep = null;
+    assistantHasStreamed = false;
     generating = false;
     updateButtons();
   }

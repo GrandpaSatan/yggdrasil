@@ -1,5 +1,5 @@
 {
-  "_comment": "Sprint 058 \u2014 DBA flow. Schema design, migration generation, safety review, query optimization.",
+  "_comment": "Sprint 058 — DBA flow. Schema design, migration generation, safety review, query optimization.",
   "_design": "With Morrigan available, Qwen3.5-27B handles complex schema design. Falls back to qwen3-coder when offline.",
   "flows": [
     {
@@ -30,13 +30,15 @@
             "temperature": 0.1,
             "tool_output_max_chars": 4000,
             "enable_thinking": false
-          }
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Analyzing schema…"
         },
         {
           "name": "generate_migration",
           "backend": "munin-ollama",
           "model": "nemotron-3-nano:4b",
-          "system_prompt": "You are a PostgreSQL DBA for the Yggdrasil project. Generate a versioned, idempotent SQL migration with both UP and DOWN sections. Follow conventions: snake_case table/column names, UUID primary keys, timestamptz for dates, JSONB for flexible fields. For vector columns use pgvector (vector(N)). Include appropriate indexes. Consider backward compatibility \u2014 migrations must not break existing queries. Output ONLY the SQL, no explanations.",
+          "system_prompt": "You are a PostgreSQL DBA for the Yggdrasil project. Generate a versioned, idempotent SQL migration with both UP and DOWN sections. Follow conventions: snake_case table/column names, UUID primary keys, timestamptz for dates, JSONB for flexible fields. For vector columns use pgvector (vector(N)). Include appropriate indexes. Consider backward compatibility — migrations must not break existing queries. Output ONLY the SQL, no explanations.",
           "input": {
             "template": {
               "template": "User request: {user_message}\n\nExisting schema context:\n{schema_analysis.output}\n\nGenerate the SQL migration."
@@ -44,13 +46,15 @@
           },
           "output_key": "migration",
           "max_tokens": 4096,
-          "temperature": 0.2
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Generating migration…"
         },
         {
           "name": "review_safety",
           "backend": "hugin-ollama",
           "model": "gemma4:e4b",
-          "system_prompt": "You are a database migration safety reviewer. Check the migration for: (1) backward compatibility \u2014 will existing queries break? (2) data loss risk \u2014 any DROP TABLE, DROP COLUMN, or type changes without data migration? (3) index impact \u2014 will new indexes cause long lock times on large tables? (4) constraint safety \u2014 NOT NULL on existing columns needs DEFAULT. (5) pgvector specifics \u2014 correct dimension, appropriate index type (HNSW vs IVFFlat). If safe, respond: LGTM. Otherwise list issues with severity.",
+          "system_prompt": "You are a database migration safety reviewer. Check the migration for: (1) backward compatibility — will existing queries break? (2) data loss risk — any DROP TABLE, DROP COLUMN, or type changes without data migration? (3) index impact — will new indexes cause long lock times on large tables? (4) constraint safety — NOT NULL on existing columns needs DEFAULT. (5) pgvector specifics — correct dimension, appropriate index type (HNSW vs IVFFlat). If safe, respond: LGTM. Otherwise list issues with severity.",
           "input": {
             "template": {
               "template": "Schema context:\n{schema_analysis.output}\n\nProposed migration:\n{migration.output}\n\nReview for safety."
@@ -59,7 +63,9 @@
           "output_key": "safety_review",
           "max_tokens": 1024,
           "temperature": 0.1,
-          "think": false
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Safety review…"
         },
         {
           "name": "optimize_queries",
@@ -73,7 +79,9 @@
           },
           "output_key": "optimized",
           "max_tokens": 4096,
-          "temperature": 0.2
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Optimizing…"
         }
       ]
     }

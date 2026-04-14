@@ -52,6 +52,216 @@ pub enum ChatSource {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Flow → SSE dispatch (Sprint 061)
+// ─────────────────────────────────────────────────────────────────
+
+/// Execute a flow, returning either a streaming SSE response (`stream=true`)
+/// or a buffered `ChatCompletionResponse` JSON (`stream=false`). Non-streaming
+/// clients (e.g. MCP `generate_tool`) get a single JSON blob with the
+/// assistant-facing final step's text; streaming clients see per-token SSE +
+/// `event: ygg_step` thinking frames. Either path drives the flow via
+/// `execute_streaming`, appends the assistant message to the session, and
+/// spawns the engram-store fire-and-forget task.
+pub async fn dispatch_flow(
+    state: AppState,
+    flow: ygg_domain::config::FlowConfig,
+    user_message: String,
+    images: Option<Vec<String>>,
+    session_id: String,
+    stream: bool,
+) -> Response {
+    if stream {
+        dispatch_flow_sse(state, flow, user_message, images, session_id).await
+    } else {
+        dispatch_flow_json(state, flow, user_message, images, session_id).await
+    }
+}
+
+/// Non-streaming flow dispatch: drains the flow's StreamEvent channel,
+/// accumulates the assistant-role content into a single string, and returns
+/// a standard `ChatCompletionResponse` JSON. Intermediate "thinking" step
+/// output is discarded (not visible to a non-streaming client by design).
+async fn dispatch_flow_json(
+    state: AppState,
+    flow: ygg_domain::config::FlowConfig,
+    user_message: String,
+    images: Option<Vec<String>>,
+    session_id: String,
+) -> Response {
+    let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
+    let model_name = flow.name.clone();
+
+    // Drive the flow synchronously so we can inspect its FlowResult before
+    // serialising the JSON response. The StreamEvent channel is kept small;
+    // we spawn a drainer task to prevent the engine from blocking on send.
+    let (tx, mut rx) = crate::flow_streaming::channel();
+    let drainer = tokio::spawn(async move {
+        while rx.recv().await.is_some() {
+            // Intentionally discard — the FlowResult below is authoritative.
+        }
+    });
+
+    let flow_for_engine = flow.clone();
+    let user_msg_for_engine = user_message.clone();
+    let imgs_for_engine = images.clone();
+    let state_for_engine = state.clone();
+    let result = state_for_engine
+        .flow_engine
+        .execute_streaming(
+            &flow_for_engine,
+            &user_msg_for_engine,
+            imgs_for_engine.as_deref(),
+            Some(&state_for_engine),
+            tx,
+        )
+        .await;
+    // Wait for the drainer to finish (channel dropped by now).
+    let _ = drainer.await;
+
+    let response_text = match result {
+        Ok(flow_result) => {
+            for timing in &flow_result.step_timings {
+                tracing::info!(
+                    flow = %flow.name,
+                    step = %timing.name,
+                    model = %timing.model,
+                    ms = timing.elapsed_ms,
+                    chars = timing.output_chars,
+                    "flow step timing"
+                );
+            }
+            flow_result.final_output().to_string()
+        }
+        Err(e) => {
+            tracing::error!(flow = %flow.name, error = %e, "flow execution failed");
+            return OdinError::Upstream(format!("flow '{}' failed: {e}", flow.name))
+                .into_response();
+        }
+    };
+
+    state.session_store.append_messages(
+        &session_id,
+        &[CompactMessage::new("assistant", &response_text)],
+    );
+    if state.config.mimir.store_on_completion {
+        spawn_engram_store(
+            state.http_client.clone(),
+            state.mimir_url.clone(),
+            user_message.clone(),
+            response_text.clone(),
+        );
+    }
+
+    let json_body = crate::openai::ChatCompletionResponse {
+        id: completion_id,
+        object: "chat.completion".to_string(),
+        created: crate::proxy::unix_now(),
+        model: model_name,
+        choices: vec![crate::openai::Choice {
+            index: 0,
+            message: ChatMessage::new(Role::Assistant, &response_text),
+            finish_reason: Some("stop".to_string()),
+        }],
+        usage: Some(crate::openai::Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+        }),
+    };
+    let mut resp = axum::Json(json_body).into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&session_id) {
+        resp.headers_mut().insert("x-session-id", val);
+    }
+    resp
+}
+
+/// Streaming flow dispatch: spawns the flow in a background task feeding a
+/// `StreamEvent` channel; the HTTP response is an SSE stream that renders
+/// each event via `flow_streaming::to_sse_events`.
+pub async fn dispatch_flow_sse(
+    state: AppState,
+    flow: ygg_domain::config::FlowConfig,
+    user_message: String,
+    images: Option<Vec<String>>,
+    session_id: String,
+) -> Response {
+    use axum::response::sse::Event;
+    use futures::StreamExt;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
+    let model_name = flow.name.clone();
+
+    let (tx, rx) = crate::flow_streaming::channel();
+
+    // Background task: drive the flow to completion and persist results.
+    {
+        let state = state.clone();
+        let flow = flow.clone();
+        let user_msg = user_message.clone();
+        let imgs = images.clone();
+        let sid = session_id.clone();
+        let mimir_url = state.mimir_url.clone();
+        let http = state.http_client.clone();
+        let store_on_completion = state.config.mimir.store_on_completion;
+        tokio::spawn(async move {
+            let result = state
+                .flow_engine
+                .execute_streaming(&flow, &user_msg, imgs.as_deref(), Some(&state), tx)
+                .await;
+
+            match result {
+                Ok(flow_result) => {
+                    let response_text = flow_result.final_output().to_string();
+                    state.session_store.append_messages(
+                        &sid,
+                        &[CompactMessage::new("assistant", &response_text)],
+                    );
+                    if store_on_completion {
+                        spawn_engram_store(http, mimir_url, user_msg, response_text);
+                    }
+                    for timing in &flow_result.step_timings {
+                        tracing::info!(
+                            flow = %flow.name,
+                            step = %timing.name,
+                            model = %timing.model,
+                            ms = timing.elapsed_ms,
+                            chars = timing.output_chars,
+                            "flow step timing"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(flow = %flow.name, error = %e, "flow execution failed");
+                }
+            }
+        });
+    }
+
+    let completion_id_for_stream = completion_id.clone();
+    let model_for_stream = model_name.clone();
+    let sse_stream = ReceiverStream::new(rx).flat_map(move |evt| {
+        let events = crate::flow_streaming::to_sse_events(
+            &evt,
+            &completion_id_for_stream,
+            &model_for_stream,
+        );
+        futures::stream::iter(
+            events
+                .into_iter()
+                .map(Ok::<Event, std::convert::Infallible>)
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    let mut resp = Sse::new(sse_stream).into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(&session_id) {
+        resp.headers_mut().insert("x-session-id", val);
+    }
+    resp
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────
 
@@ -157,11 +367,31 @@ async fn hybrid_classify(
             (d, RouterMethod::SdrOnly)
         }
         _ => {
-            // Both unavailable or low confidence — keyword fallback.
+            // Both unavailable or low confidence — Sprint 061: run keyword
+            // classification FIRST. If it matches a real intent (coding,
+            // reasoning, etc.), route there. Only fall back to the configured
+            // `intent_default` (e.g. "chat" → swarm_chat) when the keyword
+            // classifier produced a generic/unmatched intent.
             if state.llm_router.is_some() {
                 crate::metrics::record_router_fallback("low_confidence");
             }
-            (state.router.classify(message), RouterMethod::Fallback)
+            let keyword_decision = state.router.classify(message);
+            let is_generic = matches!(
+                keyword_decision.intent.as_str(),
+                "default" | "general" | "test" | ""
+            );
+            let decision = if is_generic {
+                match state.config.routing.intent_default.as_deref() {
+                    Some(default_intent) => state
+                        .router
+                        .resolve_intent(default_intent)
+                        .unwrap_or(keyword_decision),
+                    None => keyword_decision,
+                }
+            } else {
+                keyword_decision
+            };
+            (decision, RouterMethod::Fallback)
         }
     };
 
@@ -944,99 +1174,40 @@ pub async fn chat_handler(
             tracing::info!(
                 flow = %flow.name,
                 images = imgs.len(),
-                "dispatching multimodal request to perceive flow"
+                "dispatching multimodal request to perceive flow (SSE)"
             );
-            let result = state.flow_engine.execute(flow, &last_user_message, Some(imgs), Some(&state)).await?;
-            let response_text = result.final_output().to_string();
-
-            state.session_store.append_messages(&session_id, &[
-                crate::session::CompactMessage::new("user", &last_user_message),
-                crate::session::CompactMessage::new("assistant", &response_text),
-            ]);
-
-            for timing in &result.step_timings {
-                tracing::info!(
-                    flow = %flow.name,
-                    step = %timing.name,
-                    model = %timing.model,
-                    ms = timing.elapsed_ms,
-                    chars = timing.output_chars,
-                    "flow step timing"
-                );
-            }
-
-            let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
-            let resp = crate::openai::ChatCompletionResponse {
-                id: completion_id,
-                object: "chat.completion".to_string(),
-                created: crate::proxy::unix_now(),
-                model: flow.name.clone(),
-                choices: vec![crate::openai::Choice {
-                    index: 0,
-                    message: ChatMessage::new(Role::Assistant, &response_text),
-                    finish_reason: Some("stop".to_string()),
-                }],
-                usage: Some(crate::openai::Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                }),
-            };
-
-            return Ok(axum::Json(resp).into_response());
+            return Ok(dispatch_flow(
+                state.clone(),
+                flow.clone(),
+                last_user_message.clone(),
+                Some(imgs.clone()),
+                session_id.clone(),
+                request.stream,
+            )
+            .await);
         }
     }
 
-    // ── 6d. Flow dispatch (Sprint 055) ─────────────────────────────
-    // If a flow is configured for this intent, execute it instead of single-model dispatch.
+    // ── 6d. Flow dispatch (Sprint 055 → Sprint 061: SSE-only) ──────
+    // If a flow is configured for this intent, execute it via SSE streaming.
+    // Sprint 061: all flow dispatches return SSE; the JSON response path for
+    // flows is removed (single-model dispatch still supports stream=false).
     let flows_snapshot = state.flows.read().unwrap().clone();
     if let Some(flow) = state.flow_engine.find_by_intent(&flows_snapshot, &decision.intent) {
         tracing::info!(
             flow = %flow.name,
             intent = %decision.intent,
-            "dispatching to multi-model flow"
+            "dispatching to multi-model flow (SSE)"
         );
-        let result = state.flow_engine.execute(flow, &last_user_message, None, Some(&state)).await?;
-        let response_text = result.final_output().to_string();
-
-        // Update session with flow result
-        state.session_store.append_messages(&session_id, &[
-            crate::session::CompactMessage::new("user", &last_user_message),
-            crate::session::CompactMessage::new("assistant", &response_text),
-        ]);
-
-        // Log step timings
-        for timing in &result.step_timings {
-            tracing::info!(
-                flow = %flow.name,
-                step = %timing.name,
-                model = %timing.model,
-                ms = timing.elapsed_ms,
-                chars = timing.output_chars,
-                "flow step timing"
-            );
-        }
-
-        // Return as non-streaming response
-        let completion_id = format!("chatcmpl-{}", Uuid::new_v4());
-        let resp = crate::openai::ChatCompletionResponse {
-            id: completion_id,
-            object: "chat.completion".to_string(),
-            created: crate::proxy::unix_now(),
-            model: flow.name.clone(),
-            choices: vec![crate::openai::Choice {
-                index: 0,
-                message: ChatMessage::new(Role::Assistant, &response_text),
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Some(crate::openai::Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-            }),
-        };
-
-        return Ok(axum::Json(resp).into_response());
+        return Ok(dispatch_flow(
+            state.clone(),
+            flow.clone(),
+            last_user_message.clone(),
+            None,
+            session_id.clone(),
+            request.stream,
+        )
+        .await);
     }
 
     // ── 7. Acquire semaphore (with fallback reroute) ─────────────
@@ -3092,6 +3263,12 @@ mod flow_crud_tests {
                 tools: None,
                 think: None,
                 agent_config: None,
+                stream_role: None,
+                stream_label: None,
+                parallel_with: None,
+                watches: None,
+                sentinel: None,
+                sentinel_skips: None,
             }],
             timeout_secs: 30,
             max_step_output_chars: 4000,

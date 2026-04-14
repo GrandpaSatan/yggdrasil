@@ -167,4 +167,40 @@ Decommissioned: `ollama-igpu.service` on Hugin (no longer needed once Nemotron r
 
 Open bug for Sprint 059 P0: Odin's semantic router is non-functional — `llm_router.ollama_url` points to dead endpoint, `llm_router.model` empty, `odin-sdr-prototypes.json` empty. All 8 flows are deployed but unreachable via intent dispatch. Benchmark used external orchestration as workaround.
 
+## Sprint 061 Changes — Streaming Flows + Latency Strategy
+
+Every flow now streams as SSE. The JSON response path for flow dispatches has been removed from `chat_handler` (single-model dispatch still supports `stream: false` for external OpenAI-compat clients). The SSE protocol carries two frame types:
+
+- Default (unnamed) `data:` frames: standard `ChatCompletionChunk` tokens from the terminal (`stream_role: "assistant"`) step.
+- `event: ygg_step` frames: typed `StreamEvent` payloads (`step_start`, `step_delta`, `step_end`, `error`, `done`) for intermediate "thinking" steps (`stream_role: "swarm_thinking"`). Unknown event names are ignored by OpenAI-compliant clients.
+
+**New modules:**
+- `crates/odin/src/flow_streaming.rs` — `StreamEvent` enum + mpsc channel + SSE serializer.
+- `crates/odin/src/prompt_prefix.rs` — `SWARM_SHARED_SYSTEM` constant + `format_refiner_input` + `build_deterministic_messages` for byte-identical prompt prefixes across same-model steps.
+- `crates/odin/src/proxy.rs::stream_tokens_ollama / stream_tokens_openai` — token-level streaming helpers consumed by the flow engine (SSE-Event-level helpers remain for single-model dispatch).
+
+**`FlowStep` schema additions (`ygg_domain::config`):**
+- `stream_role: Option<String>` — "assistant" or "swarm_thinking"; default inferred (last step = assistant, others = swarm_thinking).
+- `stream_label: Option<String>` — UI label; defaults to title-cased step name + "…".
+- `sentinel: Option<String>` + `sentinel_skips: Option<Vec<String>>` — regex-triggered step-skipping (LGTM short-circuit).
+- `parallel_with: Option<String>` + `watches: Option<String>` — accepted in config for forward compat; execution stays sequential until vLLM migration (Sprint 062). True token-level pipelined parallel review requires a backend that supports streaming prompt updates, which Ollama does not.
+
+**New flow: `swarm_chat`** (`trigger.intent: "chat"`). Drafter (nemotron on Munin) streams to the user as `assistant`; reviewer (gemma4 on Hugin) streams to the thinking fold; refiner (nemotron on Munin, same model as drafter for KV prefix cache hit) runs only if the reviewer's `LGTM` sentinel does NOT fire.
+
+**Latency strategy delivered:**
+- L1 — drafter streams immediately (TTFT bounded by drafter-alone prefill + first token).
+- L3 — deterministic prefix (same `SWARM_SHARED_SYSTEM` on drafter + refiner; drafter's full user message is a byte-prefix of refiner's user message). Ollama's built-in prefix cache hits on the second call within a session.
+- L4 — `sentinel: "(?i)\\bLGTM\\b"` on `review`, `sentinel_skips: ["refine"]`. On a clean draft the refiner never runs; the response is the draft.
+
+**Not delivered this sprint (deferred to 062):** L2 (pipelined parallel review) requires vLLM/SGLang; KVCOMM anchor-pool cross-model KV reuse; TurboQuant KV compression; `crates/ygg-dreamer/` always-warm scheduler beyond the simple cadence timer.
+
+**Deployment artifact:** `deploy/systemd/yggdrasil-ollama-warm.{service,timer}` — fires a 1-token warm-up `/api/chat` against each configured model 30s after boot and every 30 minutes; keeps weights + compiled CUDA/ROCm kernels + prefix KV resident.
+
 See `docs/sprint-058-bench-findings.md` for the full writeup and `docs/sprint-058-flows.html` for the visual dashboard.
+
+## Sprint 061 Changes
+
+Design principles added:
+- "Stop tuning timeouts to measured p95" — give AI calls 3–10× observed p95; rely on streaming/progress UX for "I'm working" feedback, not tight cutoffs
+- All flows ALWAYS stream via SSE; JSON response is a server-side convenience for stream=false clients, not a parallel code path
+- OpenAI compatibility preserved — `event: ygg_step` frames are invisible to compliant clients

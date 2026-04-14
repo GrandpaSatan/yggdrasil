@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil",
   "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
-  "version": "0.8.0",
+  "version": "0.10.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "icon": "icon.png",
@@ -312,6 +312,23 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically manage Claude Code hooks in ~/.claude/settings.json"
+        },
+        "yggdrasil.chat.theme": {
+          "type": "string",
+          "enum": ["classic", "pipboy-green", "bbs-cyan"],
+          "default": "classic",
+          "description": "Chat panel theme. 'classic' = stock dark; 'pipboy-green' = Fallout Pip-Boy phosphor; 'bbs-cyan' = 1980s BBS terminal."
+        },
+        "yggdrasil.chat.crtEffects": {
+          "type": "boolean",
+          "default": false,
+          "description": "Overlay scanlines, sweep line, edge vignette, and subtle flicker on the chat panel. Pairs with the retro themes."
+        },
+        "yggdrasil.chat.font": {
+          "type": "string",
+          "enum": ["system", "vt323", "jetbrains-mono"],
+          "default": "system",
+          "description": "Font family for the chat panel. 'vt323' = bundled retro pixel font; 'jetbrains-mono' = developer monospace; 'system' = VS Code default."
         }
       }
     }

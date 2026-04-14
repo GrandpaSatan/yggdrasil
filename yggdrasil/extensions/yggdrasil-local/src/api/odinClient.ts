@@ -44,6 +44,18 @@ export interface ChatRequest {
   stream?: boolean;
 }
 
+/**
+ * Sprint 061 swarm-flow SSE event payload. Emitted on `event: ygg_step`
+ * frames when Odin is running a multi-step flow. Default-event data frames
+ * (no `event:` line) are standard OpenAI chunks and are NOT surfaced here.
+ */
+export type SwarmEvent =
+  | { phase: "step_start"; step: string; label: string; role: string }
+  | { phase: "step_delta"; step: string; role: string; content: string }
+  | { phase: "step_end"; step: string }
+  | { phase: "done" }
+  | { phase: "error"; step?: string; message: string };
+
 export interface FlowStep {
   name: string;
   backend?: string;
@@ -157,13 +169,19 @@ export class OdinClient {
   }
 
   /**
-   * Stream a chat completion. The onToken callback fires for each delta chunk.
+   * Stream a chat completion. The onToken callback fires for each assistant
+   * content delta. When Odin is running a multi-step swarm flow (Sprint 061),
+   * intermediate "thinking" steps arrive as `event: ygg_step` SSE frames —
+   * surfaced via the optional onSwarmEvent callback. Default-event data frames
+   * remain standard OpenAI chunks (assistant content).
+   *
    * Returns the aggregated assistant text when the stream completes.
    */
   async streamChat(
     req: ChatRequest,
     onToken: (delta: string) => void,
-    onMeta?: (meta: { model: string; finish_reason?: string }) => void
+    onMeta?: (meta: { model: string; finish_reason?: string }) => void,
+    onSwarmEvent?: (ev: SwarmEvent) => void
   ): Promise<string> {
     const url = new URL(`${this.odinUrl}/v1/chat/completions`);
     const body = JSON.stringify({ ...req, stream: true });
@@ -201,34 +219,53 @@ export class OdinClient {
 
           res.on("data", (chunk: string) => {
             buffer += chunk;
-            // SSE frames are separated by \n\n; each frame has one or more "data: " lines.
+            // SSE frames are separated by \n\n; each frame has optional "event: <name>"
+            // and one or more "data: <payload>" lines.
             let idx;
             while ((idx = buffer.indexOf("\n\n")) !== -1) {
               const frame = buffer.slice(0, idx);
               buffer = buffer.slice(idx + 2);
+
+              let eventName = ""; // default (unnamed) = OpenAI-standard data frame
+              const dataLines: string[] = [];
               for (const line of frame.split("\n")) {
-                if (!line.startsWith("data:")) continue;
-                const payload = line.slice(5).trim();
-                if (payload === "[DONE]") {
+                if (line.startsWith("event:")) {
+                  eventName = line.slice(6).trim();
+                } else if (line.startsWith("data:")) {
+                  dataLines.push(line.slice(5).trim());
+                }
+              }
+              const payload = dataLines.join("\n");
+              if (!payload) continue;
+              if (payload === "[DONE]") {
+                continue;
+              }
+
+              try {
+                const obj = JSON.parse(payload);
+                if (eventName === "ygg_step") {
+                  // Sprint 061: swarm-flow metadata; route to onSwarmEvent
+                  // if the caller opted in. Otherwise silently ignore.
+                  if (onSwarmEvent && typeof obj.phase === "string") {
+                    onSwarmEvent(obj as SwarmEvent);
+                  }
                   continue;
                 }
-                try {
-                  const obj = JSON.parse(payload);
-                  const choice = obj.choices?.[0];
-                  const delta = choice?.delta?.content;
-                  if (typeof delta === "string" && delta.length > 0) {
-                    full += delta;
-                    onToken(delta);
-                  }
-                  if (choice?.finish_reason && onMeta) {
-                    onMeta({
-                      model: String(obj.model ?? req.model),
-                      finish_reason: String(choice.finish_reason),
-                    });
-                  }
-                } catch {
-                  // ignore unparseable frame
+                // Default event = standard OpenAI chunk
+                const choice = obj.choices?.[0];
+                const delta = choice?.delta?.content;
+                if (typeof delta === "string" && delta.length > 0) {
+                  full += delta;
+                  onToken(delta);
                 }
+                if (choice?.finish_reason && onMeta) {
+                  onMeta({
+                    model: String(obj.model ?? req.model),
+                    finish_reason: String(choice.finish_reason),
+                  });
+                }
+              } catch {
+                // ignore unparseable frame
               }
             }
           });

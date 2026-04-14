@@ -1,0 +1,82 @@
+/* Yggdrasil retro theme — Fallout Pip-Boy phosphor green.
+   Activated via body[data-theme="pipboy-green"]. */
+
+body[data-theme="pipboy-green"] {
+  background: #050a05;
+  color: #33ff66;
+}
+
+body[data-theme="pipboy-green"] *:not(.crt-overlay):not(.crt-overlay *) {
+  color: #33ff66 !important;
+  border-color: rgba(51, 255, 102, 0.35) !important;
+  font-family: var(--ygg-retro-font, "VT323", "JetBrains Mono", "Courier New", monospace) !important;
+  text-shadow: 0 0 4px rgba(51, 255, 102, 0.55);
+}
+
+body[data-theme="pipboy-green"],
+body[data-theme="pipboy-green"] .messages {
+  background: #050a05 !important;
+}
+
+body[data-theme="pipboy-green"] .header,
+body[data-theme="pipboy-green"] .input-area,
+body[data-theme="pipboy-green"] .input-wrap,
+body[data-theme="pipboy-green"] .empty-state .shortcuts {
+  background: #071807 !important;
+}
+
+body[data-theme="pipboy-green"] .msg.user .msg-avatar,
+body[data-theme="pipboy-green"] .msg.assistant .msg-avatar,
+body[data-theme="pipboy-green"] .msg.system .msg-avatar {
+  background: #0a2810 !important;
+  color: #66ff99 !important;
+  border: 1px solid rgba(51, 255, 102, 0.5);
+}
+
+body[data-theme="pipboy-green"] .msg-content code.inline,
+body[data-theme="pipboy-green"] .msg-content pre,
+body[data-theme="pipboy-green"] .input-bar .btn,
+body[data-theme="pipboy-green"] .chip,
+body[data-theme="pipboy-green"] .header select,
+body[data-theme="pipboy-green"] .thread-picker select {
+  background: #0a2810 !important;
+  border: 1px solid rgba(51, 255, 102, 0.35) !important;
+}
+
+body[data-theme="pipboy-green"] .input-bar .btn.primary {
+  background: #14501f !important;
+  color: #b2ffc4 !important;
+  border-color: #33ff66 !important;
+}
+
+body[data-theme="pipboy-green"] .streaming .msg-content::after {
+  color: #33ff66 !important;
+  text-shadow: 0 0 6px #33ff66;
+}
+
+body[data-theme="pipboy-green"] .input-wrap:focus-within {
+  border-color: #66ff99 !important;
+  box-shadow: 0 0 6px rgba(102, 255, 153, 0.5);
+}
+
+body[data-theme="pipboy-green"] .error-banner {
+  background: #1a0a0a !important;
+  color: #ff6680 !important;
+  border-color: #ff3355 !important;
+  text-shadow: 0 0 4px rgba(255, 51, 85, 0.5);
+}
+
+body[data-theme="pipboy-green"] .notice-banner {
+  background: #08200d !important;
+  color: #99ffaa !important;
+  border-color: rgba(51, 255, 102, 0.6) !important;
+}
+
+body[data-theme="pipboy-green"] .icon-btn:hover {
+  background: #0a2810 !important;
+  color: #b2ffc4 !important;
+}
+
+body[data-theme="pipboy-green"] .input-bar .btn:hover {
+  background: #14501f !important;
+}

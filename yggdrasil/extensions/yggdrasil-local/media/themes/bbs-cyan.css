@@ -1,0 +1,82 @@
+/* Yggdrasil retro theme — 1980s BBS terminal cyan-on-black.
+   Activated via body[data-theme="bbs-cyan"]. */
+
+body[data-theme="bbs-cyan"] {
+  background: #000812;
+  color: #00e5ff;
+}
+
+body[data-theme="bbs-cyan"] *:not(.crt-overlay):not(.crt-overlay *) {
+  color: #00e5ff !important;
+  border-color: rgba(0, 229, 255, 0.4) !important;
+  font-family: var(--ygg-retro-font, "VT323", "JetBrains Mono", "Courier New", monospace) !important;
+  text-shadow: 0 0 4px rgba(0, 229, 255, 0.5);
+}
+
+body[data-theme="bbs-cyan"],
+body[data-theme="bbs-cyan"] .messages {
+  background: #000812 !important;
+}
+
+body[data-theme="bbs-cyan"] .header,
+body[data-theme="bbs-cyan"] .input-area,
+body[data-theme="bbs-cyan"] .input-wrap,
+body[data-theme="bbs-cyan"] .empty-state .shortcuts {
+  background: #001624 !important;
+}
+
+body[data-theme="bbs-cyan"] .msg.user .msg-avatar,
+body[data-theme="bbs-cyan"] .msg.assistant .msg-avatar,
+body[data-theme="bbs-cyan"] .msg.system .msg-avatar {
+  background: #002030 !important;
+  color: #66f0ff !important;
+  border: 1px solid rgba(0, 229, 255, 0.55);
+}
+
+body[data-theme="bbs-cyan"] .msg-content code.inline,
+body[data-theme="bbs-cyan"] .msg-content pre,
+body[data-theme="bbs-cyan"] .input-bar .btn,
+body[data-theme="bbs-cyan"] .chip,
+body[data-theme="bbs-cyan"] .header select,
+body[data-theme="bbs-cyan"] .thread-picker select {
+  background: #001a28 !important;
+  border: 1px solid rgba(0, 229, 255, 0.4) !important;
+}
+
+body[data-theme="bbs-cyan"] .input-bar .btn.primary {
+  background: #00465c !important;
+  color: #b3f3ff !important;
+  border-color: #00e5ff !important;
+}
+
+body[data-theme="bbs-cyan"] .streaming .msg-content::after {
+  color: #00e5ff !important;
+  text-shadow: 0 0 6px #00e5ff;
+}
+
+body[data-theme="bbs-cyan"] .input-wrap:focus-within {
+  border-color: #66f0ff !important;
+  box-shadow: 0 0 6px rgba(102, 240, 255, 0.6);
+}
+
+body[data-theme="bbs-cyan"] .error-banner {
+  background: #200810 !important;
+  color: #ff80a0 !important;
+  border-color: #ff3366 !important;
+  text-shadow: 0 0 4px rgba(255, 51, 102, 0.5);
+}
+
+body[data-theme="bbs-cyan"] .notice-banner {
+  background: #001a28 !important;
+  color: #b3f3ff !important;
+  border-color: rgba(0, 229, 255, 0.6) !important;
+}
+
+body[data-theme="bbs-cyan"] .icon-btn:hover {
+  background: #001a28 !important;
+  color: #b3f3ff !important;
+}
+
+body[data-theme="bbs-cyan"] .input-bar .btn:hover {
+  background: #00465c !important;
+}
