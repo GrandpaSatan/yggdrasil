@@ -309,6 +309,13 @@ async fn main() -> anyhow::Result<()> {
     let activity_tracker = odin::flow_scheduler::ActivityTracker::new();
     tracing::info!(flows = config.flows.len(), "flow engine initialized");
 
+    // Sprint 064 P2: keep-warm injector. Pre-loads configured Ollama models
+    // so cold-start (GLM-4.7 ~30–60s, etc.) never bites the first user
+    // request after a quiet period.
+    if let Some(keep_warm_cfg) = config.keep_warm.clone() {
+        let _keep_warm_handle = odin::keep_warm::spawn(keep_warm_cfg, http_client.clone());
+    }
+
     // Hot-swappable flows (mutated by PUT /api/flows/:id at runtime).
     let flows_hot = Arc::new(std::sync::RwLock::new(Arc::new(config.flows.clone())));
     let config_path = std::path::PathBuf::from(&cli.config);
@@ -397,6 +404,9 @@ async fn main() -> anyhow::Result<()> {
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
         .route("/api/v1/webhook", post(handlers::webhook_handler))
+        // Sprint 064 P8 — daily E2E hit counter (cron wrapper pings this).
+        .route("/api/v1/e2e/hit", post(handlers::e2e_hit_handler))
+        .route("/api/v1/e2e/hit", get(handlers::e2e_hit_handler))
         // Voice WebSocket endpoint (STT/TTS streaming via ygg-voice).
         .route("/v1/voice", get(voice_ws::ws_voice_handler))
         .route("/voice", get(voice_ws::voice_page))

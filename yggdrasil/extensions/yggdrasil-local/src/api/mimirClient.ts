@@ -18,6 +18,9 @@ import * as vscode from "vscode";
 
 const VAULT_TIMEOUT_MS = 8000;
 
+/** SecretStorage key for the Mimir vault bearer token (Sprint 064 P3). */
+const VAULT_TOKEN_KEY = "yggdrasil.mimirVaultToken";
+
 export interface VaultSecret {
   key: string;
   scope: string;
@@ -50,10 +53,56 @@ export interface VaultDeleteResult {
 }
 
 export class MimirClient {
+  /**
+   * Sprint 064 P3 — extension-wide SecretStorage handle. Set once at
+   * extension activation via `MimirClient.useSecretStorage(context.secrets)`.
+   * When `undefined`, vault calls go through with no Authorization header
+   * (compatible with older Mimir builds that have no `MIMIR_VAULT_CLIENT_TOKEN`).
+   */
+  private static secretStorage: vscode.SecretStorage | undefined;
+
+  static useSecretStorage(secrets: vscode.SecretStorage): void {
+    MimirClient.secretStorage = secrets;
+  }
+
   get mimirUrl(): string {
     return vscode.workspace
       .getConfiguration("yggdrasil")
       .get<string>("mimirUrl", "http://10.0.65.8:9090");
+  }
+
+  /**
+   * Fetch the cached bearer token, prompting the user once if absent.
+   * Returns `undefined` when SecretStorage is not wired (test contexts) or
+   * when the user dismisses the prompt — callers then send no auth header
+   * and let Mimir respond 401 if it requires one.
+   */
+  private async getToken(): Promise<string | undefined> {
+    const storage = MimirClient.secretStorage;
+    if (!storage) return undefined;
+
+    const cached = await storage.get(VAULT_TOKEN_KEY);
+    if (cached) return cached;
+
+    const entered = await vscode.window.showInputBox({
+      title: "Yggdrasil Mimir vault token",
+      prompt:
+        "Enter the MIMIR_VAULT_CLIENT_TOKEN (set on Munin in /etc/systemd/system/yggdrasil-mimir.service.d/vault.conf). Stored securely in VSCode SecretStorage.",
+      password: true,
+      ignoreFocusOut: true,
+      placeHolder: "paste token",
+    });
+
+    if (!entered) return undefined;
+    await storage.store(VAULT_TOKEN_KEY, entered);
+    return entered;
+  }
+
+  /** Clear the cached vault token — call after a 401 to force re-prompt. */
+  private async forgetToken(): Promise<void> {
+    if (MimirClient.secretStorage) {
+      await MimirClient.secretStorage.delete(VAULT_TOKEN_KEY);
+    }
   }
 
   async listVault(scope?: string): Promise<VaultListResult> {
@@ -119,9 +168,36 @@ export class MimirClient {
   // Internal HTTP helpers (mirrors odinClient pattern)
   // ─────────────────────────────────────────────────────────────
 
-  private postJson(
+  /**
+   * POST JSON to Mimir. Injects `Authorization: Bearer <token>` from
+   * SecretStorage when available; on 401, clears the cached token and
+   * re-prompts (handles token rotation), retrying the request once.
+   */
+  private async postJson(
     urlStr: string,
     body: unknown
+  ): Promise<Record<string, unknown>> {
+    const token = await this.getToken();
+    try {
+      return await this.postJsonRaw(urlStr, body, token);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // 401 → token bad/missing. Clear cache, re-prompt, retry exactly once.
+      if (message.startsWith("HTTP 401")) {
+        await this.forgetToken();
+        const fresh = await this.getToken();
+        if (fresh) {
+          return this.postJsonRaw(urlStr, body, fresh);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private postJsonRaw(
+    urlStr: string,
+    body: unknown,
+    token: string | undefined
   ): Promise<Record<string, unknown>> {
     const url = new URL(urlStr);
     const payload = JSON.stringify(body ?? {});
@@ -133,16 +209,19 @@ export class MimirClient {
 
       const client = url.protocol === "https:" ? https : http;
 
+      const headers: Record<string, string | number> = {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const req = client.request(
         {
           method: "POST",
           hostname: url.hostname,
           port: url.port || (url.protocol === "https:" ? 443 : 80),
           path: url.pathname + url.search,
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(payload),
-          },
+          headers,
         },
         (res) => {
           let data = "";

@@ -109,3 +109,129 @@ pub async fn energy_status(State(state): State<AppState>) -> impl IntoResponse {
         }))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use std::collections::HashMap;
+    use ygg_domain::mesh::{
+        ClusterConfig, GateConfig, NodeIdentity, ServiceEndpoint,
+    };
+    use ygg_mesh::gate::Gate;
+
+    fn test_identity(name: &str) -> NodeIdentity {
+        NodeIdentity {
+            name: name.into(),
+            role: "test".into(),
+            services: vec!["test-svc".into()],
+            advertise_addr: "127.0.0.1".into(),
+            mesh_port: 9100,
+        }
+    }
+
+    fn test_capabilities() -> NodeCapabilities {
+        let mut services = HashMap::new();
+        services.insert(
+            "test-svc".to_string(),
+            ServiceEndpoint {
+                url: "http://127.0.0.1:8080".into(),
+                health_path: "/health".into(),
+            },
+        );
+        NodeCapabilities {
+            services,
+            has_gpu: false,
+            energy_policy: None,
+        }
+    }
+
+    /// Construct a minimal `AppState` for handler tests. The registry is built
+    /// twice (once for `state.registry`, once handed off to the `MeshProxy`)
+    /// because `NodeRegistry` is not `Clone`. Both share the same node config.
+    fn test_state(name: &str) -> AppState {
+        let cfg = ClusterConfig {
+            node: test_identity(name),
+            discovery: Default::default(),
+            heartbeat: Default::default(),
+            gate: GateConfig::default(),
+        };
+        let registry = Arc::new(NodeRegistry::new(cfg.clone()));
+        let proxy_registry = NodeRegistry::new(cfg);
+        let proxy =
+            Arc::new(MeshProxy::new(proxy_registry, Gate::new(GateConfig::default())).unwrap());
+        AppState {
+            registry,
+            proxy,
+            local_capabilities: test_capabilities(),
+            energy: None,
+        }
+    }
+
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok_status() {
+        let resp = health().await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["service"], "ygg-node");
+    }
+
+    #[tokio::test]
+    async fn list_nodes_starts_empty() {
+        let state = test_state("self");
+        let resp = list_nodes(State(state)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert!(v.is_array());
+        assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn mesh_hello_registers_peer_and_responds_with_local_identity() {
+        let state = test_state("local-node");
+        let peer = MeshHello {
+            node: test_identity("peer-node"),
+            capabilities: test_capabilities(),
+            version: "test-0".into(),
+        };
+        let resp = mesh_hello(State(state.clone()), Json(peer))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["node"]["name"], "local-node");
+
+        // Peer should now appear in registry.
+        let nodes = state.registry.all_nodes();
+        assert!(nodes.iter().any(|n| n.identity.name == "peer-node"));
+    }
+
+    #[tokio::test]
+    async fn mesh_heartbeat_returns_204() {
+        let state = test_state("local");
+        let hb = Heartbeat {
+            node_name: "peer".into(),
+            timestamp: 0,
+            load: None,
+        };
+        let resp = mesh_heartbeat(State(state), Json(hb)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn energy_status_disabled_when_no_manager() {
+        let state = test_state("local");
+        let resp = energy_status(State(state)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["enabled"], false);
+        assert!(v["nodes"].is_object());
+    }
+}

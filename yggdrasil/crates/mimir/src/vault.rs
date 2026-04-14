@@ -143,4 +143,110 @@ mod tests {
         let key = test_key();
         assert!(key.decrypt(&[0u8; 5]).is_err());
     }
+
+    #[test]
+    fn auth_passes_when_no_token_configured() {
+        // env unset → backwards-compat: no auth required
+        let headers = axum::http::HeaderMap::new();
+        assert!(verify_vault_auth_with_token(&headers, None).is_ok());
+    }
+
+    #[test]
+    fn auth_rejects_missing_header_when_token_configured() {
+        let headers = axum::http::HeaderMap::new();
+        assert!(verify_vault_auth_with_token(&headers, Some("expected-token")).is_err());
+    }
+
+    #[test]
+    fn auth_rejects_wrong_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer wrong-token".parse().unwrap());
+        assert!(verify_vault_auth_with_token(&headers, Some("expected-token")).is_err());
+    }
+
+    #[test]
+    fn auth_accepts_correct_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer expected-token".parse().unwrap());
+        assert!(verify_vault_auth_with_token(&headers, Some("expected-token")).is_ok());
+    }
+
+    #[test]
+    fn auth_rejects_non_bearer_scheme() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Basic expected-token".parse().unwrap());
+        assert!(verify_vault_auth_with_token(&headers, Some("expected-token")).is_err());
+    }
+
+    #[test]
+    fn ct_eq_short_circuits_length_mismatch() {
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(ct_eq(b"abc", b"abc"));
+    }
+}
+
+// ─── Bearer-Token Auth (Sprint 064 P3) ─────────────────────────────────
+
+const VAULT_CLIENT_TOKEN_ENV: &str = "MIMIR_VAULT_CLIENT_TOKEN";
+
+/// Constant-time byte comparison. Avoids leaking the matching prefix length
+/// via timing side-channel — vital for any token check.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Verify the request's `Authorization: Bearer <token>` header against the
+/// vault client token (read from `MIMIR_VAULT_CLIENT_TOKEN` env).
+///
+/// - **Env unset**: backwards-compat — no auth required, returns `Ok(())`.
+/// - **Env set, header missing or scheme != Bearer**: returns
+///   `ServiceError::Unauthorized` (HTTP 401).
+/// - **Env set, token mismatched**: returns `ServiceError::Unauthorized`.
+pub fn verify_vault_auth(
+    headers: &axum::http::HeaderMap,
+) -> Result<(), ygg_server::error::ServiceError> {
+    let expected = std::env::var(VAULT_CLIENT_TOKEN_ENV).ok();
+    verify_vault_auth_with_token(headers, expected.as_deref())
+}
+
+/// Pure helper extracted for unit testing — same logic as `verify_vault_auth`
+/// but takes the expected token as a parameter instead of reading the env.
+fn verify_vault_auth_with_token(
+    headers: &axum::http::HeaderMap,
+    expected: Option<&str>,
+) -> Result<(), ygg_server::error::ServiceError> {
+    let Some(expected) = expected.filter(|s| !s.is_empty()) else {
+        // Auth not configured — allow request through (backwards compat).
+        return Ok(());
+    };
+
+    let header_val = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            ygg_server::error::ServiceError::Unauthorized(
+                "missing Authorization header".into(),
+            )
+        })?;
+
+    let token = header_val.strip_prefix("Bearer ").ok_or_else(|| {
+        ygg_server::error::ServiceError::Unauthorized(
+            "Authorization scheme must be Bearer".into(),
+        )
+    })?;
+
+    if !ct_eq(token.as_bytes(), expected.as_bytes()) {
+        return Err(ygg_server::error::ServiceError::Unauthorized(
+            "invalid bearer token".into(),
+        ));
+    }
+
+    Ok(())
 }

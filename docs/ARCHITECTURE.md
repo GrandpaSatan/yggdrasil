@@ -56,3 +56,26 @@ Centralized configuration management system with cross-platform support (Linux/W
   /local/            # Local memory per workstation  
   /central/          # Consolidated central memory
 ```
+
+## Sprint 064 Changes
+
+## store_gate
+
+```toml
+[store_gate]
+model = "LFM2.5-1.2B-Instruct"
+primary = "munin"
+secondary = "hugin"
+timeout = 5000
+keep_alive = 10000
+feedback_suggest_alternatives_first = true
+```
+
+## keep_warm
+
+```toml
+[keep_warm]
+models = ["glm-4.7-flash","LFM2.5","nemotron","saga","gemma4:e4b","RWKV-7"]
+interval = 540
+keep_alive = 10000
+```

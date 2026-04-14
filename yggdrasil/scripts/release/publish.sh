@@ -68,9 +68,16 @@ dry_run_or() {
 vault_get() {
   local key="$1"
   local response
+  # Sprint 064 P3 — vault now requires `Authorization: Bearer <token>` when
+  # MIMIR_VAULT_CLIENT_TOKEN is set on the server. Read from env.
+  local auth_args=()
+  if [[ -n "${MIMIR_VAULT_CLIENT_TOKEN:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer ${MIMIR_VAULT_CLIENT_TOKEN}")
+  fi
   response="$(curl -sf --max-time 10 \
     -X POST "${MIMIR_URL}/api/v1/vault" \
     -H "Content-Type: application/json" \
+    "${auth_args[@]}" \
     -d "{\"action\":\"get\",\"key\":\"${key}\"}" 2>/dev/null || echo "")"
 
   if [[ -z "$response" ]]; then

@@ -154,3 +154,63 @@ pub fn record_queue_depth(priority: &str, depth: usize) {
     )
     .set(depth as f64);
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Sprint 064 P8 — Flow gateway observability
+// ─────────────────────────────────────────────────────────────────
+
+/// Record an explicit flow invocation (client passed `flow: "<name>"` in the
+/// chat completion request, bypassing the intent classifier).
+pub fn record_explicit_flow_invocation(flow: &str) {
+    counter!(
+        "odin_explicit_flow_invocations_total",
+        "flow" => flow.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a cron-triggered flow firing (background scheduler dispatch).
+pub fn record_cron_fire(flow: &str) {
+    counter!(
+        "odin_cron_fires_total",
+        "flow" => flow.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a hit on the daily E2E smoke endpoint (incremented once per
+/// `scripts/smoke/e2e-cron-wrapper.sh` run by the cron timer).
+pub fn record_e2e_hit() {
+    counter!("odin_e2e_hits_total").increment(1);
+}
+
+/// Record the wall-clock duration of one step in a flow.
+///
+/// Use `step="__total__"` to record whole-flow duration; the spec leaves
+/// the choice to the caller.
+pub fn record_flow_duration(flow: &str, step: &str, duration_secs: f64) {
+    histogram!(
+        "odin_flow_duration_seconds",
+        "flow" => flow.to_string(),
+        "step" => step.to_string()
+    )
+    .record(duration_secs);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // metrics! macros are no-ops without a recorder installed. These tests
+    // verify the helpers compile and accept the documented signatures —
+    // value plumbing is exercised end-to-end via the /metrics scrape in prod.
+
+    #[test]
+    fn metric_helpers_accept_expected_signatures() {
+        record_explicit_flow_invocation("coding_swarm");
+        record_cron_fire("dream_consolidation");
+        record_e2e_hit();
+        record_flow_duration("coding_swarm", "review", 0.42);
+        record_flow_duration("coding_swarm", "__total__", 1.7);
+    }
+}

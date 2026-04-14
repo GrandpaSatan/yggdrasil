@@ -1149,6 +1149,7 @@ pub async fn chat_handler(
                     .find_by_name(&flows_snapshot, flow_name)
                     .expect("flow existence was verified by classify_explicit_flow");
                 tracing::info!(flow = %flow_name, "explicit flow invocation");
+                crate::metrics::record_explicit_flow_invocation(flow_name);
                 let flow_cloned = flow.clone();
                 let pinned_images: Option<Vec<String>> = request
                     .messages
@@ -3137,6 +3138,17 @@ pub async fn request_log_query_handler(
 // ─── Webhook handler (Sprint 057) ────────────────────────────────────
 
 /// HA webhook handler with AppState access for camera motion dispatch.
+/// Sprint 064 P8 — daily E2E hit counter. The cron wrapper
+/// (`scripts/smoke/e2e-cron-wrapper.sh`) pings this once per run; Prometheus
+/// scrapes `odin_e2e_hits_total` to confirm the timer is firing.
+pub async fn e2e_hit_handler() -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    crate::metrics::record_e2e_hit();
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "ok": true })),
+    )
+}
+
 pub async fn webhook_handler(
     State(state): State<AppState>,
     Json(payload): Json<ygg_ha::webhook::WebhookPayload>,
@@ -3356,10 +3368,12 @@ mod flow_crud_tests {
                 watches: None,
                 sentinel: None,
                 sentinel_skips: None,
+                secrets: vec![],
             }],
             timeout_secs: 30,
             max_step_output_chars: 4000,
             loop_config: None,
+            secrets: vec![],
         }
     }
 

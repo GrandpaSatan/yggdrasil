@@ -258,3 +258,171 @@ describe("MimirClient — unreachable server", () => {
     await expect(mimir.listVault()).rejects.toThrow();
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Sprint 064 P3 — Bearer-token auth via SecretStorage
+// ─────────────────────────────────────────────────────────────
+
+import * as vscode from "vscode";
+import { makeExtensionContext } from "../__mocks__/vscode";
+
+/**
+ * Spin up an HTTP server that captures every Authorization header seen,
+ * lets the test inject responses, and returns headers afterward.
+ */
+function createCapturingServer(
+  responder: (req: http.IncomingMessage) => { status: number; body: unknown },
+): Promise<{
+  url: string;
+  close: () => void;
+  headers: () => Array<string | undefined>;
+}> {
+  const seen: Array<string | undefined> = [];
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      seen.push(req.headers["authorization"] as string | undefined);
+      const { status, body } = responder(req);
+      const raw = typeof body === "string" ? body : JSON.stringify(body);
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(raw);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => server.close(),
+        headers: () => seen,
+      });
+    });
+  });
+}
+
+describe("MimirClient — bearer-token auth (Sprint 064 P3)", () => {
+  it("sends no Authorization header when SecretStorage is unset", async () => {
+    // Ensure no SecretStorage is plugged in for this test.
+    (MimirClient as unknown as { secretStorage?: vscode.SecretStorage }).secretStorage =
+      undefined;
+
+    const { url, close, headers } = await createCapturingServer(() => ({
+      status: 200,
+      body: { secrets: [], count: 0 },
+    }));
+    try {
+      const mimir = new MimirClient();
+      vi.spyOn(mimir, "mimirUrl", "get").mockReturnValue(url);
+      await mimir.listVault();
+      expect(headers()[0]).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+
+  it("attaches Bearer token from SecretStorage when present", async () => {
+    const ctx = makeExtensionContext();
+    await ctx.secrets.store("yggdrasil.mimirVaultToken", "the-token");
+    MimirClient.useSecretStorage(ctx.secrets as unknown as vscode.SecretStorage);
+
+    const { url, close, headers } = await createCapturingServer(() => ({
+      status: 200,
+      body: { secrets: [], count: 0 },
+    }));
+    try {
+      const mimir = new MimirClient();
+      vi.spyOn(mimir, "mimirUrl", "get").mockReturnValue(url);
+      await mimir.listVault();
+      expect(headers()[0]).toBe("Bearer the-token");
+    } finally {
+      close();
+      // Reset for following tests.
+      await ctx.secrets.delete("yggdrasil.mimirVaultToken");
+    }
+  });
+
+  it("prompts via showInputBox when SecretStorage is empty, then stores+sends", async () => {
+    const ctx = makeExtensionContext();
+    await ctx.secrets.delete("yggdrasil.mimirVaultToken");
+    MimirClient.useSecretStorage(ctx.secrets as unknown as vscode.SecretStorage);
+
+    const promptSpy = vi
+      .spyOn(vscode.window, "showInputBox")
+      .mockResolvedValue("typed-token");
+
+    const { url, close, headers } = await createCapturingServer(() => ({
+      status: 200,
+      body: { secrets: [], count: 0 },
+    }));
+    try {
+      const mimir = new MimirClient();
+      vi.spyOn(mimir, "mimirUrl", "get").mockReturnValue(url);
+      await mimir.listVault();
+
+      expect(promptSpy).toHaveBeenCalledTimes(1);
+      expect(headers()[0]).toBe("Bearer typed-token");
+      // Token persisted for next call.
+      expect(await ctx.secrets.get("yggdrasil.mimirVaultToken")).toBe(
+        "typed-token",
+      );
+    } finally {
+      promptSpy.mockRestore();
+      close();
+      await ctx.secrets.delete("yggdrasil.mimirVaultToken");
+    }
+  });
+
+  it("on 401, clears cached token, re-prompts, and retries once", async () => {
+    const ctx = makeExtensionContext();
+    await ctx.secrets.store("yggdrasil.mimirVaultToken", "stale-token");
+    MimirClient.useSecretStorage(ctx.secrets as unknown as vscode.SecretStorage);
+
+    const promptSpy = vi
+      .spyOn(vscode.window, "showInputBox")
+      .mockResolvedValue("fresh-token");
+
+    let callCount = 0;
+    const { url, close, headers } = await createCapturingServer(() => {
+      callCount += 1;
+      return callCount === 1
+        ? { status: 401, body: { error: "invalid bearer token" } }
+        : { status: 200, body: { secrets: [], count: 0 } };
+    });
+    try {
+      const mimir = new MimirClient();
+      vi.spyOn(mimir, "mimirUrl", "get").mockReturnValue(url);
+      await mimir.listVault();
+
+      expect(callCount).toBe(2);
+      expect(headers()[0]).toBe("Bearer stale-token");
+      expect(headers()[1]).toBe("Bearer fresh-token");
+      expect(await ctx.secrets.get("yggdrasil.mimirVaultToken")).toBe(
+        "fresh-token",
+      );
+    } finally {
+      promptSpy.mockRestore();
+      close();
+      await ctx.secrets.delete("yggdrasil.mimirVaultToken");
+    }
+  });
+
+  it("on 401 + user cancels re-prompt, propagates the 401 error", async () => {
+    const ctx = makeExtensionContext();
+    await ctx.secrets.store("yggdrasil.mimirVaultToken", "stale-token");
+    MimirClient.useSecretStorage(ctx.secrets as unknown as vscode.SecretStorage);
+
+    const promptSpy = vi
+      .spyOn(vscode.window, "showInputBox")
+      .mockResolvedValue(undefined);
+
+    const { url, close } = await createCapturingServer(() => ({
+      status: 401,
+      body: { error: "invalid bearer token" },
+    }));
+    try {
+      const mimir = new MimirClient();
+      vi.spyOn(mimir, "mimirUrl", "get").mockReturnValue(url);
+      await expect(mimir.listVault()).rejects.toThrow(/HTTP 401/);
+    } finally {
+      promptSpy.mockRestore();
+      close();
+    }
+  });
+});

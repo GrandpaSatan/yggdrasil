@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil",
   "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "icon": "icon.png",
@@ -71,6 +71,12 @@
           "id": "yggdrasil.repo",
           "name": "Workspace Files",
           "contextualTitle": "Yggdrasil Repo"
+        },
+        {
+          "id": "yggdrasil.vaultPanel",
+          "name": "Vault",
+          "type": "webview",
+          "contextualTitle": "Yggdrasil Vault"
         }
       ]
     },
@@ -147,6 +153,16 @@
         "command": "yggdrasil.openSettings",
         "title": "Yggdrasil: Open Settings",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "yggdrasil.openVault",
+        "title": "Yggdrasil: Open Vault Panel",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "yggdrasil.refreshVault",
+        "title": "Yggdrasil: Refresh Vault",
+        "icon": "$(refresh)"
       },
       {
         "command": "yggdrasil.openChat",

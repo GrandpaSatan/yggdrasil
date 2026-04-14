@@ -60,6 +60,8 @@ export const window = {
     show: () => {},
     dispose: () => {},
   }),
+  // Prompt — tests override this via `vi.spyOn(window, "showInputBox").mockResolvedValue("...")`.
+  showInputBox: async (_opts?: unknown): Promise<string | undefined> => undefined,
 };
 
 // ── ConfigurationTarget ──────────────────────────────────────

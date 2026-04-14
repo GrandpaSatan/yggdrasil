@@ -129,3 +129,88 @@ impl HealthProbe for QdrantProbe {
             .map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+
+    /// Probe whose result is decided up-front by the test.
+    struct FakeProbe {
+        n: &'static str,
+        result: Result<(), String>,
+    }
+
+    #[async_trait::async_trait]
+    impl HealthProbe for FakeProbe {
+        fn name(&self) -> &str {
+            self.n
+        }
+        async fn check(&self) -> Result<(), String> {
+            self.result.clone()
+        }
+    }
+
+    async fn run(checker: HealthChecker) -> serde_json::Value {
+        let resp = HealthChecker::handler(Arc::new(checker)).await.into_response();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn empty_checker_is_healthy() {
+        let v = run(HealthChecker::new(vec![])).await;
+        assert_eq!(v["status"], "healthy");
+        assert!(v["checks"].as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn all_ok_probes_yield_healthy() {
+        let v = run(HealthChecker::new(vec![
+            Box::new(FakeProbe { n: "a", result: Ok(()) }),
+            Box::new(FakeProbe { n: "b", result: Ok(()) }),
+        ]))
+        .await;
+        assert_eq!(v["status"], "healthy");
+        assert_eq!(v["checks"]["a"], "ok");
+        assert_eq!(v["checks"]["b"], "ok");
+    }
+
+    #[tokio::test]
+    async fn any_error_yields_degraded_with_per_probe_detail() {
+        let v = run(HealthChecker::new(vec![
+            Box::new(FakeProbe { n: "ok-one", result: Ok(()) }),
+            Box::new(FakeProbe {
+                n: "broken",
+                result: Err("connection refused".into()),
+            }),
+        ]))
+        .await;
+        assert_eq!(v["status"], "degraded");
+        assert_eq!(v["checks"]["ok-one"], "ok");
+        assert!(v["checks"]["broken"].as_str().unwrap().contains("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn all_failing_still_yields_response_not_panic() {
+        let v = run(HealthChecker::new(vec![
+            Box::new(FakeProbe { n: "x", result: Err("e1".into()) }),
+            Box::new(FakeProbe { n: "y", result: Err("e2".into()) }),
+        ]))
+        .await;
+        assert_eq!(v["status"], "degraded");
+        assert!(v["checks"]["x"].as_str().unwrap().contains("e1"));
+        assert!(v["checks"]["y"].as_str().unwrap().contains("e2"));
+    }
+
+    #[tokio::test]
+    async fn probe_name_is_used_as_check_key() {
+        let v = run(HealthChecker::new(vec![Box::new(FakeProbe {
+            n: "custom-name",
+            result: Ok(()),
+        })]))
+        .await;
+        assert!(v["checks"].get("custom-name").is_some());
+    }
+}

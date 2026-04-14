@@ -217,10 +217,10 @@ pub async fn store_engram(
         return Ok((StatusCode::OK, Json(serde_json::json!({ "id": existing_id, "updated": true }))));
     }
 
-    // Step 4b: Novelty gate — reject near-duplicates (new inserts only, skipped when force=true)
-    // Uses project-scoped SDR index for fast in-memory dedup.
-    let dedup_threshold = state.config.sdr.dedup_threshold;
-    if dedup_threshold < 1.0 && !body.force {
+    // Step 4b: Novelty triage (Sprint 064 P1) — server-side New / Update / Old verdict.
+    // Skipped entirely when force=true (operator override).
+    let novelty_cfg = &state.config.sdr.novelty;
+    if !body.force {
         let nearest_match: Option<(Uuid, f64)> = if let Some(ref proj) = body.project {
             state
                 .sdr_index
@@ -228,76 +228,184 @@ pub async fn store_engram(
                 .into_iter()
                 .next()
         } else {
-            state
-                .sdr_index
-                .query(&sdr_val, 1)
-                .into_iter()
-                .next()
+            state.sdr_index.query(&sdr_val, 1).into_iter().next()
         };
 
         if let Some((dup_id, sim)) = nearest_match
-            && sim >= dedup_threshold
+            && sim >= novelty_cfg.update_threshold
         {
+            // Fetch the existing engram so the verdict has full context.
+            let dup_ids = vec![dup_id];
+            let empty_sim = std::collections::HashMap::new();
+            let existing = engrams::fetch_engrams_by_ids(
+                state.store.pool(),
+                &dup_ids,
+                &empty_sim,
+            )
+            .await
+            .ok()
+            .and_then(|mut v| v.pop());
+
+            let (existing_cause, existing_effect) = existing
+                .map(|e| (e.cause, e.effect))
+                .unwrap_or_default();
+
+            // Sprint 064 P1.5: ask the store-gate LLM (LFM2.5 by default) for a
+            // semantic verdict, falling through the configured backend chain.
+            // On disabled/no-backends/all-failed, fall back to the threshold
+            // classifier so the write path is never blocked by a model outage.
+            let mut store_worthy = true;
+            let verdict = match state.config.store_gate.as_ref() {
+                Some(gate_cfg) if gate_cfg.enabled => {
+                    match crate::store_gate::classify(
+                        &state.http_client,
+                        gate_cfg,
+                        &body.cause,
+                        &body.effect,
+                        dup_id,
+                        &existing_cause,
+                        &existing_effect,
+                        sim,
+                    )
+                    .await
+                    {
+                        Ok(decision) => {
+                            store_worthy = decision.store_worthy;
+                            let backend = gate_cfg
+                                .backends
+                                .get(decision.backend_index)
+                                .map(|b| b.url.as_str())
+                                .unwrap_or("?");
+                            tracing::info!(
+                                duplicate_id = %dup_id,
+                                similarity = %sim,
+                                backend,
+                                reasoning = %decision.reasoning,
+                                "store gate verdict received"
+                            );
+                            decision.verdict
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "store gate failed — falling back to threshold classifier"
+                            );
+                            crate::novelty::classify_novelty(
+                                sim,
+                                &body.effect,
+                                dup_id,
+                                &existing_cause,
+                                &existing_effect,
+                                novelty_cfg,
+                            )
+                        }
+                    }
+                }
+                _ => crate::novelty::classify_novelty(
+                    sim,
+                    &body.effect,
+                    dup_id,
+                    &existing_cause,
+                    &existing_effect,
+                    novelty_cfg,
+                ),
+            };
+
+            // The gate may declare the new engram not worth storing (noise) —
+            // honour it by short-circuiting to Old (no write, return existing id).
+            let verdict = if !store_worthy {
                 tracing::info!(
                     duplicate_id = %dup_id,
-                    similarity = %sim,
-                    threshold = %dedup_threshold,
-                    project = ?body.project,
-                    "engram flagged by novelty gate — returning match for client tiebreak"
+                    "store gate flagged store_worthy=false — skipping write"
                 );
+                crate::novelty::NoveltyVerdict::Old { id: dup_id }
+            } else {
+                verdict
+            };
 
-                // Fetch the existing engram so the client can compare
-                let dup_ids = vec![dup_id];
-                let empty_sim = std::collections::HashMap::new();
-                let existing = engrams::fetch_engrams_by_ids(
-                    state.store.pool(),
-                    &dup_ids,
-                    &empty_sim,
-                )
-                .await
-                .ok()
-                .and_then(|mut v| v.pop());
-
-                let (existing_cause, existing_effect) = existing
-                    .map(|e| (e.cause, e.effect))
-                    .unwrap_or_default();
-
-                // Sprint 055: Detect contradictions — high cause similarity but divergent effects.
-                // Use Jaccard word overlap on effect text to determine if this is a
-                // near-duplicate (same info) or a contradiction (updated/conflicting info).
-                let contradiction_detected = if sim >= 0.85 && !existing_effect.is_empty() {
-                    let existing_words: std::collections::HashSet<&str> =
-                        existing_effect.split_whitespace().collect();
-                    let new_words: std::collections::HashSet<&str> =
-                        body.effect.split_whitespace().collect();
-                    let intersection = existing_words.intersection(&new_words).count();
-                    let union = existing_words.union(&new_words).count();
-                    let jaccard = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
-                    // Low word overlap (< 0.5) with high semantic similarity = contradiction
-                    jaccard < 0.5
-                } else {
-                    false
-                };
-
-                if contradiction_detected {
-                    tracing::warn!(
-                        duplicate_id = %dup_id,
+            match verdict {
+                crate::novelty::NoveltyVerdict::Old { id } => {
+                    tracing::info!(
+                        engram_id = %id,
                         similarity = %sim,
-                        "contradiction detected — same topic, different content"
+                        "novelty verdict=old — near-identical exists, skipping write"
                     );
+                    return Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "verdict": "old",
+                            "id": id,
+                            "similarity": sim,
+                        })),
+                    ));
                 }
+                crate::novelty::NoveltyVerdict::Update {
+                    id,
+                    previous_cause,
+                    previous_effect,
+                } => {
+                    let scope = body.scope.as_deref().unwrap_or(
+                        if body.project.is_some() { "project" } else { "global" },
+                    );
+                    let updated = engrams::update_engram_sdr(
+                        state.store.pool(),
+                        id,
+                        &engrams::EngramSdrParams {
+                            cause: &body.cause,
+                            effect: &body.effect,
+                            sdr_bits: &sdr_bytes,
+                            content_hash: &content_hash,
+                            tags: &body.tags,
+                            trigger_type,
+                            trigger_label: &trigger_label,
+                            project: body.project.as_deref(),
+                            scope,
+                        },
+                    )
+                    .await?;
 
-                return Ok((
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": if contradiction_detected { "contradiction detected" } else { "near-duplicate detected" },
-                        "contradiction": contradiction_detected,
-                        "duplicate_id": dup_id,
-                        "similarity": sim,
-                        "existing_cause": existing_cause,
-                        "existing_effect": existing_effect
-                    })),
-                ));
+                    if !updated {
+                        return Err(MimirError::NotFound(format!(
+                            "engram {id} flagged for update but row missing"
+                        )));
+                    }
+
+                    state.sdr_index.remove(id);
+                    state
+                        .sdr_index
+                        .insert_scoped(body.project.as_deref(), id, sdr_val);
+
+                    let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+                    let payload = build_qdrant_payload(body.project.as_deref(), scope);
+                    state
+                        .vectors
+                        .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+                        .await?;
+                    state
+                        .vectors
+                        .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+                        .await?;
+
+                    tracing::info!(
+                        engram_id = %id,
+                        similarity = %sim,
+                        "novelty verdict=update — overwrote existing engram in place"
+                    );
+                    return Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "verdict": "update",
+                            "id": id,
+                            "similarity": sim,
+                            "previous_cause": previous_cause,
+                            "previous_effect": previous_effect,
+                        })),
+                    ));
+                }
+                crate::novelty::NoveltyVerdict::New => {
+                    // Fall through to insert path below.
+                }
+            }
         }
     }
 
@@ -362,8 +470,11 @@ pub async fn store_engram(
         sdr_val,
     );
 
-    // Step 12: Return 201 Created
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+    // Step 12: Return 201 Created — include verdict for client consistency (Sprint 064 P1).
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "verdict": "new", "id": id })),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2732,11 +2843,19 @@ mod tests {
 /// POST /api/v1/vault — get, set, list, or delete secrets.
 ///
 /// Requires `MIMIR_VAULT_KEY` env var. Returns 503 if vault is not configured.
+///
+/// Sprint 064 P3: when `MIMIR_VAULT_CLIENT_TOKEN` is set, the request must
+/// carry `Authorization: Bearer <token>` matching that env var (constant-time
+/// compare). Returns 401 on missing/wrong token. When the env is unset, the
+/// endpoint behaves as before (no auth) for backwards-compat.
 pub async fn vault_handler(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<VaultRequest>,
 ) -> Result<Json<serde_json::Value>, MimirError> {
     use ygg_store::postgres::vault;
+
+    crate::vault::verify_vault_auth(&headers)?;
 
     let vault_key = crate::vault::VaultKey::from_env()
         .map_err(|e| MimirError::Internal(e))?

@@ -1,0 +1,10 @@
+[Unit]
+Description=Yggdrasil daily E2E smoke run (Sprint 064 P6)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

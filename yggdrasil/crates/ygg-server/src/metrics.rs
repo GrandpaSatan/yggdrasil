@@ -60,3 +60,70 @@ pub fn http_metrics(
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use axum::middleware;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    async fn ok_handler() -> &'static str {
+        "ok"
+    }
+    async fn error_handler() -> (StatusCode, &'static str) {
+        (StatusCode::INTERNAL_SERVER_ERROR, "boom")
+    }
+
+    fn app() -> Router {
+        Router::new()
+            .route("/ok", get(ok_handler))
+            .route("/err", get(error_handler))
+            .layer(middleware::from_fn(http_metrics("test-svc")))
+    }
+
+    #[tokio::test]
+    async fn middleware_preserves_2xx_responses() {
+        let resp = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/ok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn middleware_preserves_5xx_responses() {
+        let resp = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/err")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn middleware_handles_unknown_routes_with_404() {
+        let resp = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

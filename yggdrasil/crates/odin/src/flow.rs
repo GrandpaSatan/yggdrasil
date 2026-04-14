@@ -117,6 +117,12 @@ impl FlowEngine {
         images: Option<&[String]>,
         state: Option<&AppState>,
     ) -> Result<FlowResult, OdinError> {
+        // Sprint 064 P7: resolve flow + step vault secrets and rewrite the
+        // flow with `{{secret:NAME}}` substitutions applied. When `state` is
+        // None (e.g. background scheduler with no AppState plumbed through)
+        // or the flow declares no secrets, this is a free no-op.
+        let resolved_flow = self.with_substituted_secrets(flow, state).await?;
+        let flow = &resolved_flow;
         let start = Instant::now();
         let mut outputs: HashMap<String, String> = HashMap::new();
         let mut step_timings = Vec::new();
@@ -170,6 +176,17 @@ impl FlowEngine {
                 }
             }
         }
+
+        // Sprint 064 P8: per-step + whole-flow duration histograms.
+        for st in &step_timings {
+            crate::metrics::record_flow_duration(
+                &flow.name,
+                &st.name,
+                (st.elapsed_ms as f64) / 1000.0,
+            );
+        }
+        let total_secs = start.elapsed().as_secs_f64();
+        crate::metrics::record_flow_duration(&flow.name, "__total__", total_secs);
 
         Ok(FlowResult {
             outputs,
@@ -519,6 +536,10 @@ impl FlowEngine {
         state: Option<&AppState>,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<FlowResult, OdinError> {
+        // Sprint 064 P7: substitute vault secrets before the streaming engine
+        // touches the prompts (matches the non-streaming `execute()` path).
+        let resolved_flow = self.with_substituted_secrets(flow, state).await?;
+        let flow = &resolved_flow;
         let start = Instant::now();
         let mut outputs: HashMap<String, String> = HashMap::new();
         let mut step_timings = Vec::new();
@@ -1016,6 +1037,76 @@ impl FlowEngine {
             }
         }
     }
+
+    /// Sprint 064 P7 — resolve flow + step secrets from the Mimir vault and
+    /// return a substituted clone of the flow with `{{secret:NAME}}` tokens
+    /// replaced in `system_prompt` and any template-shaped inputs.
+    ///
+    /// Returns the input flow unchanged when:
+    ///   - `state` is None (no AppState wired — typical for tests/scheduler)
+    ///   - the flow declares no secrets (free no-op)
+    ///   - any individual step also declares no secrets (handled per-step)
+    async fn with_substituted_secrets(
+        &self,
+        flow: &FlowConfig,
+        state: Option<&AppState>,
+    ) -> Result<FlowConfig, OdinError> {
+        let any_secrets =
+            !flow.secrets.is_empty() || flow.steps.iter().any(|s| !s.secrets.is_empty());
+        if !any_secrets {
+            return Ok(flow.clone());
+        }
+        let Some(state) = state else {
+            tracing::warn!(
+                flow = %flow.name,
+                "flow declares secrets but no AppState was passed; substitution skipped"
+            );
+            return Ok(flow.clone());
+        };
+
+        let token = std::env::var("MIMIR_VAULT_CLIENT_TOKEN").ok();
+        let mut out = flow.clone();
+        for step in out.steps.iter_mut() {
+            let resolved = match crate::flow_secrets::resolve(
+                &self.http_client,
+                &state.mimir_url,
+                token.as_deref(),
+                &flow.secrets,
+                &step.secrets,
+            )
+            .await
+            {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(
+                        flow = %flow.name,
+                        step = %step.name,
+                        error = %e,
+                        "flow secrets resolution failed; running step with literal tokens"
+                    );
+                    continue;
+                }
+            };
+            if resolved.is_empty() {
+                continue;
+            }
+            if let Some(ref sys) = step.system_prompt {
+                step.system_prompt =
+                    Some(crate::flow_secrets::substitute(sys, &resolved));
+            }
+            substitute_in_input(&mut step.input, &resolved);
+        }
+        Ok(out)
+    }
+}
+
+/// Apply `{{secret:NAME}}` substitution to any string-shaped variant of
+/// `FlowInput`. Non-string variants (StepOutput, UserMessage, etc.) are
+/// passed through unchanged.
+fn substitute_in_input(input: &mut FlowInput, secrets: &HashMap<String, String>) {
+    if let FlowInput::Template { template } = input {
+        *template = crate::flow_secrets::substitute(template, secrets);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1163,6 +1254,7 @@ mod tests {
             watches: None,
             sentinel: Some(pattern.to_string()),
             sentinel_skips: Some(skips),
+            secrets: vec![],
         }
     }
 
@@ -1243,6 +1335,7 @@ mod tests {
             timeout_secs: 60,
             max_step_output_chars: 4096,
             loop_config: None,
+            secrets: vec![],
         }
     }
 

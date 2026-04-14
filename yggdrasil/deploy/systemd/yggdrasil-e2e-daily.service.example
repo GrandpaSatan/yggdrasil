@@ -1,0 +1,15 @@
+[Unit]
+Description=Yggdrasil daily E2E smoke (one-shot, paired with yggdrasil-e2e-daily.timer)
+After=network-online.target yggdrasil-odin.service yggdrasil-mimir.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+EnvironmentFile=/opt/yggdrasil/.env
+ExecStart=/opt/yggdrasil/scripts/smoke/e2e-cron-wrapper.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=20min

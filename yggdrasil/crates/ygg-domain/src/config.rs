@@ -49,6 +49,63 @@ pub struct OdinConfig {
     /// When present, enables motion-triggered vision analysis via Wyze cameras.
     #[serde(default)]
     pub cameras: Option<CameraConfig>,
+    /// Keep-warm injector (Sprint 064 P2). When present, Odin pings each
+    /// configured Ollama model every `interval_secs` with a no-op generation
+    /// using `keep_alive: <window>` so cold-start latency never bites flows
+    /// like dream_exploration (GLM-4.7 cold = 30–60s, warm = ~1s).
+    #[serde(default)]
+    pub keep_warm: Option<KeepWarmConfig>,
+}
+
+// ─── Keep-Warm Injector (Sprint 064 P2) ────────────────────────────
+
+/// Periodically pings configured Ollama models with `num_predict: 1` and a
+/// long `keep_alive` window. Eliminates cold-start across all flows that touch
+/// the model, replacing per-flow warm-up preambles with a single primitive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepWarmConfig {
+    /// Master switch.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// How often to send the keep-alive ping per target. Default 540s (9 min)
+    /// — chosen to fire just before the default 600s (10 min) keep_alive
+    /// window expires.
+    #[serde(default = "default_keep_warm_interval_secs")]
+    pub interval_secs: u64,
+    /// Ollama `keep_alive` window string (e.g. "10m", "1h"). Default "10m".
+    #[serde(default = "default_keep_warm_window")]
+    pub keep_alive: String,
+    /// Per-target timeout in milliseconds. A failed ping is logged but does not
+    /// crash the loop. Default 30000ms — generous because cold-loading a large
+    /// model (GLM-4.7 16GB) on first ping after Odin start can take 30–60s.
+    #[serde(default = "default_keep_warm_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Models to keep warm. Order does not matter — pings fire in parallel.
+    pub targets: Vec<KeepWarmTarget>,
+}
+
+/// One model to keep loaded in VRAM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepWarmTarget {
+    /// Ollama base URL (e.g. `http://127.0.0.1:11434` for Munin-local).
+    pub url: String,
+    /// Model tag (e.g. `glm-4.7-flash:latest`).
+    pub model: String,
+    /// Optional human-readable note for log output.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+fn default_keep_warm_interval_secs() -> u64 {
+    540
+}
+
+fn default_keep_warm_window() -> String {
+    "10m".to_string()
+}
+
+fn default_keep_warm_timeout_ms() -> u64 {
+    30000
 }
 
 // ─── Camera Watch (Sprint 057) ──────────────────────────────────────
@@ -446,6 +503,55 @@ pub struct MimirConfig {
     /// Auto-ingest pipeline configuration. Uses defaults when absent.
     #[serde(default)]
     pub auto_ingest: Option<AutoIngestConfig>,
+    /// Server-side LLM store gate (Sprint 064 P1.5). When `None`, the threshold
+    /// classifier alone decides the New/Update/Old verdict.
+    #[serde(default)]
+    pub store_gate: Option<StoreGateConfig>,
+}
+
+/// Server-side LLM gate that disambiguates near-duplicate engrams using a
+/// small instruction-tuned model. Backends are tried in order — primary ideally
+/// targets a Munin-local Ollama (no network hop) with a Hugin secondary as a
+/// hot fallback. Per-backend timeout caps worst-case latency at
+/// `backends.len() * timeout_ms`.
+///
+/// Fires only when the SDR top-1 is at or above
+/// `NoveltyConfig.update_threshold`. The common "no candidate" path skips the
+/// gate entirely (zero added latency).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreGateConfig {
+    /// Master switch. When false, the gate is bypassed even if config is present.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Ordered backend list. The first that returns a valid verdict wins;
+    /// errors and timeouts cascade to the next entry.
+    pub backends: Vec<StoreGateBackend>,
+    /// Per-backend timeout in milliseconds. On expiry, try the next backend.
+    /// Default 5000ms — sized for a small instruction model (e.g. LFM2.5-1.2B)
+    /// emitting a short JSON verdict.
+    #[serde(default = "default_store_gate_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Ollama `keep_alive` window in seconds — pins the model in VRAM on each
+    /// backend so successive calls stay warm. Default 600s (10 minutes).
+    #[serde(default = "default_store_gate_keep_alive_secs")]
+    pub keep_alive_secs: u64,
+}
+
+/// One backend entry in the store-gate fallback chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreGateBackend {
+    /// Ollama base URL (e.g. `http://127.0.0.1:11434` for Munin-local).
+    pub url: String,
+    /// Model tag (e.g. `hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M`).
+    pub model: String,
+}
+
+fn default_store_gate_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_store_gate_keep_alive_secs() -> u64 {
+    600
 }
 
 /// Embedding configuration — ONNX in-process model directory.
@@ -467,6 +573,10 @@ pub struct SdrConfig {
     /// Set to 1.0 to disable (only exact SDR matches rejected).
     #[serde(default = "default_dedup_threshold")]
     pub dedup_threshold: f64,
+    /// Three-state novelty triage thresholds (Sprint 064 P1).
+    /// Replaces the binary dedup_threshold gate with New / Update / Old verdicts.
+    #[serde(default)]
+    pub novelty: NoveltyConfig,
 }
 
 fn default_dedup_threshold() -> f64 {
@@ -475,6 +585,49 @@ fn default_dedup_threshold() -> f64 {
 
 fn default_sdr_dim_bits() -> usize {
     256
+}
+
+/// Novelty triage thresholds used by Mimir's three-state gate (New / Update / Old).
+///
+/// - `Old`    => similarity >= `old_threshold`    AND effect text near-identical (skip write).
+/// - `Update` => similarity >= `update_threshold` AND content meaningfully differs (overwrite).
+/// - `New`    => everything else (insert as new engram).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoveltyConfig {
+    /// Similarity at/above which a near-identical engram is treated as `Old` and skipped.
+    /// Default 0.98.
+    #[serde(default = "default_old_threshold")]
+    pub old_threshold: f64,
+    /// Similarity at/above which an existing engram is overwritten in-place (`Update`).
+    /// Default 0.85.
+    #[serde(default = "default_update_threshold")]
+    pub update_threshold: f64,
+    /// Maximum Levenshtein distance on effect text that still qualifies as `Old`.
+    /// Default 8 chars.
+    #[serde(default = "default_levenshtein_tolerance")]
+    pub levenshtein_tolerance: usize,
+}
+
+impl Default for NoveltyConfig {
+    fn default() -> Self {
+        Self {
+            old_threshold: default_old_threshold(),
+            update_threshold: default_update_threshold(),
+            levenshtein_tolerance: default_levenshtein_tolerance(),
+        }
+    }
+}
+
+fn default_old_threshold() -> f64 {
+    0.98
+}
+
+fn default_update_threshold() -> f64 {
+    0.85
+}
+
+fn default_levenshtein_tolerance() -> usize {
+    8
 }
 
 /// Memory tier capacity configuration.
@@ -724,6 +877,32 @@ pub struct FlowConfig {
     /// pattern is matched or max_iterations is reached.
     #[serde(default)]
     pub loop_config: Option<LoopConfig>,
+    /// Sprint 064 P7: flow-wide vault secrets to resolve at dispatch.
+    /// Each step inherits these in addition to its own `step.secrets` —
+    /// `{{secret:ENV_VAR}}` substitutions in step prompts/inputs are
+    /// replaced with the resolved plaintext. Use for credentials shared
+    /// across all steps of a flow (e.g. HA_TOKEN, GITEA_PASSWORD).
+    #[serde(default)]
+    pub secrets: Vec<SecretRef>,
+}
+
+/// Reference to one secret in the Mimir vault. Resolved at flow/step dispatch
+/// time and surfaced to prompts via `{{secret:<env_var>}}` substitution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretRef {
+    /// Key in the vault (e.g. "gitea_password").
+    pub vault_key: String,
+    /// Scope to look the key up in: "global", "project:<name>", "user:<name>".
+    /// Defaults to "global".
+    #[serde(default = "default_secret_scope")]
+    pub scope: String,
+    /// Substitution token name. Inside prompts, `{{secret:GITEA_PASSWORD}}`
+    /// is replaced with the resolved plaintext value of this entry.
+    pub env_var: String,
+}
+
+fn default_secret_scope() -> String {
+    "global".to_string()
 }
 
 /// Convergence-based loop configuration for iterative flows.
@@ -834,6 +1013,11 @@ pub struct FlowStep {
     /// output. Typically `["refine"]` for a swarm flow.
     #[serde(default)]
     pub sentinel_skips: Option<Vec<String>>,
+    /// Sprint 064 P7: per-step vault secrets. Resolved alongside
+    /// `flow.secrets` and substituted into this step's `system_prompt` and
+    /// any template-shaped inputs via `{{secret:ENV_VAR}}` tokens.
+    #[serde(default)]
+    pub secrets: Vec<SecretRef>,
 }
 
 /// Input source for a flow step.

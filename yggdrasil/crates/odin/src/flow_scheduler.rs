@@ -290,6 +290,7 @@ pub fn spawn_scheduler(
                         scheduled = %scheduled,
                         "triggering cron flow"
                     );
+                    crate::metrics::record_cron_fire(&entry.flow.name);
                     match state.flow_engine.execute(entry.flow, "scheduled", None, Some(&state)).await {
                         Ok(result) => {
                             tracing::info!(

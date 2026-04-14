@@ -59,11 +59,6 @@ struct QueryApiResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct StoreApiResponse {
-    id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct ChatMessage {
     content: Option<String>,
 }
@@ -436,46 +431,7 @@ pub async fn store_memory(
     };
 
     let status = resp.status();
-    if status == reqwest::StatusCode::CONFLICT {
-        // Novelty gate fired — parse the match and return a tiebreak prompt
-        let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        let dup_id = body["duplicate_id"].as_str().unwrap_or("unknown");
-        let sim = body["similarity"].as_f64().unwrap_or(0.0);
-        let existing_cause = body["existing_cause"].as_str().unwrap_or("");
-        let existing_effect = body["existing_effect"].as_str().unwrap_or("");
-        let is_contradiction = body["contradiction"].as_bool().unwrap_or(false);
-
-        let header = if is_contradiction {
-            format!("**CONTRADICTION detected** (similarity: {sim:.2}) — same topic, different content.")
-        } else {
-            format!("Near-duplicate detected (similarity: {sim:.2}).")
-        };
-
-        let action_hint = if is_contradiction {
-            format!(
-                "This looks like updated information. \
-                 To REPLACE the old memory, call store_memory with id=\"{dup_id}\".\n\
-                 To KEEP BOTH (old + new), call store_memory with force=true."
-            )
-        } else {
-            format!(
-                "To UPDATE the existing memory, call store_memory again with id=\"{dup_id}\".\n\
-                 To CREATE a new separate memory, call store_memory again with force=true."
-            )
-        };
-
-        return tool_ok(format!(
-            "{header}\n\n\
-             **Existing memory** (ID: {dup_id}):\n\
-             Cause: {existing_cause}\n\
-             Effect: {existing_effect}\n\n\
-             **Your new memory:**\n\
-             Cause: {}\n\
-             Effect: {}\n\n\
-             {action_hint}",
-            params.cause, params.effect
-        ));
-    } else if status.is_client_error() {
+    if status.is_client_error() && status != reqwest::StatusCode::CONFLICT {
         let body = resp.text().await.unwrap_or_default();
         return tool_error(format!("Memory store failed (HTTP {}): {}", status, body));
     }
@@ -484,13 +440,40 @@ pub async fn store_memory(
         return tool_error(format!("Internal error from Odin (HTTP {}): {}", status, body));
     }
 
-    let api: StoreApiResponse = match resp.json().await {
+    // Sprint 064 P1: server-side novelty triage emits {verdict, id, ...} on 2xx.
+    // Legacy 409 path retained for older Mimir builds during rollout.
+    let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => return tool_error(format!("Failed to parse Odin response: {}", e)),
     };
 
-    let id = api.id.unwrap_or_else(|| "(unknown)".to_string());
-    tool_ok(format!("Memory stored successfully. ID: {}", id))
+    if status == reqwest::StatusCode::CONFLICT {
+        let dup_id = body["duplicate_id"].as_str().unwrap_or("unknown");
+        let sim = body["similarity"].as_f64().unwrap_or(0.0);
+        return tool_ok(format!(
+            "Near-duplicate detected (similarity: {sim:.2}, id: {dup_id}). \
+             Pass force=true to insert anyway, or id=\"{dup_id}\" to update in place."
+        ));
+    }
+
+    let verdict = body["verdict"].as_str().unwrap_or("new");
+    let id = body["id"].as_str().unwrap_or("(unknown)").to_string();
+
+    match verdict {
+        "old" => {
+            let sim = body["similarity"].as_f64().unwrap_or(0.0);
+            tool_ok(format!(
+                "Memory already exists (verdict=old, similarity={sim:.2}, id={id}) — no write."
+            ))
+        }
+        "update" => {
+            let sim = body["similarity"].as_f64().unwrap_or(0.0);
+            tool_ok(format!(
+                "Memory updated in place (verdict=update, similarity={sim:.2}, id={id})."
+            ))
+        }
+        _ => tool_ok(format!("Memory stored successfully. ID: {id}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,9 +1321,15 @@ async fn sync_docs_sprint_end(
         Err(e) => return tool_error(format!("Failed to store sprint engram in Mimir: {e}")),
     };
 
+    // Sprint 064 P1: store now returns {verdict, id, ...} on 2xx. Sprint 063's
+    // stuck-archive case (high similarity vs prior "Sprint NNN: archived" engram)
+    // is now handled server-side by the Update verdict — no client retry needed.
     let engram_id = if store_resp.status().is_success() {
-        let api: StoreApiResponse = store_resp.json().await.unwrap_or(StoreApiResponse { id: None });
-        api.id.unwrap_or_else(|| "(unknown)".to_string())
+        let body: serde_json::Value = store_resp.json().await.unwrap_or_default();
+        let id = body["id"].as_str().unwrap_or("(unknown)").to_string();
+        let verdict = body["verdict"].as_str().unwrap_or("new");
+        tracing::info!(sprint_id = %params.sprint_id, verdict, %id, "sprint archived to mimir");
+        id
     } else {
         let body = store_resp.text().await.unwrap_or_default();
         return tool_error(format!("Mimir store failed: {body}"));

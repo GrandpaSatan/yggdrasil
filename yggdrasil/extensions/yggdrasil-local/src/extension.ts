@@ -24,6 +24,7 @@ import { OdinClient } from "./api/odinClient";
 import { ChatHistory } from "./chat/history";
 import { registerCodeActions } from "./chat/codeActions";
 import { RepoTreeProvider } from "./views/repoTreeProvider";
+import { VaultPanelProvider } from "./views/vaultPanel";
 import { getEditorContext, formatContextBlock } from "./editorContext";
 import { SelfImprovementChecker } from "./selfImprovement";
 
@@ -41,6 +42,11 @@ export async function activate(context: vscode.ExtensionContext) {
   statusBar = new StatusBarManager();
   notifications = new NotificationManager();
   audioPlayer = new AudioPlayer();
+
+  // Sprint 064 P3: wire SecretStorage so MimirClient can prompt-and-cache
+  // the vault bearer token on first use.
+  const { MimirClient } = await import("./api/mimirClient");
+  MimirClient.useSecretStorage(context.secrets);
 
   // ── Self-management: deploy script + configure hooks ──────────
   hookManager = new HookManager(context, outputChannel);
@@ -93,10 +99,15 @@ export async function activate(context: vscode.ExtensionContext) {
   const flowsTree = new FlowsTreeProvider();
   const modelsTree = new ModelsTreeProvider(odin);
   const repoTree = new RepoTreeProvider();
+  const vaultPanelProvider = new VaultPanelProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("yggdrasil.flowsTree", flowsTree),
     vscode.window.registerTreeDataProvider("yggdrasil.modelsTree", modelsTree),
     vscode.window.registerTreeDataProvider("yggdrasil.repo", repoTree),
+    vscode.window.registerWebviewViewProvider(
+      VaultPanelProvider.viewType,
+      vaultPanelProvider,
+    ),
     modelsTree
   );
 
@@ -125,6 +136,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("yggdrasil.openSettings", () => {
       SettingsPanel.createOrShow(context, odin, hookManager);
+    }),
+
+    // Sprint 064 P4 — full Vault panel.
+    vscode.commands.registerCommand("yggdrasil.openVault", () => {
+      void vscode.commands.executeCommand("yggdrasil.vaultPanel.focus");
+    }),
+    vscode.commands.registerCommand("yggdrasil.refreshVault", () => {
+      void vaultPanelProvider.refresh();
     }),
 
     vscode.commands.registerCommand("yggdrasil.openChat", () => {

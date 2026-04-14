@@ -191,6 +191,7 @@ mod tests {
             llm_router: None,
             flows: vec![],
             cameras: None,
+            keep_warm: None,
         }
     }
 
@@ -256,7 +257,9 @@ mod tests {
                 dim_bits: 256,
                 model_dir: "/opt/models".to_string(),
                 dedup_threshold: 0.85,
+                novelty: Default::default(),
             },
+            store_gate: None,
             tiers: TierConfig {
                 recall_capacity: 1000,
                 summarization_batch_size: 100,

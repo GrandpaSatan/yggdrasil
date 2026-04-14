@@ -44,6 +44,10 @@ pub enum ServiceError {
     /// Resource not found (404).
     #[error("{0}")]
     NotFound(String),
+
+    /// Authentication failure — missing or invalid bearer token (401).
+    #[error("{0}")]
+    Unauthorized(String),
 }
 
 impl IntoResponse for ServiceError {
@@ -59,6 +63,7 @@ impl IntoResponse for ServiceError {
             }
             ServiceError::Internal(msg) => tracing::error!(error = %msg, "internal error"),
             ServiceError::NotFound(msg) => tracing::warn!(error = %msg, "not found"),
+            ServiceError::Unauthorized(msg) => tracing::warn!(error = %msg, "unauthorized"),
         }
 
         let (status, message) = match &self {
@@ -83,8 +88,74 @@ impl IntoResponse for ServiceError {
             }
             ServiceError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             ServiceError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            ServiceError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
         };
 
         (status, Json(json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    async fn body_text(resp: Response) -> (StatusCode, String) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn validation_maps_to_400() {
+        let (status, body) =
+            body_text(ServiceError::Validation("bad input".into()).into_response()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("bad input"));
+    }
+
+    #[tokio::test]
+    async fn not_found_maps_to_404() {
+        let (status, body) =
+            body_text(ServiceError::NotFound("missing".into()).into_response()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_maps_to_401() {
+        let (status, body) =
+            body_text(ServiceError::Unauthorized("no token".into()).into_response()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(body.contains("no token"));
+    }
+
+    #[tokio::test]
+    async fn internal_maps_to_500() {
+        let (status, _) =
+            body_text(ServiceError::Internal("boom".into()).into_response()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn config_maps_to_500() {
+        let (status, _) =
+            body_text(ServiceError::Config("missing env".into()).into_response()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn summarization_maps_to_500() {
+        let (status, _) =
+            body_text(ServiceError::Summarization("llm down".into()).into_response()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn body_shape_is_error_object() {
+        let (_, body) =
+            body_text(ServiceError::Validation("xx".into()).into_response()).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"], "xx");
     }
 }
