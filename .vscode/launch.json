@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Sprint 066 — wired to Test Explorer via purpose: ["debug-test"].
+      // Click the bug icon next to any test in the Testing sidebar.
+      "name": "Pytest: Debug current test",
+      "type": "debugpy",
+      "request": "launch",
+      "purpose": ["debug-test"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}/yggdrasil/tests-e2e",
+      "env": {
+        "PYTEST_ADDOPTS": "--no-cov",
+        "E2E_DESTRUCTIVE": "0"
+      }
+    },
+    {
+      // Reproduce exactly what the sync_docs_tool sprint_end hook runs.
+      "name": "Pytest: sprint-end profile (no destructive, no slow)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/yggdrasil/tests-e2e",
+      "args": [
+        "-m",
+        "not destructive and not slow",
+        "--timeout=30",
+        "--maxfail=5",
+        "-p",
+        "no:xdist",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "-v"
+      ],
+      "env": {
+        "E2E_HOOK_CONTEXT": "sprint_end",
+        "E2E_DESTRUCTIVE": "0"
+      },
+      "justMyCode": false
+    }
+  ]
+}

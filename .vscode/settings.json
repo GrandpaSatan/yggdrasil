@@ -1,0 +1,51 @@
+{
+  // ── Python interpreter & pytest discovery (Sprint 066) ─────────────────
+  // The actual VS Code workspace root is /home/.../Yggdrasil (this dir),
+  // NOT /home/.../Yggdrasil/yggdrasil. So all paths need the yggdrasil/
+  // prefix. Pinning pytestPath to the venv binary means Test Explorer
+  // works on workspace open without an interpreter prompt.
+  "python.defaultInterpreterPath": "${workspaceFolder}/yggdrasil/tests-e2e/.venv/bin/python",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestPath": "${workspaceFolder}/yggdrasil/tests-e2e/.venv/bin/pytest",
+  "python.testing.cwd": "${workspaceFolder}/yggdrasil/tests-e2e",
+  "python.testing.pytestArgs": [
+    // Discovery is rooted in tests-e2e/pyproject.toml's [tool.pytest.ini_options]
+    // which sets testpaths = ["tests"]. Leave this list empty so we don't
+    // override that config.
+  ],
+  "python.testing.autoTestDiscoverOnSaveEnabled": true,
+  "python.testing.autoTestDiscoverOnSavePattern": "**/test_*.py",
+
+  // Inlay hints for pytest fixture parameter types.
+  "python.analysis.inlayHints.pytestParameters": true,
+
+  // Resolve `helpers.*` imports during static analysis (Pylance).
+  "python.analysis.extraPaths": ["${workspaceFolder}/yggdrasil/tests-e2e"],
+
+  // Load fleet URLs + vault token without manual sourcing.
+  "python.envFile": "${workspaceFolder}/yggdrasil/tests-e2e/.env.test",
+
+  // ── Rust workspace ──────────────────────────────────────────────────────
+  // Cargo.toml lives at yggdrasil/Cargo.toml — point rust-analyzer at it.
+  "rust-analyzer.linkedProjects": ["${workspaceFolder}/yggdrasil/Cargo.toml"],
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.cargo.features": "all",
+
+  // ── Workspace tidiness ─────────────────────────────────────────────────
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/target": true,
+    "**/.venv": true
+  },
+  "files.watcherExclude": {
+    "**/target/**": true,
+    "**/.venv/**": true,
+    "**/.pytest_cache/**": true
+  },
+
+  // ── Test Explorer behavior ─────────────────────────────────────────────
+  "testing.automaticallyOpenTestResults": "neverOpen",
+  "testing.openTesting": "neverOpen"
+}
