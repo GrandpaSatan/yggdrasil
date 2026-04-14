@@ -8,8 +8,8 @@
 //! project-scoped queries, saving CPU cycles proportional to the number
 //! of off-project engrams.
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
 use crate::sdr::{self, Sdr};
@@ -22,8 +22,17 @@ const GLOBAL_PARTITION: &str = "__global__";
 /// Read-biased: queries take a read lock, stores take a write lock.
 /// Each partition is a contiguous `Vec<(Uuid, Sdr)>` — near-zero memory
 /// overhead per partition since SDRs are just 32 bytes each.
+///
+/// Sprint 065 A·P1: a parallel `tag_index` maps engram Uuid → set of
+/// partition-prefix tags (e.g. `sprint:065`, `incident:042`). The main
+/// `partitions` vector stays at 40 bytes per entry for cache locality;
+/// tag lookup is only performed when a caller supplies a non-empty filter.
+/// See `query_scoped_with_tags` — without this filter, near-identical
+/// sprint-archive SDRs collided at similarity ~1.0, causing the store-gate
+/// LLM to overwrite prior sprint UUIDs (engram d6701e4c).
 pub struct SdrIndex {
     partitions: RwLock<HashMap<String, Vec<(Uuid, Sdr)>>>,
+    tag_index: RwLock<HashMap<Uuid, HashSet<Arc<str>>>>,
 }
 
 impl SdrIndex {
@@ -31,22 +40,65 @@ impl SdrIndex {
     pub fn new() -> Self {
         Self {
             partitions: RwLock::new(HashMap::new()),
+            tag_index: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Insert an SDR into a specific project partition.
-    pub fn insert_scoped(&self, project: Option<&str>, id: Uuid, sdr: Sdr) {
+    /// Insert an SDR into a specific project partition, recording partition-prefix
+    /// tags in the parallel tag_index.
+    ///
+    /// `tags` may contain any tag strings; only partition-prefix tags (those the
+    /// caller intends to filter on later via `query_scoped_with_tags`) need be
+    /// passed here. The typical caller passes all engram tags — redundant entries
+    /// cost ~16 bytes per tag per engram and do not affect query-time performance
+    /// (the filter only hits this index when non-empty).
+    pub fn insert_scoped_with_tags(
+        &self,
+        project: Option<&str>,
+        id: Uuid,
+        sdr: Sdr,
+        tags: &[String],
+    ) {
         let key = project.unwrap_or(GLOBAL_PARTITION);
         let mut partitions = self.partitions.write().unwrap();
         partitions
             .entry(key.to_string())
             .or_default()
             .push((id, sdr));
+        drop(partitions);
+
+        if !tags.is_empty() {
+            let mut tag_index = self.tag_index.write().unwrap();
+            let entry = tag_index.entry(id).or_default();
+            for t in tags {
+                entry.insert(Arc::<str>::from(t.as_str()));
+            }
+        }
+    }
+
+    /// Insert an SDR into a specific project partition.
+    pub fn insert_scoped(&self, project: Option<&str>, id: Uuid, sdr: Sdr) {
+        self.insert_scoped_with_tags(project, id, sdr, &[]);
     }
 
     /// Insert into the global partition (backward compat).
     pub fn insert(&self, id: Uuid, sdr: Sdr) {
         self.insert_scoped(None, id, sdr);
+    }
+
+    /// Replace the tag set for an engram. Used on update-by-ID to keep the
+    /// partition tags in sync with the latest row in PostgreSQL.
+    pub fn set_tags(&self, id: Uuid, tags: &[String]) {
+        let mut tag_index = self.tag_index.write().unwrap();
+        if tags.is_empty() {
+            tag_index.remove(&id);
+            return;
+        }
+        let entry = tag_index.entry(id).or_default();
+        entry.clear();
+        for t in tags {
+            entry.insert(Arc::<str>::from(t.as_str()));
+        }
     }
 
     /// Remove an engram from ALL partitions (handles project reassignment).
@@ -55,6 +107,8 @@ impl SdrIndex {
         for entries in partitions.values_mut() {
             entries.retain(|(eid, _)| *eid != id);
         }
+        drop(partitions);
+        self.tag_index.write().unwrap().remove(&id);
     }
 
     /// Query a specific project partition + global partition, merge and return top-K.
@@ -66,6 +120,29 @@ impl SdrIndex {
         target: &Sdr,
         project: &str,
         include_global: bool,
+        limit: usize,
+    ) -> Vec<(Uuid, f64)> {
+        self.query_scoped_with_tags(target, project, include_global, &[], limit)
+    }
+
+    /// Query a specific project partition + global partition, then apply an
+    /// OR-semantics tag filter before returning the top-K.
+    ///
+    /// `tag_filter` — candidates pass if their tag set contains AT LEAST ONE
+    /// of these tags. Empty filter = pass-all (behavior identical to
+    /// `query_scoped`). The typical caller passes partition-prefix tags like
+    /// `["sprint:065"]` to prevent cross-sprint SDR collisions.
+    ///
+    /// Why: sprint-archive engrams ("Sprint NNN: archived") embed to
+    /// near-identical SDRs across sprint numbers. Without this filter, the
+    /// store-gate LLM sees a similarity ~1.0 match and routes "update",
+    /// overwriting the prior sprint's UUID.
+    pub fn query_scoped_with_tags(
+        &self,
+        target: &Sdr,
+        project: &str,
+        include_global: bool,
+        tag_filter: &[String],
         limit: usize,
     ) -> Vec<(Uuid, f64)> {
         let partitions = self.partitions.read().unwrap();
@@ -85,14 +162,30 @@ impl SdrIndex {
         }
 
         // Scan global partition
-        if include_global {
-            if let Some(entries) = partitions.get(GLOBAL_PARTITION) {
-                scored.extend(
-                    entries
-                        .iter()
-                        .map(|(id, s)| (*id, sdr::hamming_similarity(target, s))),
-                );
-            }
+        if include_global
+            && let Some(entries) = partitions.get(GLOBAL_PARTITION)
+        {
+            scored.extend(
+                entries
+                    .iter()
+                    .map(|(id, s)| (*id, sdr::hamming_similarity(target, s))),
+            );
+        }
+
+        drop(partitions);
+
+        // Apply tag filter (OR semantics). A candidate passes if its tag set
+        // contains AT LEAST ONE of the filter tags. Candidates missing from
+        // tag_index entirely are filtered out — they cannot be in the same
+        // partition-prefix group as a tagged candidate.
+        if !tag_filter.is_empty() {
+            let tag_index = self.tag_index.read().unwrap();
+            scored.retain(|(id, _)| {
+                tag_index
+                    .get(id)
+                    .map(|tags| tag_filter.iter().any(|t| tags.contains(t.as_str())))
+                    .unwrap_or(false)
+            });
         }
 
         scored.sort_by(|(id_a, sim_a), (id_b, sim_b)| {
@@ -152,6 +245,8 @@ impl SdrIndex {
     /// Bulk load from PostgreSQL rows: `(id, sdr_bits BYTEA, project)`.
     ///
     /// Called once at startup to populate the index from persisted data.
+    /// Leaves the tag_index empty — callers that need tag-filtered queries
+    /// should use `load_from_rows_scoped_with_tags` instead.
     pub fn load_from_rows_scoped(&self, rows: &[(Uuid, Vec<u8>, Option<String>)]) {
         let mut partitions = self.partitions.write().unwrap();
         for (id, bytes, project) in rows {
@@ -161,6 +256,40 @@ impl SdrIndex {
                     .entry(key.to_string())
                     .or_default()
                     .push((*id, sdr::from_bytes(bytes)));
+            } else {
+                tracing::warn!(
+                    engram_id = %id,
+                    bytes_len = bytes.len(),
+                    "skipping SDR with invalid byte length"
+                );
+            }
+        }
+    }
+
+    /// Bulk load from PostgreSQL rows: `(id, sdr_bits BYTEA, project, tags)`.
+    ///
+    /// Sprint 065 A·P1: populates both the partition vector AND the tag_index
+    /// so that partition-prefix queries (e.g. `sprint:NNN`) work immediately
+    /// after startup without waiting for new writes to re-hydrate the index.
+    pub fn load_from_rows_scoped_with_tags(
+        &self,
+        rows: &[(Uuid, Vec<u8>, Option<String>, Vec<String>)],
+    ) {
+        let mut partitions = self.partitions.write().unwrap();
+        let mut tag_index = self.tag_index.write().unwrap();
+        for (id, bytes, project, tags) in rows {
+            if bytes.len() >= sdr::SDR_WORDS * 8 {
+                let key = project.as_deref().unwrap_or(GLOBAL_PARTITION);
+                partitions
+                    .entry(key.to_string())
+                    .or_default()
+                    .push((*id, sdr::from_bytes(bytes)));
+                if !tags.is_empty() {
+                    let entry = tag_index.entry(*id).or_default();
+                    for t in tags {
+                        entry.insert(Arc::<str>::from(t.as_str()));
+                    }
+                }
             } else {
                 tracing::warn!(
                     engram_id = %id,
@@ -535,5 +664,213 @@ mod tests {
         assert_eq!(results.len(), 1);
         let similarity = results[0].1;
         assert!(similarity < 0.85, "distinct content should pass novelty gate, got {similarity}");
+    }
+
+    // --- Sprint 065 A·P1: partition-prefix tag filter tests ---
+
+    #[test]
+    fn insert_with_tags_records_in_tag_index() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        let tags = vec!["sprint:065".to_string(), "decision".to_string()];
+        index.insert_scoped_with_tags(Some("yggdrasil"), id, make_sdr(0xFF), &tags);
+
+        let guard = index.tag_index.read().unwrap();
+        let recorded = guard.get(&id).expect("tag set present");
+        assert!(recorded.contains("sprint:065"));
+        assert!(recorded.contains("decision"));
+    }
+
+    #[test]
+    fn query_with_sprint_tag_filter_isolates_sprints() {
+        let index = SdrIndex::new();
+        let id_062 = Uuid::new_v4();
+        let id_063 = Uuid::new_v4();
+        let shared_sdr = make_sdr(0xFFFF);
+
+        // Identical SDRs — the exact cross-sprint collision scenario.
+        index.insert_scoped_with_tags(
+            Some("yggdrasil"),
+            id_062,
+            shared_sdr,
+            &["sprint:062".to_string()],
+        );
+        index.insert_scoped_with_tags(
+            Some("yggdrasil"),
+            id_063,
+            shared_sdr,
+            &["sprint:063".to_string()],
+        );
+
+        // Empty filter — legacy behavior returns both.
+        let all = index.query_scoped(&shared_sdr, "yggdrasil", false, 10);
+        assert_eq!(all.len(), 2, "empty filter should return both identical SDRs");
+
+        // sprint:063 filter — only id_063 passes.
+        let only_063 = index.query_scoped_with_tags(
+            &shared_sdr,
+            "yggdrasil",
+            false,
+            &["sprint:063".to_string()],
+            10,
+        );
+        assert_eq!(only_063.len(), 1);
+        assert_eq!(only_063[0].0, id_063);
+
+        // sprint:062 filter — only id_062 passes.
+        let only_062 = index.query_scoped_with_tags(
+            &shared_sdr,
+            "yggdrasil",
+            false,
+            &["sprint:062".to_string()],
+            10,
+        );
+        assert_eq!(only_062.len(), 1);
+        assert_eq!(only_062[0].0, id_062);
+    }
+
+    #[test]
+    fn empty_tag_filter_preserves_legacy_behavior() {
+        let index = SdrIndex::new();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        index.insert_scoped(Some("p"), id1, make_sdr(0xFF));
+        index.insert_scoped(Some("p"), id2, make_sdr(0x0F));
+
+        let legacy = index.query_scoped(&make_sdr(0xFF), "p", false, 10);
+        let tagged = index.query_scoped_with_tags(&make_sdr(0xFF), "p", false, &[], 10);
+        assert_eq!(legacy, tagged);
+    }
+
+    #[test]
+    fn remove_clears_tag_index() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        index.insert_scoped_with_tags(
+            Some("p"),
+            id,
+            make_sdr(0xFF),
+            &["sprint:065".to_string()],
+        );
+        index.remove(id);
+
+        assert!(index.tag_index.read().unwrap().get(&id).is_none());
+    }
+
+    #[test]
+    fn set_tags_replaces_tag_set() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        let sdr_val = make_sdr(0xFF);
+        index.insert_scoped_with_tags(Some("p"), id, sdr_val, &["sprint:065".to_string()]);
+
+        // Before: sprint:065 filter finds it.
+        let found = index.query_scoped_with_tags(
+            &sdr_val,
+            "p",
+            false,
+            &["sprint:065".to_string()],
+            10,
+        );
+        assert_eq!(found.len(), 1);
+
+        // Replace tag set.
+        index.set_tags(id, &["sprint:066".to_string()]);
+
+        // sprint:065 filter no longer finds it.
+        let gone = index.query_scoped_with_tags(
+            &sdr_val,
+            "p",
+            false,
+            &["sprint:065".to_string()],
+            10,
+        );
+        assert_eq!(gone.len(), 0);
+
+        // sprint:066 filter now finds it.
+        let found_again = index.query_scoped_with_tags(
+            &sdr_val,
+            "p",
+            false,
+            &["sprint:066".to_string()],
+            10,
+        );
+        assert_eq!(found_again.len(), 1);
+    }
+
+    #[test]
+    fn tag_filter_matches_any_tag_or_semantics() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        index.insert_scoped_with_tags(
+            Some("p"),
+            id,
+            make_sdr(0xFF),
+            &["sprint:065".to_string(), "phase:P1".to_string()],
+        );
+
+        // Filter with a non-matching tag AND a matching tag — OR semantics means PASS.
+        let results = index.query_scoped_with_tags(
+            &make_sdr(0xFF),
+            "p",
+            false,
+            &["sprint:099".to_string(), "phase:P1".to_string()],
+            10,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id);
+    }
+
+    #[test]
+    fn load_from_rows_scoped_with_tags_populates_tag_index() {
+        let index = SdrIndex::new();
+        let id = Uuid::new_v4();
+        let sdr_val: Sdr = [0xDEAD, 0xBEEF, 0xCAFE, 0x1234];
+        let bytes = sdr::to_bytes(&sdr_val);
+
+        index.load_from_rows_scoped_with_tags(&[(
+            id,
+            bytes,
+            Some("yggdrasil".to_string()),
+            vec!["sprint:065".to_string(), "core".to_string()],
+        )]);
+
+        let found = index.query_scoped_with_tags(
+            &sdr_val,
+            "yggdrasil",
+            false,
+            &["sprint:065".to_string()],
+            10,
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, id);
+    }
+
+    #[test]
+    fn candidate_without_tags_filtered_out_when_filter_present() {
+        // Regression: if tag_filter is non-empty, an engram with no tag_index
+        // entry must NOT be returned (cannot be in the partition-prefix group).
+        let index = SdrIndex::new();
+        let tagged = Uuid::new_v4();
+        let untagged = Uuid::new_v4();
+        let sdr_val = make_sdr(0xFF);
+
+        index.insert_scoped_with_tags(
+            Some("p"),
+            tagged,
+            sdr_val,
+            &["sprint:065".to_string()],
+        );
+        index.insert_scoped(Some("p"), untagged, sdr_val);
+
+        let filtered = index.query_scoped_with_tags(
+            &sdr_val,
+            "p",
+            false,
+            &["sprint:065".to_string()],
+            10,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, tagged);
     }
 }

@@ -19,7 +19,7 @@ use mimir::{
         task_cancel, task_complete, task_list, task_pop, task_push, timeline, vault_handler,
         ingest_document,
     },
-    state::{AppState, load_sdr_rows},
+    state::{AppState, load_sdr_rows_scoped_with_tags},
     summarization::SummarizationService,
 };
 
@@ -173,16 +173,21 @@ async fn main() -> anyhow::Result<()> {
     // --- Background SDR index backfill ---
     // Spawn after the listener is bound so the server can accept requests immediately.
     // Queries arriving before backfill completes still work via Qdrant (System 2 path).
+    //
+    // Sprint 065 A·P1: hydrate the parallel tag_index at startup via
+    // `load_sdr_rows_scoped_with_tags`. Existing engrams carry sprint:NNN /
+    // incident:NNN tags in PG; loading them here means partition-prefix
+    // queries work from the first request, without waiting for re-writes.
     {
         let state = shared_state.clone();
         tokio::spawn(async move {
-            match load_sdr_rows(state.store.pool()).await {
+            match load_sdr_rows_scoped_with_tags(state.store.pool()).await {
                 Ok(rows) => {
                     let row_count = rows.len();
-                    state.sdr_index.load_from_rows(&rows);
+                    state.sdr_index.load_from_rows_scoped_with_tags(&rows);
                     tracing::info!(
                         rows = row_count,
-                        "sdr index backfill complete"
+                        "sdr index backfill complete (with tag_index)"
                     );
                 }
                 Err(e) => {

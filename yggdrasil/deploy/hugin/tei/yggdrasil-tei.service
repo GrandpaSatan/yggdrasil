@@ -1,0 +1,16 @@
+[Unit]
+Description=Yggdrasil HF TEI embedding server on Hugin :11435 (Sprint 065 Track B·P3)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/opt/yggdrasil/deploy/hugin/tei
+ExecStart=/usr/bin/docker compose -f docker-compose.yml up -d tei
+ExecStop=/usr/bin/docker compose -f docker-compose.yml down tei
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

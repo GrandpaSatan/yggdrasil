@@ -58,6 +58,76 @@ pub fn engram_content_hash(cause: &str, effect: &str) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+/// Sprint 065 A·P1: extract partition-prefix tags from free-form cause text.
+///
+/// Detects `sprint NNN` / `sprint-NNN` / `sprint:NNN` / `sprint NNN` (3 digits)
+/// and emits normalized `sprint:NNN` tags. Used to auto-partition engrams
+/// whose cause text references a sprint number even when the caller did not
+/// supply an explicit `sprint:NNN` tag. Prevents cross-sprint SDR collisions
+/// on "Sprint NNN: archived" summaries where the only distinguishing feature
+/// is the number (engram `d6701e4c` workaround fix).
+///
+/// Conservative scan: only 3-digit sprint numbers, no regex dep.
+pub fn detect_partition_tags(cause: &str) -> Vec<String> {
+    fn is_separator(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b':' | b'-' | b'_')
+    }
+
+    let mut out = Vec::new();
+    let lower = cause.to_lowercase();
+    for (idx, _) in lower.match_indices("sprint") {
+        let rest = &lower[idx + "sprint".len()..];
+        let bytes = rest.as_bytes();
+        // Skip up to 4 separator chars only — whitespace, colon, hyphen, underscore.
+        // Any other non-digit char (e.g. 'a' in "sprint a065") means NOT a partition tag.
+        let mut i = 0;
+        while i < bytes.len() && i < 4 && is_separator(bytes[i]) {
+            i += 1;
+        }
+        // Require exactly 3 digits in sequence, with a word boundary after.
+        if i + 3 <= bytes.len()
+            && bytes[i].is_ascii_digit()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 2].is_ascii_digit()
+            && (i + 3 == bytes.len() || !bytes[i + 3].is_ascii_digit())
+        {
+            let digits = &rest[i..i + 3];
+            let tag = format!("sprint:{digits}");
+            if !out.contains(&tag) {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
+/// Sprint 065 A·P1: compute the effective tag list for an engram by merging
+/// caller-supplied tags with auto-detected partition-prefix tags from the
+/// cause text. Deduplicates case-insensitively. Returns the merged Vec for
+/// persistence into PG and for the in-memory tag_index.
+pub fn effective_tags(caller_tags: &[String], cause: &str) -> Vec<String> {
+    let mut merged: Vec<String> = caller_tags.to_vec();
+    let lower: Vec<String> = merged.iter().map(|t| t.to_lowercase()).collect();
+    for auto in detect_partition_tags(cause) {
+        if !lower.contains(&auto.to_lowercase()) {
+            merged.push(auto);
+        }
+    }
+    merged
+}
+
+/// Sprint 065 A·P1: extract partition-prefix tags (sprint:, incident:, release:)
+/// from a full tag list — the ones the SDR index uses to hard-partition queries.
+fn partition_prefix_tags(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .filter(|t| {
+            let l = t.to_lowercase();
+            l.starts_with("sprint:") || l.starts_with("incident:") || l.starts_with("release:")
+        })
+        .cloned()
+        .collect()
+}
+
 /// Helper to build a skip response for auto-ingest.
 fn auto_ingest_skip(reason: &str) -> (StatusCode, Json<AutoIngestResponse>) {
     (
@@ -151,8 +221,12 @@ pub async fn store_engram(
     let sdr_val = sdr::binarize(&embedding[..sdr::SDR_BITS]);
     let sdr_bytes = sdr::to_bytes(&sdr_val);
 
-    // Step 5: Determine trigger type from tags
-    let tags_lower: Vec<String> = body.tags.iter().map(|t| t.to_lowercase()).collect();
+    // Step 5: Determine trigger type from tags.
+    // Sprint 065 A·P1: merge caller tags with auto-detected partition tags
+    // (e.g. `sprint:NNN` from cause text) into effective_tags, then compute
+    // partition_tags for the SDR index hard-partition filter.
+    let merged_tags = effective_tags(&body.tags, &body.cause);
+    let tags_lower: Vec<String> = merged_tags.iter().map(|t| t.to_lowercase()).collect();
     let trigger_type = if tags_lower.iter().any(|t| t == "fact" || t == "core") {
         "fact"
     } else if tags_lower.iter().any(|t| t == "decision") {
@@ -160,6 +234,7 @@ pub async fn store_engram(
     } else {
         "pattern"
     };
+    let partition_tags = partition_prefix_tags(&merged_tags);
 
     // Step 6: Extract trigger label — first 80 chars of cause, trimmed to word boundary
     let trigger_label = truncate_to_word_boundary(body.cause.trim(), 80);
@@ -180,7 +255,7 @@ pub async fn store_engram(
                 effect: &body.effect,
                 sdr_bits: &sdr_bytes,
                 content_hash: &content_hash,
-                tags: &body.tags,
+                tags: &merged_tags,
                 trigger_type,
                 trigger_label: &trigger_label,
                 project: body.project.as_deref(),
@@ -198,9 +273,15 @@ pub async fn store_engram(
 
         tracing::info!(engram_id = %existing_id, trigger_type, "engram updated by ID");
 
-        // Update in-memory SDR index (remove old, insert scoped)
+        // Update in-memory SDR index: remove old, insert scoped with merged tags
+        // so the partition-prefix filter keeps working after update-by-id.
         state.sdr_index.remove(existing_id);
-        state.sdr_index.insert_scoped(body.project.as_deref(), existing_id, sdr_val);
+        state.sdr_index.insert_scoped_with_tags(
+            body.project.as_deref(),
+            existing_id,
+            sdr_val,
+            &merged_tags,
+        );
 
         // Update both legacy and v2 Qdrant collections
         let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
@@ -221,12 +302,24 @@ pub async fn store_engram(
     // Skipped entirely when force=true (operator override).
     let novelty_cfg = &state.config.sdr.novelty;
     if !body.force {
+        // Sprint 065 A·P1: when the engram carries partition-prefix tags
+        // (sprint:NNN, incident:NNN, release:vX), hard-partition the novelty
+        // lookup so sprint-archive SDRs at similarity ~1.0 cannot collide
+        // across sprints. Empty partition_tags = legacy behavior.
         let nearest_match: Option<(Uuid, f64)> = if let Some(ref proj) = body.project {
-            state
-                .sdr_index
-                .query_scoped(&sdr_val, proj, true, 1)
-                .into_iter()
-                .next()
+            if partition_tags.is_empty() {
+                state
+                    .sdr_index
+                    .query_scoped(&sdr_val, proj, true, 1)
+                    .into_iter()
+                    .next()
+            } else {
+                state
+                    .sdr_index
+                    .query_scoped_with_tags(&sdr_val, proj, true, &partition_tags, 1)
+                    .into_iter()
+                    .next()
+            }
         } else {
             state.sdr_index.query(&sdr_val, 1).into_iter().next()
         };
@@ -355,7 +448,7 @@ pub async fn store_engram(
                             effect: &body.effect,
                             sdr_bits: &sdr_bytes,
                             content_hash: &content_hash,
-                            tags: &body.tags,
+                            tags: &merged_tags,
                             trigger_type,
                             trigger_label: &trigger_label,
                             project: body.project.as_deref(),
@@ -371,9 +464,12 @@ pub async fn store_engram(
                     }
 
                     state.sdr_index.remove(id);
-                    state
-                        .sdr_index
-                        .insert_scoped(body.project.as_deref(), id, sdr_val);
+                    state.sdr_index.insert_scoped_with_tags(
+                        body.project.as_deref(),
+                        id,
+                        sdr_val,
+                        &merged_tags,
+                    );
 
                     let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
                     let payload = build_qdrant_payload(body.project.as_deref(), scope);
@@ -422,7 +518,7 @@ pub async fn store_engram(
             effect: &body.effect,
             sdr_bits: &sdr_bytes,
             content_hash: &content_hash,
-            tags: &body.tags,
+            tags: &merged_tags,
             trigger_type,
             trigger_label: &trigger_label,
             project: body.project.as_deref(),
@@ -434,8 +530,11 @@ pub async fn store_engram(
 
     tracing::info!(engram_id = %id, trigger_type, project = ?body.project, scope, "engram stored via SDR");
 
-    // Step 9: Insert into project-scoped in-memory SDR index
-    state.sdr_index.insert_scoped(body.project.as_deref(), id, sdr_val);
+    // Step 9: Insert into project-scoped in-memory SDR index with merged tags
+    // so partition-prefix queries find this engram immediately.
+    state
+        .sdr_index
+        .insert_scoped_with_tags(body.project.as_deref(), id, sdr_val, &merged_tags);
 
     // Step 10: Upsert into both legacy and v2 Qdrant collections
     let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
@@ -447,7 +546,7 @@ pub async fn store_engram(
         .await?;
 
     // Also upsert into legacy category collections for backward compat
-    let tags_lower: Vec<String> = body.tags.iter().map(|t| t.to_lowercase()).collect();
+    // (tags_lower was computed at Step 5 from merged_tags)
     if tags_lower.iter().any(|t| t == "sprint") {
         state.vectors.upsert("sprints", id, embedding.clone(), HashMap::new()).await?;
     } else if tags_lower.iter().any(|t| t == "topology") {
@@ -2791,6 +2890,90 @@ mod tests {
     fn truncate_short_string_unchanged() {
         let s = "hello world";
         assert_eq!(truncate_to_word_boundary(s, 80), s);
+    }
+
+    // --- Sprint 065 A·P1: partition-prefix tag helpers ---
+
+    #[test]
+    fn detect_partition_tags_extracts_sprint_number() {
+        assert_eq!(detect_partition_tags("Sprint 065: planning"), vec!["sprint:065"]);
+        assert_eq!(detect_partition_tags("sprint-063 retro"), vec!["sprint:063"]);
+        assert_eq!(detect_partition_tags("sprint:099 mega"), vec!["sprint:099"]);
+        assert_eq!(detect_partition_tags("sprint 001 kickoff"), vec!["sprint:001"]);
+    }
+
+    #[test]
+    fn detect_partition_tags_ignores_ambient_mentions() {
+        assert!(detect_partition_tags("sprinting ahead").is_empty());
+        assert!(detect_partition_tags("sprint").is_empty());
+        assert!(detect_partition_tags("sprint 9999").is_empty()); // 4 digits
+        assert!(detect_partition_tags("sprint a065").is_empty()); // non-digit first
+    }
+
+    #[test]
+    fn detect_partition_tags_multiple_sprints_in_one_cause() {
+        // A cross-sprint reference — both numbers captured, order of first-appearance.
+        let tags = detect_partition_tags("merging Sprint 062 into sprint 063");
+        assert!(tags.contains(&"sprint:062".to_string()));
+        assert!(tags.contains(&"sprint:063".to_string()));
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn detect_partition_tags_dedupes_repeats() {
+        let tags = detect_partition_tags("Sprint 065 start; Sprint 065 plan; sprint-065 close");
+        assert_eq!(tags, vec!["sprint:065"]);
+    }
+
+    #[test]
+    fn effective_tags_merges_auto_and_caller() {
+        let caller = vec!["decision".to_string(), "core".to_string()];
+        let merged = effective_tags(&caller, "Sprint 065: memory P0 fix");
+        assert!(merged.contains(&"decision".to_string()));
+        assert!(merged.contains(&"core".to_string()));
+        assert!(merged.contains(&"sprint:065".to_string()));
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn effective_tags_does_not_duplicate_when_caller_already_has_tag() {
+        let caller = vec!["sprint:065".to_string(), "core".to_string()];
+        let merged = effective_tags(&caller, "Sprint 065 planning");
+        // Should not have two copies of sprint:065.
+        assert_eq!(merged.iter().filter(|t| t.to_lowercase() == "sprint:065").count(), 1);
+    }
+
+    #[test]
+    fn effective_tags_handles_case_insensitive_dedup() {
+        let caller = vec!["SPRINT:065".to_string()];
+        let merged = effective_tags(&caller, "Sprint 065");
+        // Case-insensitive dedup: only the caller's SPRINT:065 remains.
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], "SPRINT:065");
+    }
+
+    #[test]
+    fn partition_prefix_tags_filters_to_partition_prefixes_only() {
+        let tags = vec![
+            "sprint:065".to_string(),
+            "decision".to_string(),
+            "incident:042".to_string(),
+            "release:v1.0".to_string(),
+            "coding".to_string(),
+        ];
+        let filtered = partition_prefix_tags(&tags);
+        assert!(filtered.contains(&"sprint:065".to_string()));
+        assert!(filtered.contains(&"incident:042".to_string()));
+        assert!(filtered.contains(&"release:v1.0".to_string()));
+        assert!(!filtered.contains(&"decision".to_string()));
+        assert!(!filtered.contains(&"coding".to_string()));
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn partition_prefix_tags_empty_when_no_prefix_tags() {
+        let tags = vec!["decision".to_string(), "coding".to_string()];
+        assert!(partition_prefix_tags(&tags).is_empty());
     }
 
     #[test]

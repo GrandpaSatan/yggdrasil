@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil",
   "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "icon": "icon.png",

@@ -5168,6 +5168,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ygg-dreamer"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.8",
+ "chrono",
+ "clap",
+ "cron",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ygg-config",
+ "ygg-domain",
+]
+
+[[package]]
 name = "ygg-embed"
 version = "1.0.0"
 dependencies = [

@@ -1773,6 +1773,19 @@ pub async fn chat_handler(
 // GET /v1/models
 // ─────────────────────────────────────────────────────────────────
 
+/// Sprint 065 C·P2: internal activity exposure for ygg-dreamer.
+///
+/// Returns `{"idle_secs": N}` where N is the number of seconds since the
+/// last chat request was processed. Consumed by the dreamer's activity
+/// poller to decide whether to fire warmup / dream flows. Bound to an
+/// `/internal/` path prefix so it's never mistaken for a user-facing API.
+pub async fn internal_activity(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let idle_secs = state.activity_tracker.idle_duration().as_secs();
+    Json(serde_json::json!({ "idle_secs": idle_secs }))
+}
+
 /// Aggregate model listing from all configured Ollama backends.
 ///
 /// Backends that are unreachable are skipped with a warning; the endpoint

@@ -1,0 +1,33 @@
+{
+  "odin_url": "http://10.0.65.8:8080",
+  "mimir_url": "http://10.0.65.8:9090",
+  "min_idle_secs": 300,
+  "poll_interval_secs": 30,
+  "warmup_interval_secs": 600,
+  "listen_addr": "0.0.0.0:9097",
+  "sprint_tag": "sprint:065",
+  "warmup_prefixes": [
+    {
+      "name": "coding_swarm_drafter",
+      "model": "gemma4:e4b",
+      "url": "http://10.0.65.9:11500",
+      "system": "You are a careful Rust code drafter. Think before you write.",
+      "user_prefix": "Draft a small function."
+    },
+    {
+      "name": "home_automation_intent",
+      "model": "gemma4:e4b",
+      "url": "http://10.0.65.9:11500",
+      "system": "You are a home automation intent extractor for Home Assistant.",
+      "user_prefix": "turn on the living room light"
+    }
+  ],
+  "dream_flows": [
+    {
+      "name": "dream_exploration",
+      "flow": "dream_exploration",
+      "cron": null,
+      "prompt": "Reflect on the last hour of engineering activity. Note any patterns or open questions."
+    }
+  ]
+}

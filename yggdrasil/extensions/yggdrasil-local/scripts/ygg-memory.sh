@@ -233,11 +233,16 @@ Reply with ONLY a JSON object like: {\"category\": \"infra\", \"queries\": [\"od
 }
 
 # ── post: PostToolUse — log session + conditional smart-ingest ─────────
+# Sprint 065 A·P2: emit post_entered event FIRST so we can distinguish
+# "hook never fired" (no post_entered) from "hook fired but gate said no"
+# (post_entered + post_skipped). Eliminates the silent-failure ambiguity
+# that caused the 2026-04-07 "auto-ingest not triggering" investigation.
 do_post() {
     local stdin_data tool_name tool_summary
     stdin_data=$(cat)
 
     tool_name=$(echo "$stdin_data" | jq -r '.tool_name // "unknown"' 2>/dev/null)
+    emit_event "post_entered" "{\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
 
     # Build summary based on tool type
     case "$tool_name" in
@@ -282,7 +287,18 @@ do_post() {
     fi
 
     # ── Conditional smart-ingest (store_worthy flag from sidecar) ──
+    # Sprint 065 A·P2: verify the store_worthy marker is fresh. A stale marker
+    # (>60s old) means the sidecar fired in a prior tool-use and never cleared
+    # it — don't ingest on its behalf, just clean it up and log.
     if [ -f /tmp/ygg-hooks/store_worthy ]; then
+        local marker_age=$(( $(date +%s) - $(stat -c %Y /tmp/ygg-hooks/store_worthy 2>/dev/null || echo 0) ))
+        if [ "$marker_age" -gt 60 ]; then
+            rm -f /tmp/ygg-hooks/store_worthy 2>/dev/null
+            emit_event "post_skipped" "{\"reason\":\"stale_marker\",\"age_secs\":$marker_age,\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
+            log "post: store_worthy marker was stale (${marker_age}s), discarded"
+            exit 0
+        fi
+
         rm -f /tmp/ygg-hooks/store_worthy 2>/dev/null
 
         # Only for Edit/Write/Bash with substantial content
@@ -305,19 +321,36 @@ do_post() {
                 ;;
         esac
 
-        [ ${#content} -lt 50 ] && exit 0
+        # Sprint 065 A·P2: replace silent `exit 0` with explicit event so we can
+        # distinguish "content too short to ingest" from "hook never fired".
+        if [ ${#content} -lt 50 ]; then
+            emit_event "post_skipped" "{\"reason\":\"content_too_short\",\"len\":${#content},\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
+            exit 0
+        fi
 
         local response=$(curl -sf --max-time 5 \
             -H "Content-Type: application/json" \
             -d "{\"content\":$(echo "$content" | jq -Rs .),\"file_path\":$(echo "${file_path:-bash}" | jq -Rs .),\"workstation\":\"$(hostname)\",\"source\":\"sidecar\"}" \
-            "${MIMIR_URL}/api/v1/smart-ingest" 2>/dev/null) || exit 0
+            "${MIMIR_URL}/api/v1/smart-ingest" 2>/dev/null)
+
+        # Sprint 065 A·P2: surface Mimir unreachable explicitly instead of exit 0.
+        if [ -z "$response" ]; then
+            emit_event "post_skipped" "{\"reason\":\"mimir_unreachable\",\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
+            log "post: mimir smart-ingest unreachable"
+            exit 0
+        fi
 
         local stored=$(echo "$response" | jq -r '.stored // false' 2>/dev/null)
         if [ "$stored" = "true" ]; then
             local cause=$(echo "$response" | jq -r '.cause // "change"' 2>/dev/null)
             log "post: stored — $cause"
             emit_event "ingest" "{\"stored\":true,\"file\":$(echo "${filename:-bash}" | jq -Rs .),\"cause\":$(echo "$cause" | jq -Rs .)}"
+        else
+            local skip_reason=$(echo "$response" | jq -r '.skipped_reason // "gate_rejected"' 2>/dev/null)
+            emit_event "post_skipped" "{\"reason\":$(printf '%s' "$skip_reason" | jq -Rs .),\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
         fi
+    else
+        emit_event "post_skipped" "{\"reason\":\"no_store_worthy_marker\",\"tool\":$(printf '%s' "$tool_name" | jq -Rs .)}"
     fi
 }
 

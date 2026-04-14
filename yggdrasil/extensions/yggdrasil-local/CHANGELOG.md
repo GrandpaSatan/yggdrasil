@@ -5,6 +5,16 @@ All notable changes to the Yggdrasil VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-04-14 (Sprint 065 close-out)
+
+### Added
+- **PostToolUse hook instrumentation** (Track A·P2) — `ygg-memory.sh` now emits explicit `post_entered` + `post_skipped` events with machine-readable reasons (`no_store_worthy_marker`, `content_too_short`, `stale_marker`, `mimir_unreachable`, `gate_rejected`). Eliminates the silent-failure ambiguity behind the 2026-04-07 "auto-ingest not triggering" investigation.
+- **60-second staleness guard** on the `/tmp/ygg-hooks/store_worthy` marker — stale markers (>60s) are discarded with a logged reason instead of firing a phantom ingest for the wrong tool-use.
+- **Hook smoke test harness** at `extensions/yggdrasil-local/tests/hook-smoke.sh` — 9 assertions covering every event path. Run from `scripts/release/prepare-vsix.sh` as a pre-flight.
+
+### Fixed
+- `voice_ws.rs` docstring drift — corrected to reflect the live voice stack (LLaMA-Omni2-3B on Hugin :9098, voice=Alfred) instead of the retired LFM2.5-Audio-1.5B.
+
 ## [0.8.0] — 2026-04-13 (Sprint 059 close-out)
 
 ### Added

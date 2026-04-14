@@ -1,0 +1,24 @@
+[Unit]
+Description=Yggdrasil llama-swap multi-model vLLM router (Sprint 065 Track B)
+Documentation=https://github.com/mostlygeek/llama-swap
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=jhernandez
+Group=docker
+WorkingDirectory=/opt/yggdrasil/deploy/hugin/llama-swap
+ExecStart=/opt/yggdrasil/bin/llama-swap --config /opt/yggdrasil/config/llama-swap.yaml
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=3
+TimeoutStartSec=120
+
+Environment="LLAMA_SWAP_LOG=/var/log/llama-swap/router.log"
+EnvironmentFile=-/opt/yggdrasil/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,9 +1,13 @@
 /// WebSocket voice handler for real-time voice interaction.
 ///
 /// Accepts streamed PCM audio (s16le, 16 kHz, mono) from browser clients,
-/// performs server-side VAD (energy-based), and sends audio to
-/// LFM2.5-Audio-1.5B which handles STT + LLM + TTS in a single model.
-/// Audio response is streamed back to the client.
+/// performs server-side VAD (energy-based), and sends audio to the configured
+/// omni model at `voice.omni_url`. In production (Sprint 065) this routes to
+/// LLaMA-Omni2-3B on Hugin :9098 (voice=Alfred, 24 kHz output) which handles
+/// STT + LLM + TTS end-to-end. Fallback path: when `omni_url` is unset, voice
+/// falls through to the Sprint 057 perceive flow — PCM → WAV → base64 via
+/// the Ollama `images` field to gemma4:e4b. Audio response is streamed back
+/// to the client.
 ///
 /// Protocol (JSON text frames):
 ///   Server -> Client:

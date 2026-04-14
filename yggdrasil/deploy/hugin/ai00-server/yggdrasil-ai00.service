@@ -1,0 +1,23 @@
+[Unit]
+Description=Yggdrasil ai00_server RWKV-7 runtime on Hugin :11436 (Sprint 065 Track B·P4)
+Documentation=https://github.com/Ai00-X/ai00_server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/ai00_server --config /opt/yggdrasil/config/ai00.toml
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+TimeoutStartSec=60
+LimitNOFILE=65536
+
+EnvironmentFile=-/opt/yggdrasil/.env
+
+[Install]
+WantedBy=multi-user.target

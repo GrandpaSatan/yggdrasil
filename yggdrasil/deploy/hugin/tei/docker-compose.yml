@@ -1,0 +1,35 @@
+# HF Text Embeddings Inference (TEI) on Hugin :11435 — Sprint 065 B·P3.
+#
+# Replaces Ollama's `/api/embed` for `all-minilm`. Mimir's embed path
+# switches from Ollama `/api/embed` to TEI's OpenAI-compat `/v1/embeddings`
+# (and also exposes a bare `/embed` endpoint).
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: yggdrasil-tei
+    restart: unless-stopped
+    ports:
+      - "11435:80"
+    volumes:
+      - tei-cache:/data
+    command:
+      - --model-id=sentence-transformers/all-MiniLM-L6-v2
+      - --port=80
+      - --hostname=0.0.0.0
+      - --max-concurrent-requests=256
+      - --max-batch-tokens=16384
+      - --auto-truncate
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  tei-cache:
+    driver: local

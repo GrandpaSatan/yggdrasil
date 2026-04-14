@@ -1,0 +1,38 @@
+# ai00_server — RWKV runtime (Rust) — Sprint 065 Track B·P4.
+#
+# Hosts mollysama/rwkv-7-g1e:2.9b as the ygg-memory sidecar classifier.
+# RWKV architecture is linear-attention — vLLM does not support it, so this
+# is the ONE non-vLLM inference component remaining post-migration.
+#
+# Binds to :11436 — ygg-memory.sh points to this via RWKV_URL env override.
+#
+# Repo: github.com/Ai00-X/ai00_server
+
+[model]
+# Path to the RWKV-7 GGUF (download from HF: mollysama/rwkv-7-g1e-2.9b-gguf).
+# The model MUST be converted to ai00's supported format; see the repo for
+# the conversion script.
+path = "/opt/yggdrasil/models/rwkv-7-g1e-2.9b.st"
+quant = 0
+quant_nf4 = 0
+token_chunk_size = 128
+
+[tokenizer]
+# World-series tokenizer for RWKV-7.
+path = "/opt/yggdrasil/models/rwkv_vocab_v20230424.json"
+
+[adapter]
+# Rust/wgpu backend — lightweight, does not depend on ROCm or CUDA runtime.
+# On Hugin the adapter falls back to Vulkan if the primary doesn't bind.
+kind = "Auto"
+
+[listen]
+domain = "0.0.0.0"
+port = 11436
+
+[[state]]
+id = "default"
+
+[web]
+# Disable web UI — ai00 is a backend service, Odin is the only client.
+path = ""

@@ -364,6 +364,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/chat/completions", post(handlers::chat_handler))
         .route("/v1/agent/stream", post(handlers::agent_stream_handler))
         .route("/v1/models", get(handlers::models_handler))
+        .route("/internal/activity", get(handlers::internal_activity))
         // Mimir transparent proxy endpoints (Fergus client compatibility).
         .route("/api/v1/query", post(handlers::proxy_query))
         .route("/api/v1/store", post(handlers::proxy_store))

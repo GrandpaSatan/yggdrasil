@@ -1,0 +1,187 @@
+# llama-swap config — Sprint 065 Track B (all-vLLM migration)
+#
+# llama-swap fronts vLLM on Hugin. On each /v1/chat/completions call it spawns
+# (or reuses) the vLLM process configured for the requested `model` id, proxies
+# the request, and unloads the process after `ttl`.
+#
+# Keeps ONE static model fleet definition: caller model names remain the same
+# as their Ollama counterparts so Odin config.json cutover is a URL change,
+# NOT a model-name rename.
+#
+# Repo: github.com/mostlygeek/llama-swap  (docs at /wiki)
+
+healthCheckTimeout: 900            # 15 min cold load ceiling for large AWQ models
+startPort: 8001                    # vLLM instances bind from 8001 upwards
+listen: 0.0.0.0:11500              # llama-swap's own OpenAI-compat port
+
+logLevel: info
+# Persist swap events for diagnostics.
+eventsFile: /var/log/llama-swap/events.jsonl
+
+models:
+  # ── Primary reasoning (Sprint 053+ routing rules) ────────────────────
+  "gemma4:e4b":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD128
+      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8001:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/gemma4-e4b.gguf
+      --served-model-name gemma4:e4b
+      --quantization gguf
+      --max-model-len 32768
+      --gpu-memory-utilization 0.85
+      --port 8000
+    proxy: "http://127.0.0.1:8001"
+    ttl: 600
+
+  "glm-4.7-flash:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD128
+      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8002:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve zai-org/GLM-4-7B-Flash-AWQ
+      --served-model-name glm-4.7-flash:latest
+      --quantization awq_marlin
+      --gpu-memory-utilization 0.90
+      --port 8000
+    proxy: "http://127.0.0.1:8002"
+    ttl: 900
+
+  # ── Medium specialists ──────────────────────────────────────────────
+  "nemotron-3-nano:4b":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8003:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve nvidia/Nemotron-3-Nano-4B
+      --served-model-name nemotron-3-nano:4b
+      --gpu-memory-utilization 0.70
+      --port 8000
+    proxy: "http://127.0.0.1:8003"
+    ttl: 600
+
+  "gemma4:e2b":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8004:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/gemma4-e2b.gguf
+      --served-model-name gemma4:e2b
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8004"
+    ttl: 600
+
+  # ── Liquid AI 1.2B family ──────────────────────────────────────────
+  "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8005:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/lfm25-1.2b-instruct.gguf
+      --served-model-name hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8005"
+    ttl: 300
+
+  "lfm-1.2b:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8006:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/lfm-1.2b.gguf
+      --served-model-name lfm-1.2b:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8006"
+    ttl: 300
+
+  # ── Sprint 054 distilled specialists (GGUF, stay on vLLM GGUF support) ─
+  "fusion-v6:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8007:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/fusion-v6.gguf
+      --served-model-name fusion-v6:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8007"
+    ttl: 180
+
+  "review-1.2b:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8008:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/review-1.2b.gguf
+      --served-model-name review-1.2b:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8008"
+    ttl: 300
+
+  "saga-350m:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8009:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/saga-350m.gguf
+      --served-model-name saga-350m:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8009"
+    ttl: 300
+
+  "lfm25-tools:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8010:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/lfm25-tools.gguf
+      --served-model-name lfm25-tools:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8010"
+    ttl: 300
+
+  "code-cleaner-350m:latest":
+    cmd: >-
+      docker run --rm --device /dev/kfd --device /dev/dri/renderD129
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -v /opt/yggdrasil/models:/models:ro
+      -p 8011:8000
+      rocm/vllm-dev:main-gfx1150-gfx1200
+      vllm serve /models/code-cleaner-350m.gguf
+      --served-model-name code-cleaner-350m:latest
+      --quantization gguf
+      --port 8000
+    proxy: "http://127.0.0.1:8011"
+    ttl: 300
+
+# NOTE — deliberately NOT in this config:
+# - qwen3:30b-a3b → user directive: retired (Sprint 065 Track B·P6)
+# - mollysama/rwkv-7-g1e:2.9b → RWKV architecture, not vLLM-supported.
+#   Served separately by ai00_server on :11436 (see deploy/hugin/ai00-server/).
+# - all-minilm → embedding model, served by HF TEI on :11435.

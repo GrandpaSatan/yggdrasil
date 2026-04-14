@@ -1,0 +1,25 @@
+[Unit]
+Description=Yggdrasil dream-mode daemon (Sprint 065 Track C)
+Documentation=https://github.com/GrandpaSatan/yggdrasil/tree/main/crates/ygg-dreamer
+After=network-online.target yggdrasil-odin.service yggdrasil-mimir.service
+Wants=network-online.target
+Requires=yggdrasil-odin.service yggdrasil-mimir.service
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/ygg-dreamer --config /opt/yggdrasil/config/dreamer.config.json
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+TimeoutStartSec=60
+LimitNOFILE=65536
+
+# Load env (RUST_LOG, metrics exporter addr if present)
+EnvironmentFile=-/opt/yggdrasil/.env
+
+[Install]
+WantedBy=multi-user.target

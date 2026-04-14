@@ -227,3 +227,33 @@ pub async fn load_sdr_rows_scoped(
         })
         .collect())
 }
+
+/// Sprint 065 A·P1: load all SDR rows with project + tags for scoped+tagged backfill.
+///
+/// Returns `(id, sdr_bits, project, tags)` quads. Tags hydrate the parallel
+/// tag_index used by `query_scoped_with_tags` to prevent cross-sprint SDR
+/// collisions. Used by `main.rs` at startup to populate the in-memory index
+/// with full partition-prefix tag metadata.
+pub async fn load_sdr_rows_scoped_with_tags(
+    pool: &sqlx::PgPool,
+) -> Result<Vec<(uuid::Uuid, Vec<u8>, Option<String>, Vec<String>)>, MimirError> {
+    use sqlx::Row as _;
+
+    let rows: Vec<sqlx::postgres::PgRow> = sqlx::query(
+        "SELECT id, sdr_bits, project, tags FROM yggdrasil.engrams WHERE tier = 'recall' AND sdr_bits IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e: sqlx::Error| MimirError::Store(ygg_store::error::StoreError::Query(e.to_string())))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let id: uuid::Uuid = r.get("id");
+            let sdr_bits: Vec<u8> = r.get("sdr_bits");
+            let project: Option<String> = r.get("project");
+            let tags: Vec<String> = r.try_get("tags").unwrap_or_default();
+            (id, sdr_bits, project, tags)
+        })
+        .collect())
+}
