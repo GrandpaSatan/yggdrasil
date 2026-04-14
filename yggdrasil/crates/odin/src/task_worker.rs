@@ -134,6 +134,8 @@ impl TaskWorker {
                     backend_name: b.map(|b| b.name.clone()).unwrap_or_default(),
                     backend_type: b.map(|b| b.backend_type.clone())
                         .unwrap_or(ygg_domain::config::BackendType::Ollama),
+                    keyword_match_count: 0,
+                    keyword_match_kind: crate::router::KeywordMatchKind::None,
                 }
             });
 

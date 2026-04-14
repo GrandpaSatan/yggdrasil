@@ -15,20 +15,24 @@ import { OdinClient, ChatMessage, SwarmEvent } from "../api/odinClient";
 import { ChatHistory, ChatMsg, ChatThread } from "../chat/history";
 import { preprocess } from "../chat/slashCommands";
 import { ChatSeed, getSelectionContext } from "../chat/codeActions";
+import { ThreadStore } from "../threads/threadStore";
 
 export class ChatPanel {
-  private static instance: ChatPanel | undefined;
+  static instance: ChatPanel | undefined;
   private static readonly viewType = "yggdrasil.chatPanel";
 
   private panel: vscode.WebviewPanel;
   private thread: ChatThread;
   private abortCurrent: (() => void) | null = null;
 
+  private threadStore: ThreadStore;
+
   private constructor(
     private context: vscode.ExtensionContext,
     private odin: OdinClient,
     private history: ChatHistory
   ) {
+    this.threadStore = new ThreadStore(context);
     const mediaRoot = vscode.Uri.joinPath(context.extensionUri, "media");
     this.panel = vscode.window.createWebviewPanel(
       ChatPanel.viewType,
@@ -150,6 +154,115 @@ export class ChatPanel {
 
         case "copy":
           await vscode.env.clipboard.writeText(String(msg.text ?? ""));
+          return;
+
+        // P2b — ThreadStore bridge
+        case "requestThreads": {
+          const threads = await this.threadStore.list();
+          this.panel.webview.postMessage({ type: "threadList", threads });
+          return;
+        }
+
+        case "loadThread": {
+          const id = String(msg.id ?? "");
+          const stored = await this.threadStore.load(id);
+          if (stored) {
+            this.panel.webview.postMessage({ type: "threadData", thread: stored });
+          }
+          return;
+        }
+
+        case "renameThread": {
+          const id = String(msg.id ?? "");
+          const title = String(msg.title ?? "");
+          await this.threadStore.rename(id, title);
+          return;
+        }
+
+        case "searchThreads": {
+          const q = String(msg.query ?? "");
+          const results = await this.threadStore.search(q);
+          this.panel.webview.postMessage({ type: "threadSearch", results });
+          return;
+        }
+
+        case "exportThread": {
+          const id = String(msg.id ?? "");
+          const md = await this.threadStore.exportAsMarkdown(id);
+          const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(`thread-${id.slice(0, 8)}.md`),
+            filters: { Markdown: ["md"] },
+          });
+          if (uri && md) {
+            await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(md));
+            vscode.window.showInformationMessage("Thread exported.");
+          }
+          return;
+        }
+
+        // P3 — file picker (requestFilePicker from chat.js)
+        case "requestFilePicker": {
+          const files = await vscode.workspace.findFiles("**/*", "**/node_modules/**", 50);
+          const items = files.map((f) => ({
+            label: vscode.workspace.asRelativePath(f),
+            uri: f.toString(),
+          }));
+          const picked = await vscode.window.showQuickPick(items.map((i) => i.label), {
+            placeHolder: "Select file to attach",
+          });
+          if (picked) {
+            const item = items.find((i) => i.label === picked);
+            if (item) {
+              const fileUri = vscode.Uri.parse(item.uri);
+              const content = new TextDecoder().decode(
+                await vscode.workspace.fs.readFile(fileUri)
+              );
+              const langId = picked.split(".").pop() ?? "text";
+              this.panel.webview.postMessage({
+                type: "filePicked",
+                label: picked,
+                path: picked,
+                content: `File: ${picked}\n\`\`\`${langId}\n${content}\n\`\`\``,
+              });
+            }
+          }
+          return;
+        }
+
+        // P3 — preview diff (apply-diff button from P2a)
+        case "previewDiff": {
+          const filePath = String(msg.path ?? "");
+          const proposed = String(msg.proposed ?? "");
+          if (!filePath || !proposed) return;
+          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+          if (!workspaceFolder) return;
+          const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+          const we = new vscode.WorkspaceEdit();
+          const doc = await vscode.workspace.openTextDocument(fileUri);
+          we.replace(fileUri, new vscode.Range(0, 0, doc.lineCount, 0), proposed);
+          const applied = await vscode.workspace.applyEdit(we);
+          if (applied) {
+            vscode.window.showInformationMessage(`Applied diff to ${filePath}`);
+          } else {
+            vscode.window.showErrorMessage(`Failed to apply diff to ${filePath}`);
+          }
+          return;
+        }
+
+        // P3b — notification card actions
+        case "notifView":
+          this.panel.webview.postMessage({ type: "notice", text: "Loading self-improvement suggestions..." });
+          return;
+
+        case "notifSnooze":
+          await this.context.globalState.update(
+            "selfImprovement.snoozedUntil",
+            Date.now() + 7 * 86_400_000
+          );
+          return;
+
+        case "notifDismiss":
+          await this.context.globalState.update("selfImprovement.dismissed", true);
           return;
 
         case "attachFile": {
@@ -349,6 +462,16 @@ export class ChatPanel {
     });
   }
 
+  /** Post an arbitrary message to the webview — used by extension.ts for P3/P3b. */
+  postMessage(msg: Record<string, unknown>): void {
+    this.panel.webview.postMessage(msg);
+  }
+
+  /** Send active editor metadata to webview for context awareness. */
+  postCurrentEditor(info: { filename: string; language: string; uri: string }): void {
+    this.panel.webview.postMessage({ type: "activeEditor", ...info });
+  }
+
   private getHtml(): string {
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, "media");
     const cssUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "chat.css"));
@@ -365,6 +488,30 @@ export class ChatPanel {
     const retroTypographyUri = this.panel.webview.asWebviewUri(
       vscode.Uri.joinPath(mediaRoot, "themes", "retro-typography.css")
     );
+
+    // P4 — Voice push-to-talk (opt-in)
+    const voiceCfg = vscode.workspace.getConfiguration("yggdrasil.voice");
+    const voiceEnabled = voiceCfg.get<boolean>("enabled", false);
+    const ttsEnabled = voiceCfg.get<boolean>("ttsPlayback", true);
+    const voiceWorkletUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "voice-worklet.js")
+    );
+    const voiceClientUri = this.panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(mediaRoot, "voice-client.js")
+    );
+    const odinUrl = vscode.workspace.getConfiguration("yggdrasil").get<string>("odinUrl", "http://localhost:8080");
+
+    // P2a — Prism syntax highlighting (vendored, no CDN)
+    const vendorRoot = vscode.Uri.joinPath(mediaRoot, "vendor");
+    const langRoot = vscode.Uri.joinPath(vendorRoot, "prism-languages");
+    const prismCoreUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(vendorRoot, "prism.js"));
+    const prismLangUris: Record<string, vscode.Uri> = {};
+    for (const lang of ["clike", "javascript", "typescript", "rust", "go", "python", "json", "toml", "yaml", "bash", "sql", "markdown"]) {
+      prismLangUris[lang] = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(langRoot, `${lang}.js`));
+    }
+    const hlClassicUri = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "themes", "highlight-classic.css"));
+    const hlPipboyUri  = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "themes", "highlight-pipboy.css"));
+    const hlBbsUri     = this.panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, "themes", "highlight-bbs.css"));
     const nonce = getNonce();
     const csp = [
       `default-src 'none'`,
@@ -372,6 +519,7 @@ export class ChatPanel {
       `style-src ${this.panel.webview.cspSource} 'unsafe-inline'`,
       `font-src ${this.panel.webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
+      `connect-src ws: wss: http: https:`,
     ].join("; ");
 
     const { theme, crtEffects, font } = this.readChatTheme();
@@ -388,43 +536,83 @@ export class ChatPanel {
 <link rel="stylesheet" href="${themePipboyUri}">
 <link rel="stylesheet" href="${themeBbsUri}">
 <link rel="stylesheet" href="${retroTypographyUri}">
+<link rel="stylesheet" href="${hlClassicUri}">
+<link rel="stylesheet" href="${hlPipboyUri}">
+<link rel="stylesheet" href="${hlBbsUri}">
 </head>
-<body data-theme="${theme}" data-font="${font}" data-crt="${crtEffects ? "on" : "off"}">
+<body data-theme="${theme}" data-font="${font}" data-crt="${crtEffects ? "on" : "off"}" data-prism-langs='${JSON.stringify(Object.fromEntries(Object.entries(prismLangUris).map(([k,v])=>[k,v.toString()])))}' data-odin-url="${odinUrl}" data-voice-enabled="${voiceEnabled}" data-tt-enabled="${ttsEnabled}" data-voice-worklet-uri="${voiceWorkletUri}">
+<script nonce="${nonce}" src="${prismCoreUri}"></script>
+<script nonce="${nonce}" src="${prismLangUris["clike"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["javascript"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["typescript"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["rust"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["go"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["python"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["json"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["toml"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["yaml"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["bash"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["sql"]}"></script>
+<script nonce="${nonce}" src="${prismLangUris["markdown"]}"></script>
 
 ${crtOverlayHtml}
 
-<div class="header">
-  <div class="thread-picker">
-    <select id="thread-select"></select>
+<div class="titlebar">
+  <div class="titlebar-left">
+    <select id="thread-select" title="Switch thread"></select>
+    <button class="icon-btn" id="new-thread" title="New thread">+</button>
   </div>
-  <div class="right">
+  <div class="titlebar-center">
+    <span class="titlebar-brand">YGG</span>
+  </div>
+  <div class="titlebar-right">
     <select id="flow-select" title="Pin a flow"></select>
     <select id="model-select" title="Model"></select>
-    <button class="icon-btn" id="clear-thread" title="Clear thread">⊘</button>
-    <button class="icon-btn" id="delete-thread" title="Delete thread">✕</button>
+    <button class="icon-btn" id="clear-thread" title="Clear thread">&#8856;</button>
+    <button class="icon-btn" id="delete-thread" title="Delete thread">&#10005;</button>
+    <button class="icon-btn" id="mic-btn" title="Push to talk (voice disabled)" style="display:none;" aria-label="Push to talk">&#9679;</button>
   </div>
 </div>
 
-<div class="messages" id="messages"></div>
+<div class="notification-card" id="notification-card" style="display:none;" role="alert" aria-live="polite">
+  <span class="notification-card-text" id="notification-card-text"></span>
+  <div class="notification-card-actions">
+    <button class="btn" id="notif-view">View</button>
+    <button class="btn" id="notif-snooze">Snooze 7d</button>
+    <button class="btn" id="notif-dismiss">Dismiss</button>
+  </div>
+</div>
+
+<div class="messages" id="messages" role="log" aria-label="Chat messages" aria-live="polite"></div>
 
 <div class="input-area">
-  <div class="error-banner" id="error-banner"></div>
-  <div class="notice-banner" id="notice-banner"></div>
-  <div class="attachment-chips" id="chips"></div>
+  <div class="slash-menu" id="slash-menu" style="display:none;" role="listbox" aria-label="Commands"></div>
+  <div class="error-banner" id="error-banner" role="alert"></div>
+  <div class="notice-banner" id="notice-banner" role="status"></div>
+  <div class="attachment-chips" id="chips" aria-label="Attachments"></div>
   <div class="input-wrap">
-    <textarea id="input" placeholder="Ask Yggdrasil… (Enter to send, Shift+Enter for newline, / for commands)" rows="1"></textarea>
+    <textarea id="input" placeholder="Ask Yggdrasil\u2026 (Enter=send, Shift+Enter=newline, /=commands, @=attach file)" rows="1" aria-label="Chat input" aria-multiline="true"></textarea>
     <div class="input-bar">
-      <button class="btn" id="attach-selection" title="Attach editor selection">+ selection</button>
-      <button class="btn" id="attach-file" title="Attach current file">+ file</button>
+      <button class="btn" id="attach-selection" title="Attach editor selection" aria-label="Attach editor selection">+sel</button>
+      <button class="btn" id="attach-file" title="Attach current file" aria-label="Attach current file">+file</button>
       <span class="spacer"></span>
-      <span class="hint">Enter to send</span>
-      <button class="btn primary" id="send">Send</button>
-      <button class="btn" id="stop" style="display:none;">Stop</button>
+      <span class="hint">Enter&#8629;</span>
+      <button class="btn primary" id="send" aria-label="Send message">Send</button>
+      <button class="btn danger" id="stop" style="display:none;" aria-label="Stop generation">Stop</button>
     </div>
   </div>
 </div>
 
+<div class="statusline" id="statusline" aria-live="polite">
+  <span class="statusline-mode" id="statusline-mode">IDLE</span>
+  <span class="statusline-sep">|</span>
+  <span class="statusline-model" id="statusline-model">-</span>
+  <span class="statusline-sep">|</span>
+  <span class="statusline-thread" id="statusline-thread">-</span>
+</div>
+
 <script nonce="${nonce}" src="${jsUri}"></script>
+${voiceEnabled ? `<script nonce="${nonce}" src="${voiceClientUri}"></script>` : ""}
 
 </body>
 </html>`;

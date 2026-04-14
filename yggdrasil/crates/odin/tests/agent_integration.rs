@@ -28,6 +28,7 @@ fn test_state(_ollama_url: &str, mimir_url: &str) -> AppState {
             default_model: "test-model".to_string(),
             default_backend: None,
             rules: vec![],
+            intent_default: None,
         },
         mimir: MimirClientConfig {
             url: mimir_url.to_string(),
@@ -95,6 +96,8 @@ fn test_decision(ollama_url: &str) -> RoutingDecision {
         backend_url: ollama_url.to_string(),
         backend_name: "mock-ollama".to_string(),
         backend_type: BackendType::Ollama,
+        keyword_match_count: 0,
+        keyword_match_kind: odin::router::KeywordMatchKind::None,
     }
 }
 

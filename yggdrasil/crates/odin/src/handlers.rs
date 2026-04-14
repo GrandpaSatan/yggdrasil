@@ -372,15 +372,47 @@ async fn hybrid_classify(
             // reasoning, etc.), route there. Only fall back to the configured
             // `intent_default` (e.g. "chat" → swarm_chat) when the keyword
             // classifier produced a generic/unmatched intent.
+            //
+            // Sprint 062 P1a: the previous `is_generic` check collapsed three
+            // distinct origins of `intent="default"` (no-match, gaming-
+            // suppressed, and strong-match-but-low-LLM-confidence) into one
+            // bucket, which made `intent_default` clobber real HA matches
+            // whenever the LLM wasn't confident. Use the new
+            // `keyword_match_kind` + `keyword_match_count` signal to gate the
+            // override precisely:
+            //   - Matched with count >= 2: trust the keyword classifier, never
+            //     override (HA and similar high-signal intents win).
+            //   - Suppressed: keep the suppression — the whole point of the
+            //     gaming override is to fall through to the LLM/default, so
+            //     we do NOT apply `intent_default` here either (it would
+            //     defeat the suppression by re-routing into chat).
+            //   - None (truly no keyword match) AND LLM was absent or below
+            //     0.4 confidence: apply the configured `intent_default`.
             if state.llm_router.is_some() {
                 crate::metrics::record_router_fallback("low_confidence");
             }
             let keyword_decision = state.router.classify(message);
-            let is_generic = matches!(
-                keyword_decision.intent.as_str(),
-                "default" | "general" | "test" | ""
-            );
-            let decision = if is_generic {
+
+            let strong_keyword_match = matches!(
+                keyword_decision.keyword_match_kind,
+                crate::router::KeywordMatchKind::Matched
+            ) && keyword_decision.keyword_match_count >= 2;
+
+            // Only consider intent_default override when NO keyword rule
+            // matched at all AND the LLM has no usable confidence signal.
+            let llm_confidence = llm_result.as_ref().map(|l| l.confidence);
+            let llm_too_weak = llm_confidence
+                .map(|c| c < 0.4)
+                .unwrap_or(true);
+            let should_apply_intent_default = !strong_keyword_match
+                && keyword_decision.keyword_match_count == 0
+                && matches!(
+                    keyword_decision.keyword_match_kind,
+                    crate::router::KeywordMatchKind::None
+                )
+                && llm_too_weak;
+
+            let decision = if should_apply_intent_default {
                 match state.config.routing.intent_default.as_deref() {
                     Some(default_intent) => state
                         .router
@@ -2964,6 +2996,8 @@ pub async fn agent_stream_handler(
             backend_url: state_clone.backends.first().map(|b| b.url.clone()).unwrap_or_default(),
             backend_name: "default".to_string(),
             backend_type: BackendType::Ollama,
+            keyword_match_count: 0,
+            keyword_match_kind: crate::router::KeywordMatchKind::None,
         };
 
         let completion_id = format!("agent-stream-{}", Uuid::new_v4());

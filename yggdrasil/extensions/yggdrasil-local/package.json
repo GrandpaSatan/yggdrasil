@@ -2,7 +2,7 @@
   "name": "yggdrasil-local",
   "displayName": "Yggdrasil",
   "description": "Control panel for the Yggdrasil local-AI ecosystem — flows, memory, config, chat.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "yggdrasil",
   "license": "MIT",
   "icon": "icon.png",
@@ -22,7 +22,12 @@
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["AI", "Chat", "Machine Learning", "Other"],
+  "categories": [
+    "AI",
+    "Chat",
+    "Machine Learning",
+    "Other"
+  ],
   "keywords": [
     "ai",
     "llm",
@@ -35,7 +40,9 @@
     "mcp",
     "yggdrasil"
   ],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -59,6 +66,11 @@
           "id": "yggdrasil.modelsTree",
           "name": "Models",
           "contextualTitle": "Yggdrasil Models"
+        },
+        {
+          "id": "yggdrasil.repo",
+          "name": "Workspace Files",
+          "contextualTitle": "Yggdrasil Repo"
         }
       ]
     },
@@ -72,34 +84,50 @@
             "id": "welcome",
             "title": "What is Yggdrasil?",
             "description": "A self-hosted local-AI ecosystem with a router, memory, and chat client.",
-            "media": { "markdown": "media/walkthrough/welcome.md" }
+            "media": {
+              "markdown": "media/walkthrough/welcome.md"
+            }
           },
           {
             "id": "configure-odin",
             "title": "Configure Odin (the router)",
             "description": "Tell the extension where to find your Odin server.",
-            "media": { "markdown": "media/walkthrough/configure-odin.md" },
-            "completionEvents": ["onCommand:yggdrasil.openSettings"]
+            "media": {
+              "markdown": "media/walkthrough/configure-odin.md"
+            },
+            "completionEvents": [
+              "onCommand:yggdrasil.openSettings"
+            ]
           },
           {
             "id": "configure-mimir",
             "title": "Configure Mimir (memory, optional)",
             "description": "Connect the engram memory service for /memory recall.",
-            "media": { "markdown": "media/walkthrough/configure-mimir.md" }
+            "media": {
+              "markdown": "media/walkthrough/configure-mimir.md"
+            }
           },
           {
             "id": "explore-flows",
             "title": "Explore the Flows",
             "description": "See how multi-model pipelines like coding_swarm work.",
-            "media": { "markdown": "media/walkthrough/explore-flows.md" },
-            "completionEvents": ["onCommand:yggdrasil.openFlows"]
+            "media": {
+              "markdown": "media/walkthrough/explore-flows.md"
+            },
+            "completionEvents": [
+              "onCommand:yggdrasil.openFlows"
+            ]
           },
           {
             "id": "open-chat",
             "title": "Open the Chat Panel",
             "description": "Stream from your local AI fleet right in your editor.",
-            "media": { "markdown": "media/walkthrough/open-chat.md" },
-            "completionEvents": ["onCommand:yggdrasil.openChat"]
+            "media": {
+              "markdown": "media/walkthrough/open-chat.md"
+            },
+            "completionEvents": [
+              "onCommand:yggdrasil.openChat"
+            ]
           }
         ]
       }
@@ -165,6 +193,22 @@
       {
         "command": "yggdrasil.chat.editWithModel",
         "title": "Yggdrasil: Edit Selection With Model…"
+      },
+      {
+        "command": "yggdrasil.attachFile",
+        "title": "Yggdrasil: Attach File to Chat"
+      },
+      {
+        "command": "yggdrasil.pickFile",
+        "title": "Yggdrasil: Pick File to Attach"
+      },
+      {
+        "command": "yggdrasil.previewEdit",
+        "title": "Yggdrasil: Preview and Apply Edit"
+      },
+      {
+        "command": "yggdrasil.voice.toggle",
+        "title": "Yggdrasil: Toggle Voice Push-to-Talk"
       }
     ],
     "menus": {
@@ -238,6 +282,18 @@
         "command": "yggdrasil.chat.explainSelection",
         "key": "ctrl+shift+e",
         "when": "editorHasSelection && !terminalFocus"
+      },
+      {
+        "command": "yggdrasil.pickFile",
+        "key": "ctrl+shift+@",
+        "mac": "cmd+shift+@",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "yggdrasil.voice.toggle",
+        "key": "ctrl+shift+space",
+        "mac": "cmd+shift+space",
+        "when": "webviewFocus && yggdrasil.chatVisible"
       }
     ],
     "configuration": {
@@ -260,10 +316,22 @@
         },
         "yggdrasil.notifications.events": {
           "type": "array",
-          "default": ["ingest", "error"],
+          "default": [
+            "ingest",
+            "error"
+          ],
           "items": {
             "type": "string",
-            "enum": ["init", "recall", "ingest", "sleep", "error", "sidecar", "error_recall", "update"]
+            "enum": [
+              "init",
+              "recall",
+              "ingest",
+              "sleep",
+              "error",
+              "sidecar",
+              "error_recall",
+              "update"
+            ]
           },
           "description": "Which event types trigger notifications"
         },
@@ -304,7 +372,10 @@
         },
         "yggdrasil.autoUpdate.provider": {
           "type": "string",
-          "enum": ["gitea", "github"],
+          "enum": [
+            "gitea",
+            "github"
+          ],
           "default": "gitea",
           "description": "Release host to check. Token lives in Settings → Secrets (giteaToken or githubToken)."
         },
@@ -313,9 +384,22 @@
           "default": true,
           "description": "Automatically manage Claude Code hooks in ~/.claude/settings.json"
         },
+        "yggdrasil.hooks.writeMode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "merge"
+          ],
+          "default": "merge",
+          "description": "How to handle existing hooks in ~/.claude/settings.json. 'merge' keeps your non-Yggdrasil hooks and appends ours (recommended). 'replace' overwrites the hooks tree with only Yggdrasil entries (pre-062 behaviour)."
+        },
         "yggdrasil.chat.theme": {
           "type": "string",
-          "enum": ["classic", "pipboy-green", "bbs-cyan"],
+          "enum": [
+            "classic",
+            "pipboy-green",
+            "bbs-cyan"
+          ],
           "default": "classic",
           "description": "Chat panel theme. 'classic' = stock dark; 'pipboy-green' = Fallout Pip-Boy phosphor; 'bbs-cyan' = 1980s BBS terminal."
         },
@@ -326,9 +410,33 @@
         },
         "yggdrasil.chat.font": {
           "type": "string",
-          "enum": ["system", "vt323", "jetbrains-mono"],
+          "enum": [
+            "system",
+            "vt323",
+            "jetbrains-mono"
+          ],
           "default": "system",
           "description": "Font family for the chat panel. 'vt323' = bundled retro pixel font; 'jetbrains-mono' = developer monospace; 'system' = VS Code default."
+        },
+        "yggdrasil.chat.autoInjectActiveEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically send the active editor filename and language to the chat panel when you switch files."
+        },
+        "yggdrasil.voice.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable voice push-to-talk in the chat panel. Requires Odin voice WebSocket endpoint."
+        },
+        "yggdrasil.voice.pushToTalkKey": {
+          "type": "string",
+          "default": "ctrl+shift+space",
+          "description": "Keyboard shortcut to activate voice push-to-talk while the chat panel is focused."
+        },
+        "yggdrasil.voice.ttsPlayback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play back TTS audio responses from the voice endpoint when voice mode is active."
         }
       }
     }

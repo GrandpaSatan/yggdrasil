@@ -23,6 +23,9 @@ import { ChatPanel } from "./views/chatPanel";
 import { OdinClient } from "./api/odinClient";
 import { ChatHistory } from "./chat/history";
 import { registerCodeActions } from "./chat/codeActions";
+import { RepoTreeProvider } from "./views/repoTreeProvider";
+import { getEditorContext, formatContextBlock } from "./editorContext";
+import { SelfImprovementChecker } from "./selfImprovement";
 
 let statusBar: StatusBarManager;
 let eventWatcher: EventWatcher;
@@ -89,9 +92,11 @@ export async function activate(context: vscode.ExtensionContext) {
   // Sidebar trees
   const flowsTree = new FlowsTreeProvider();
   const modelsTree = new ModelsTreeProvider(odin);
+  const repoTree = new RepoTreeProvider();
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("yggdrasil.flowsTree", flowsTree),
     vscode.window.registerTreeDataProvider("yggdrasil.modelsTree", modelsTree),
+    vscode.window.registerTreeDataProvider("yggdrasil.repo", repoTree),
     modelsTree
   );
 
@@ -192,6 +197,78 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     ),
 
+    // P3 — Repo awareness commands
+    vscode.commands.registerCommand("yggdrasil.attachFile", (uri: vscode.Uri) => {
+      const panel = ChatPanel.show(context, odin, chatHistory);
+      if (uri) {
+        vscode.workspace.fs.readFile(uri).then((data) => {
+          const content = new TextDecoder().decode(data);
+          const label = vscode.workspace.asRelativePath(uri);
+          const langId = label.split(".").pop() ?? "text";
+          // Post attachment to webview
+          panel; // panel is used for side-effect (show)
+          // The attachment is posted via the webview — trigger via seed
+          ChatPanel.show(context, odin, chatHistory, {
+            userText: "",
+            contextBlock: `File: ${label}\n\`\`\`${langId}\n${content}\n\`\`\``,
+            run: false,
+          });
+        });
+      }
+    }),
+
+    vscode.commands.registerCommand("yggdrasil.pickFile", async () => {
+      const files = await vscode.workspace.findFiles("**/*", "**/node_modules/**", 50);
+      const items = files.map((f) => vscode.workspace.asRelativePath(f));
+      const picked = await vscode.window.showQuickPick(items, { placeHolder: "Attach file to chat" });
+      if (picked) {
+        const uri = vscode.workspace.workspaceFolders?.[0]
+          ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, picked)
+          : vscode.Uri.file(picked);
+        vscode.commands.executeCommand("yggdrasil.attachFile", uri);
+      }
+    }),
+
+    vscode.commands.registerCommand("yggdrasil.previewEdit", async (filePath: string, proposed: string) => {
+      if (!filePath || !proposed) return;
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) return;
+      const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+      try {
+        const we = new vscode.WorkspaceEdit();
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        we.replace(fileUri, new vscode.Range(0, 0, doc.lineCount, 0), proposed);
+        const applied = await vscode.workspace.applyEdit(we);
+        if (applied) {
+          vscode.window.showInformationMessage(`Applied edit to ${filePath}`);
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(`Preview edit failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
+    // P4 — Voice toggle command
+    vscode.commands.registerCommand("yggdrasil.voice.toggle", () => {
+      ChatPanel.instance?.postMessage({ type: "voice.toggle" });
+    }),
+
+    // P3 — Active editor watcher: send current file context to chat panel
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      const cfg = vscode.workspace.getConfiguration("yggdrasil.chat");
+      if (!cfg.get<boolean>("autoInjectActiveEditor", true)) return;
+      if (!editor) return;
+      const ctx = getEditorContext();
+      if (!ctx) return;
+      const panel = ChatPanel.instance;
+      if (panel) {
+        panel.postCurrentEditor({
+          filename: ctx.filename,
+          language: ctx.language,
+          uri: ctx.uri.toString(),
+        });
+      }
+    }),
+
     // Disposables
     statusBar,
     eventWatcher,
@@ -199,6 +276,18 @@ export async function activate(context: vscode.ExtensionContext) {
     hookManager,
     autoUpdater
   );
+
+  // P3b — Self-improvement session-init hook (after TreeDataProvider registration)
+  const selfImprovement = new SelfImprovementChecker(context, odin);
+  try {
+    await selfImprovement.check((payload) => {
+      ChatPanel.instance?.postMessage(payload as unknown as Record<string, unknown>);
+    });
+  } catch (err) {
+    outputChannel.append(
+      `Self-improvement check error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 
   // Start watching
   eventWatcher.start();

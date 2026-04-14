@@ -355,6 +355,8 @@ impl FlowEngine {
             backend_url: backend.url.clone(),
             backend_type: backend.backend_type.clone(),
             backend_name: backend.name.clone(),
+            keyword_match_count: 0,
+            keyword_match_kind: crate::router::KeywordMatchKind::None,
         };
 
         // Use step's agent_config or sensible defaults for flow steps.

@@ -1,0 +1,48 @@
+/* Prism highlight theme: Classic — VSCode-like dark palette.
+   Active on body[data-theme="classic"] (default when no data-theme). */
+
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata { color: #6a9955; }
+
+.token.punctuation { color: #d4d4d4; }
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted { color: #b5cea8; }
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted { color: #ce9178; }
+
+.token.operator,
+.token.entity,
+.token.url,
+.token.variable { color: #d4d4d4; }
+
+.token.atrule,
+.token.attr-value,
+.token.function,
+.token.class-name { color: #dcdcaa; }
+
+.token.keyword { color: #569cd6; }
+
+.token.regex,
+.token.important { color: #d16969; }
+
+.token.lifetime,
+.token.macro { color: #c586c0; }
+
+.token.doc-comment { color: #608b4e; }
+
+.token.important,
+.token.bold { font-weight: bold; }
+.token.italic { font-style: italic; }

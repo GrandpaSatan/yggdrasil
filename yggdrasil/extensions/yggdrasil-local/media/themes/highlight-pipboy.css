@@ -1,0 +1,39 @@
+/* Prism highlight theme: Pip-Boy — monochrome phosphor green variants.
+   Active on body[data-theme="pipboy-green"].
+   keyword = brightest, comment = darkest. */
+
+body[data-theme="pipboy-green"] .token.comment,
+body[data-theme="pipboy-green"] .token.prolog,
+body[data-theme="pipboy-green"] .token.doctype,
+body[data-theme="pipboy-green"] .token.cdata { color: #1a6630 !important; text-shadow: none !important; }
+
+body[data-theme="pipboy-green"] .token.punctuation { color: #2a9945 !important; }
+
+body[data-theme="pipboy-green"] .token.property,
+body[data-theme="pipboy-green"] .token.tag,
+body[data-theme="pipboy-green"] .token.number,
+body[data-theme="pipboy-green"] .token.constant,
+body[data-theme="pipboy-green"] .token.symbol,
+body[data-theme="pipboy-green"] .token.boolean { color: #33dd66 !important; }
+
+body[data-theme="pipboy-green"] .token.selector,
+body[data-theme="pipboy-green"] .token.attr-name,
+body[data-theme="pipboy-green"] .token.string,
+body[data-theme="pipboy-green"] .token.char,
+body[data-theme="pipboy-green"] .token.builtin { color: #55ee88 !important; }
+
+body[data-theme="pipboy-green"] .token.operator,
+body[data-theme="pipboy-green"] .token.variable { color: #33bb55 !important; }
+
+body[data-theme="pipboy-green"] .token.atrule,
+body[data-theme="pipboy-green"] .token.attr-value,
+body[data-theme="pipboy-green"] .token.function,
+body[data-theme="pipboy-green"] .token.class-name { color: #66ff99 !important; text-shadow: 0 0 4px rgba(102,255,153,0.5); }
+
+body[data-theme="pipboy-green"] .token.keyword { color: #aaffcc !important; font-weight: 700; text-shadow: 0 0 6px rgba(170,255,204,0.6); }
+
+body[data-theme="pipboy-green"] .token.macro,
+body[data-theme="pipboy-green"] .token.lifetime { color: #77ee99 !important; font-style: italic; }
+
+body[data-theme="pipboy-green"] .token.regex,
+body[data-theme="pipboy-green"] .token.important { color: #99ffaa !important; }

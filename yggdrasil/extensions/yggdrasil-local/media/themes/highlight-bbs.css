@@ -1,0 +1,39 @@
+/* Prism highlight theme: BBS — monochrome cyan variants.
+   Active on body[data-theme="bbs-cyan"].
+   keyword = brightest, comment = darkest. */
+
+body[data-theme="bbs-cyan"] .token.comment,
+body[data-theme="bbs-cyan"] .token.prolog,
+body[data-theme="bbs-cyan"] .token.doctype,
+body[data-theme="bbs-cyan"] .token.cdata { color: #006a80 !important; text-shadow: none !important; }
+
+body[data-theme="bbs-cyan"] .token.punctuation { color: #008fa0 !important; }
+
+body[data-theme="bbs-cyan"] .token.property,
+body[data-theme="bbs-cyan"] .token.tag,
+body[data-theme="bbs-cyan"] .token.number,
+body[data-theme="bbs-cyan"] .token.constant,
+body[data-theme="bbs-cyan"] .token.symbol,
+body[data-theme="bbs-cyan"] .token.boolean { color: #00ccdd !important; }
+
+body[data-theme="bbs-cyan"] .token.selector,
+body[data-theme="bbs-cyan"] .token.attr-name,
+body[data-theme="bbs-cyan"] .token.string,
+body[data-theme="bbs-cyan"] .token.char,
+body[data-theme="bbs-cyan"] .token.builtin { color: #33ddee !important; }
+
+body[data-theme="bbs-cyan"] .token.operator,
+body[data-theme="bbs-cyan"] .token.variable { color: #00aacc !important; }
+
+body[data-theme="bbs-cyan"] .token.atrule,
+body[data-theme="bbs-cyan"] .token.attr-value,
+body[data-theme="bbs-cyan"] .token.function,
+body[data-theme="bbs-cyan"] .token.class-name { color: #55eeff !important; text-shadow: 0 0 4px rgba(85,238,255,0.4); }
+
+body[data-theme="bbs-cyan"] .token.keyword { color: #aaffff !important; font-weight: 700; text-shadow: 0 0 6px rgba(170,255,255,0.5); }
+
+body[data-theme="bbs-cyan"] .token.macro,
+body[data-theme="bbs-cyan"] .token.lifetime { color: #77eeff !important; font-style: italic; }
+
+body[data-theme="bbs-cyan"] .token.regex,
+body[data-theme="bbs-cyan"] .token.important { color: #99ffff !important; }

@@ -1,0 +1,75 @@
+{
+  "_comment": "Sprint 062 — Home automation flow. Chat-triggered 3-step: extract → execute (HA tools) → confirm. All steps on Hugin (gemma4:e4b) to keep intent + HA tool use on the same node.",
+  "_design": "Step 1 parses natural-language into a structured HA action. Step 2 runs an agent loop with HA tools (list/states/call_service). Step 3 writes a plain-English confirmation in the user-visible assistant stream.",
+  "flows": [
+    {
+      "name": "home_automation",
+      "trigger": {
+        "intent": "home_automation"
+      },
+      "timeout_secs": 30,
+      "max_step_output_chars": 2000,
+      "steps": [
+        {
+          "name": "extract_action",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You translate home-automation requests into a single JSON object with this exact shape: {\"entity\": \"<entity_id>\", \"service\": \"<domain.service>\", \"data\": {<service_data>}}. Use the entity_id the user names verbatim when it looks like an HA id (e.g. light.kitchen); otherwise pick the most plausible id based on the request. Respond with ONLY the JSON object — no prose, no code fences.",
+          "input": "user_message",
+          "output_key": "extract",
+          "max_tokens": 256,
+          "temperature": 0.1,
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Extracting action…"
+        },
+        {
+          "name": "execute",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You are a Home Assistant executor. Given a structured action, verify the entity exists (ha_list_entities or ha_get_states), then call ha_call_service with the correct domain, service, and data. Stop as soon as the service call succeeds or fails. Be terse — report the outcome in one line.",
+          "input": {
+            "template": {
+              "template": "Extracted: {extract.output}"
+            }
+          },
+          "output_key": "execute",
+          "max_tokens": 512,
+          "temperature": 0.1,
+          "think": false,
+          "tools": [
+            "ha_list_entities",
+            "ha_get_states",
+            "ha_call_service"
+          ],
+          "agent_config": {
+            "max_iterations": 3,
+            "max_tool_calls_total": 4,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 20,
+            "temperature": 0.1,
+            "enable_thinking": false
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Executing…"
+        },
+        {
+          "name": "confirm",
+          "backend": "hugin-ollama",
+          "model": "gemma4:e4b",
+          "system_prompt": "You write a single short sentence confirming (or reporting failure of) a home-automation action. Use natural, plain English. On success use past tense (\"Turned the kitchen light on.\"). On failure use imperative suggesting what the user could try (\"Try naming the entity, e.g. light.kitchen.\"). No lists, no JSON, no code fences — one sentence only.",
+          "input": {
+            "template": {
+              "template": "User asked: {user_message}\nResult: {execute.output}"
+            }
+          },
+          "output_key": "confirm",
+          "max_tokens": 128,
+          "temperature": 0.3,
+          "stream_role": "assistant",
+          "stream_label": "Confirming…"
+        }
+      ]
+    }
+  ]
+}

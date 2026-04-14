@@ -1,0 +1,334 @@
+{
+  "_comment": "Sprint 062 — Dream flows: four always-on / on-demand flows that let Yggdrasil reflect on itself. All steps pinned to munin-ollama to avoid cross-node latency during multi-step chains.",
+  "_models": {
+    "nemotron-3-nano:4b": "Munin — fast structured extractor/ranker, used for query/store/rank/summarize",
+    "glm-4.7-flash": "Munin — reasoning specialist (30B MoE, 3B active, 200K ctx), used for divergent/creative/speculative steps"
+  },
+  "_flows": {
+    "dream_consolidation": "Intent-triggered. Pulls recent engrams, finds patterns, stores insights.",
+    "dream_exploration": "Manual /flow. Brainstorms wild angles, filters low-quality, stores top ideas.",
+    "dream_speculation": "Manual /flow. Long-form speculative reasoning with a grounded summary.",
+    "dream_self_improvement": "Nightly 03:00 + session-init hook. Audits repo + memory, produces ranked improvement candidates."
+  },
+  "flows": [
+    {
+      "name": "dream_consolidation",
+      "trigger": {
+        "intent": "dream_consolidation"
+      },
+      "timeout_secs": 180,
+      "max_step_output_chars": 8000,
+      "steps": [
+        {
+          "name": "query_recent",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You pull recent engrams relevant to the user's consolidation focus. Use the query_memory tool once with a concise query. Return the raw memory results verbatim (no editorializing).",
+          "input": "user_message",
+          "output_key": "recent",
+          "max_tokens": 1024,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "query_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 2,
+            "max_tool_calls_total": 2,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 30,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Querying recent memory…"
+        },
+        {
+          "name": "find_patterns",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You identify durable patterns in a batch of engrams: recurring entities, repeated failure modes, themes, decisions that keep being re-made. Output a compact numbered list — one pattern per line, each with a one-sentence example. No fluff.",
+          "input": {
+            "template": {
+              "template": "Recent:\n{recent.output}"
+            }
+          },
+          "output_key": "patterns",
+          "max_tokens": 1024,
+          "temperature": 0.3,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Finding patterns…"
+        },
+        {
+          "name": "store_insights",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You persist consolidated insights. For each pattern, call store_memory once with cause=\"dream_consolidation pattern\" and effect=<pattern + example>. Use tags [dream, consolidation]. Do not duplicate; if a near-match already exists skip it.",
+          "input": {
+            "template": {
+              "template": "{patterns.output}"
+            }
+          },
+          "output_key": "stored",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "store_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 5,
+            "max_tool_calls_total": 10,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 60,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "assistant",
+          "stream_label": "Storing insights…"
+        }
+      ]
+    },
+    {
+      "name": "dream_exploration",
+      "trigger": "manual",
+      "timeout_secs": 300,
+      "max_step_output_chars": 12000,
+      "steps": [
+        {
+          "name": "brainstorm",
+          "backend": "munin-ollama",
+          "model": "glm-4.7-flash",
+          "system_prompt": "You are a divergent-thinking brainstormer. Given a seed, produce 5-8 distinct angles. Prize coverage over polish: include wild / contrarian / cross-domain ideas alongside the obvious ones. Each angle on its own line, numbered, one or two sentences.",
+          "input": "user_message",
+          "output_key": "draft",
+          "max_tokens": 2048,
+          "temperature": 0.9,
+          "think": true,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Exploring…"
+        },
+        {
+          "name": "evaluate",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You score brainstormed angles on plausibility (0-1), novelty (0-1), and actionability (0-1). Drop any angle with any score < 0.3. Re-rank the survivors by total score. Return the top 3 as a JSON array: [{\"angle\": \"<text>\", \"plausibility\": <f>, \"novelty\": <f>, \"actionability\": <f>}]. Output ONLY the JSON array.",
+          "input": {
+            "template": {
+              "template": "Seed: {user_message}\nAngles:\n{draft.output}"
+            }
+          },
+          "output_key": "evaluated",
+          "max_tokens": 1024,
+          "temperature": 0.2,
+          "think": false,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Evaluating…"
+        },
+        {
+          "name": "store",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You persist exploration results. For each angle in the evaluated JSON, call store_memory with cause=\"dream_exploration seed\" and effect=<angle text + scores>. Use tags [dream, exploration].",
+          "input": {
+            "template": {
+              "template": "{evaluated.output}"
+            }
+          },
+          "output_key": "stored",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "store_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 5,
+            "max_tool_calls_total": 6,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 60,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "assistant",
+          "stream_label": "Storing angles…"
+        }
+      ]
+    },
+    {
+      "name": "dream_speculation",
+      "trigger": "manual",
+      "timeout_secs": 420,
+      "max_step_output_chars": 16000,
+      "steps": [
+        {
+          "name": "deep_reason",
+          "backend": "munin-ollama",
+          "model": "glm-4.7-flash",
+          "system_prompt": "You produce long-form speculative reasoning. Given a problem, construct a sustained reasoning trace: set up the framing, work through implications, include counter-cases and failure modes, and mark your confidence. Max 1500 words. Do not hedge reflexively — commit to positions and defend them.",
+          "input": "user_message",
+          "output_key": "speculation",
+          "max_tokens": 4096,
+          "temperature": 0.7,
+          "think": true,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Speculating…"
+        },
+        {
+          "name": "summarize",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You consolidate a speculative reasoning trace into a grounded 400-word summary. Verify factual claims where possible; flag any unsupported claim inline with [unsupported]. End with an explicit Conclusion: section containing a single-sentence bottom line.",
+          "input": {
+            "template": {
+              "template": "Problem: {user_message}\nSpeculation:\n{speculation.output}"
+            }
+          },
+          "output_key": "summary",
+          "max_tokens": 1024,
+          "temperature": 0.2,
+          "stream_role": "assistant",
+          "stream_label": "Consolidating…"
+        },
+        {
+          "name": "store",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You persist the speculation summary. Call store_memory once with cause=\"dream_speculation <short topic>\" and effect=<summary>. Use tags [dream, speculation].",
+          "input": {
+            "template": {
+              "template": "{summary.output}"
+            }
+          },
+          "output_key": "stored",
+          "max_tokens": 512,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "store_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 2,
+            "max_tool_calls_total": 2,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 30,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "assistant",
+          "stream_label": "Storing speculation…"
+        }
+      ]
+    },
+    {
+      "name": "dream_self_improvement",
+      "trigger": {
+        "cron": {
+          "schedule": "every_1440m"
+        }
+      },
+      "timeout_secs": 600,
+      "max_step_output_chars": 20000,
+      "steps": [
+        {
+          "name": "gather",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You gather the current improvement context for the Yggdrasil repo. Use search_code for recent hot paths (router, flow engine, handlers) and query_memory for recent bugs, gotchas, and pending self-improvement items. Return the raw evidence verbatim — file paths, snippets, engram text. No summarization.",
+          "input": "user_message",
+          "output_key": "context",
+          "max_tokens": 2048,
+          "temperature": 0.3,
+          "think": false,
+          "tools": [
+            "search_code",
+            "query_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 4,
+            "max_tool_calls_total": 8,
+            "tool_timeout_secs": 15,
+            "total_timeout_secs": 120,
+            "temperature": 0.3,
+            "enable_thinking": false
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Gathering context…"
+        },
+        {
+          "name": "critique",
+          "backend": "munin-ollama",
+          "model": "glm-4.7-flash",
+          "system_prompt": "You are a senior engineer producing improvement candidates for the Yggdrasil codebase. Given the gathered context, produce 5-10 concrete candidates as a JSON array: [{\"title\": \"<short>\", \"files\": [\"<path>\"], \"rationale\": \"<why>\", \"risk_reward_score\": <0..1>}]. Prefer high-leverage small diffs over sweeping refactors. Output ONLY the JSON array.",
+          "input": {
+            "template": {
+              "template": "Context:\n{context.output}"
+            }
+          },
+          "output_key": "critique",
+          "max_tokens": 4096,
+          "temperature": 0.5,
+          "think": true,
+          "stream_role": "swarm_thinking",
+          "stream_label": "Critiquing…"
+        },
+        {
+          "name": "rank",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You rank improvement candidates. Steps: (1) drop any with risk_reward_score < 0.6; (2) query_memory for \"self_improvement pending\" and dedupe against existing pending engrams; (3) re-rank by score desc; (4) cap at top 10. Output ONLY a JSON array of the survivors, preserving the original field shape plus a new integer \"priority\" (1 = highest).",
+          "input": {
+            "template": {
+              "template": "{critique.output}"
+            }
+          },
+          "output_key": "ranked",
+          "max_tokens": 2048,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "query_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 3,
+            "max_tool_calls_total": 4,
+            "tool_timeout_secs": 15,
+            "total_timeout_secs": 60,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "swarm_thinking",
+          "stream_label": "Ranking…"
+        },
+        {
+          "name": "store",
+          "backend": "munin-ollama",
+          "model": "nemotron-3-nano:4b",
+          "system_prompt": "You persist ranked improvement candidates — one engram per candidate. For each, call store_memory with cause=\"self_improvement candidate: <title>\", effect=<rationale + files>. Tags: [self_improvement, pending, priority:<N>, source:sprint-062-dream] where <N> is the candidate's priority integer. Do not merge candidates — one store_memory call per candidate.",
+          "input": {
+            "template": {
+              "template": "{ranked.output}"
+            }
+          },
+          "output_key": "stored",
+          "max_tokens": 1024,
+          "temperature": 0.2,
+          "think": false,
+          "tools": [
+            "store_memory"
+          ],
+          "agent_config": {
+            "max_iterations": 12,
+            "max_tool_calls_total": 12,
+            "tool_timeout_secs": 10,
+            "total_timeout_secs": 120,
+            "temperature": 0.2,
+            "enable_thinking": false
+          },
+          "stream_role": "assistant",
+          "stream_label": "Storing suggestions…"
+        }
+      ]
+    }
+  ]
+}

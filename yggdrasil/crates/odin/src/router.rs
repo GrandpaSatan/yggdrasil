@@ -40,6 +40,23 @@ pub enum RouterMethod {
     Fallback,
 }
 
+/// How the keyword classifier arrived at its decision (Sprint 062 P1a).
+///
+/// Disambiguates the three distinct origins of an `intent="default"` result so
+/// that downstream fallback logic in `handlers.rs` can tell a real-but-weak
+/// match (`Matched`) apart from a gaming-suppressed HA match (`Suppressed`)
+/// and a genuine no-match (`None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeywordMatchKind {
+    /// No rule matched any keyword in the message.
+    None,
+    /// A rule matched (HA) but was suppressed by a gaming keyword co-occurrence.
+    Suppressed,
+    /// At least one rule matched — see `keyword_match_count` for strength.
+    Matched,
+}
+
 /// The result of classifying a user message.
 #[derive(Debug, Clone)]
 pub struct RoutingDecision {
@@ -52,6 +69,11 @@ pub struct RoutingDecision {
     pub backend_url: String,
     pub backend_name: String,
     pub backend_type: BackendType,
+    /// Number of keyword hits that produced this decision (Sprint 062 P1a).
+    /// 0 for suppressed / no-match / non-keyword paths.
+    pub keyword_match_count: u32,
+    /// Origin category of the keyword classifier verdict (Sprint 062 P1a).
+    pub keyword_match_kind: KeywordMatchKind,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -368,23 +390,27 @@ impl SemanticRouter {
         let gaming_kws = gaming_keywords();
         let has_gaming = gaming_kws.iter().any(|kw| lower.contains(kw.as_str()));
 
-        let best = match best {
+        // Sprint 062 P1a: track whether suppression fired so downstream
+        // fallback logic can distinguish "no match" from "HA match was
+        // intentionally downgraded" from "real match".
+        let (best, suppressed) = match best {
             Some((_, rule))
                 if (rule.intent == "home_automation" || rule.intent == "home_assistant")
                     && has_gaming =>
             {
                 tracing::info!("gaming keyword detected — suppressing HA intent to default");
-                None
+                (None, true)
             }
-            other => other,
+            other => (other, false),
         };
 
         match best {
-            Some((_, rule)) => {
+            Some((count, rule)) => {
                 tracing::debug!(
                     intent = %rule.intent,
                     model = %rule.model,
                     backend = %rule.backend_name,
+                    keyword_match_count = count,
                     "routing decision made by keyword match"
                 );
                 RoutingDecision {
@@ -395,12 +421,20 @@ impl SemanticRouter {
                     backend_url: rule.backend_url.clone(),
                     backend_name: rule.backend_name.clone(),
                     backend_type: rule.backend_type.clone(),
+                    keyword_match_count: count as u32,
+                    keyword_match_kind: KeywordMatchKind::Matched,
                 }
             }
             None => {
+                let kind = if suppressed {
+                    KeywordMatchKind::Suppressed
+                } else {
+                    KeywordMatchKind::None
+                };
                 tracing::debug!(
                     model = %self.default_model,
                     backend = %self.default_backend_name,
+                    keyword_match_kind = ?kind,
                     "no keyword match — using default backend"
                 );
                 RoutingDecision {
@@ -411,6 +445,8 @@ impl SemanticRouter {
                     backend_url: self.default_backend_url.clone(),
                     backend_name: self.default_backend_name.clone(),
                     backend_type: self.default_backend_type.clone(),
+                    keyword_match_count: 0,
+                    keyword_match_kind: kind,
                 }
             }
         }
@@ -436,6 +472,8 @@ impl SemanticRouter {
             backend_url: backend_url.clone(),
             backend_name: backend_name.clone(),
             backend_type,
+            keyword_match_count: 0,
+            keyword_match_kind: KeywordMatchKind::None,
         })
     }
 
@@ -457,6 +495,126 @@ impl SemanticRouter {
                 backend_url: rule.backend_url.clone(),
                 backend_name: rule.backend_name.clone(),
                 backend_type: rule.backend_type.clone(),
+                keyword_match_count: 0,
+                keyword_match_kind: KeywordMatchKind::None,
             })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Tests (Sprint 062 P1a — intent_default keyword-classifier signal)
+// ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ygg_domain::config::{BackendConfig, BackendType, RoutingConfig, RoutingRule};
+
+    /// Build a `SemanticRouter` with the three intents used in Sprint 062 tests:
+    /// `home_automation`, `coding`, and `reasoning`. Default backend is `chat`.
+    fn build_test_router() -> SemanticRouter {
+        let backends = vec![
+            BackendConfig {
+                name: "ha-backend".to_string(),
+                url: "http://ha.local:11434".to_string(),
+                backend_type: BackendType::Ollama,
+                models: vec!["ha-model".to_string()],
+                max_concurrent: 2,
+                context_window: 16384,
+            },
+            BackendConfig {
+                name: "coder-backend".to_string(),
+                url: "http://coder.local:11434".to_string(),
+                backend_type: BackendType::Ollama,
+                models: vec!["coder-model".to_string()],
+                max_concurrent: 2,
+                context_window: 16384,
+            },
+            BackendConfig {
+                name: "default-backend".to_string(),
+                url: "http://default.local:11434".to_string(),
+                backend_type: BackendType::Ollama,
+                models: vec!["default-model".to_string()],
+                max_concurrent: 2,
+                context_window: 16384,
+            },
+        ];
+        let config = RoutingConfig {
+            default_model: "default-model".to_string(),
+            default_backend: Some("default-backend".to_string()),
+            rules: vec![
+                RoutingRule {
+                    intent: "home_automation".to_string(),
+                    model: "ha-model".to_string(),
+                    backend: "ha-backend".to_string(),
+                },
+                RoutingRule {
+                    intent: "coding".to_string(),
+                    model: "coder-model".to_string(),
+                    backend: "coder-backend".to_string(),
+                },
+            ],
+            intent_default: Some("chat".to_string()),
+        };
+        SemanticRouter::new(&config, &backends)
+    }
+
+    #[test]
+    fn test_ha_high_confidence_beats_default() {
+        // "turn on the kitchen light" contains at least two HA keywords
+        // ("turn on" and "light") so the classifier must produce a strong
+        // Matched decision that downstream fallback logic will respect.
+        let router = build_test_router();
+        let decision = router.classify("turn on the kitchen light");
+        assert_eq!(decision.intent, "home_automation");
+        assert_eq!(decision.keyword_match_kind, KeywordMatchKind::Matched);
+        assert!(
+            decision.keyword_match_count >= 2,
+            "expected at least 2 keyword hits, got {}",
+            decision.keyword_match_count
+        );
+    }
+
+    #[test]
+    fn test_gaming_suppression_still_works() {
+        // "harpy is being a dick in fallout" contains the gaming keyword
+        // "harpy" — if any HA keyword also matched, the gaming override
+        // must suppress it. Otherwise the kind is None. Either way, the
+        // fallback arm in handlers.rs must NOT override into chat because
+        // a Suppressed decision is an intentional pass-through for the LLM.
+        let router = build_test_router();
+        let decision = router.classify("harpy is being a dick in fallout");
+        assert_eq!(decision.intent, "default");
+        // The important invariant: this must NOT come back as Matched.
+        assert_ne!(decision.keyword_match_kind, KeywordMatchKind::Matched);
+        assert_eq!(decision.keyword_match_count, 0);
+    }
+
+    #[test]
+    fn test_no_match_applies_intent_default() {
+        // A bare greeting matches no rule at all — kind is None, count is 0.
+        // This is the ONLY shape that permits the `intent_default` override
+        // in handlers.rs to fire.
+        let router = build_test_router();
+        let decision = router.classify("hi");
+        assert_eq!(decision.intent, "default");
+        assert_eq!(decision.keyword_match_kind, KeywordMatchKind::None);
+        assert_eq!(decision.keyword_match_count, 0);
+    }
+
+    #[test]
+    fn test_ambiguous_ha_with_gaming_mention() {
+        // "turn on kitchen light while I play Fallout" — HA keywords
+        // ("turn on", "light") win. "Fallout" is NOT in the gaming suppression
+        // set (only Thor/Harpy/Morrigan/etc are), so HA stays.
+        let router = build_test_router();
+        let decision = router.classify("turn on kitchen light while I play Fallout");
+        assert_eq!(decision.intent, "home_automation");
+        assert_eq!(decision.keyword_match_kind, KeywordMatchKind::Matched);
+        assert!(
+            decision.keyword_match_count >= 2,
+            "expected HA keywords to win with count >= 2, got {}",
+            decision.keyword_match_count
+        );
     }
 }

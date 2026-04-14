@@ -127,6 +127,8 @@ mod tests {
             backend_url: "http://localhost".to_string(),
             backend_name: "test".to_string(),
             backend_type: BackendType::Ollama,
+            keyword_match_count: 0,
+            keyword_match_kind: crate::router::KeywordMatchKind::None,
         }
     }
 

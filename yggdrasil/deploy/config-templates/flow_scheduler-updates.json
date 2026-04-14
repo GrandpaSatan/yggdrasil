@@ -1,0 +1,26 @@
+{
+  "_comment": "Sprint 062 — additions to the flow scheduler. The Odin background scheduler currently supports ONLY 'every_Nm' interval schedules (see crates/odin/src/flow_scheduler.rs parse_simple_interval). Full cron expressions (e.g. '0 3 * * *' = daily at 03:00) are NOT yet parsed; the closest supported schedule is 'every_1440m' (every 24h from the scheduler's reference epoch).",
+  "_note_on_daily_03_00": "True 'daily at 03:00 local' requires adding a full cron parser (e.g. the `cron` crate) and an absolute-time check path. Until then, dream_self_improvement uses 'every_1440m' — it will fire once per day but the phase is tied to the Odin start time, not local wall-clock. A complementary trigger is the session-init hook in the VS Code extension (hookManager.ts SessionStart) which POSTs /api/flows/dream_self_improvement/run at session start so the user always has fresh suggestions even if the cron phase drifts.",
+  "_planned_upgrade": {
+    "crate": "cron",
+    "feature": "parse and evaluate real cron expressions (seconds-resolution)",
+    "schema_change": "FlowTrigger::Cron.schedule remains a String; flow_scheduler.rs gains a parse_cron branch that falls back to parse_simple_interval",
+    "estimated_effort_hours": 2
+  },
+  "new_cron_entries": [
+    {
+      "flow": "dream_self_improvement",
+      "schedule": "every_1440m",
+      "intended_wall_clock": "03:00 local (drifts with Odin restart time — see _note_on_daily_03_00)",
+      "enabled": true
+    }
+  ],
+  "session_init_triggers": [
+    {
+      "flow": "dream_self_improvement",
+      "source": "VS Code extension hookManager SessionStart hook",
+      "endpoint": "POST http://<odin>/api/flows/dream_self_improvement/run",
+      "rationale": "Guarantees a fresh batch of improvement candidates at every session start regardless of cron drift."
+    }
+  ]
+}
