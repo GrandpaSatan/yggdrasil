@@ -12,10 +12,6 @@ import requests
 from helpers.services import service_urls
 
 
-@pytest.mark.xfail(
-    reason="VULN-007: webhook has no HMAC signature verification yet",
-    strict=True,
-)
 @pytest.mark.required_services("odin")
 def test_webhook_rejects_unsigned_payload() -> None:
     url = service_urls()["odin"].rstrip("/")
@@ -29,10 +25,6 @@ def test_webhook_rejects_unsigned_payload() -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason="VULN-007: webhook has no HMAC signature verification yet",
-    strict=True,
-)
 @pytest.mark.required_services("odin")
 def test_webhook_rejects_bad_signature() -> None:
     url = service_urls()["odin"].rstrip("/")

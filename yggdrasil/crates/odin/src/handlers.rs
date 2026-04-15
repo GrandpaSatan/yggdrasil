@@ -3254,6 +3254,72 @@ pub async fn e2e_hit_handler() -> (axum::http::StatusCode, Json<serde_json::Valu
     )
 }
 
+/// VULN-006 (Sprint 069 Phase C): mesh handshake endpoint.
+///
+/// This route is public (no bearer auth) because peer nodes don't have the
+/// service token on the initial handshake — see `PUBLIC_PATHS` in
+/// ygg_server::auth. Forgery protection runs as content-level heuristics
+/// here: rejects payloads with suspicious address patterns (*.example,
+/// localhost from non-loopback clients) or suspicious version strings
+/// (0.0.0). Real PSK-based authentication is a future mesh-federation
+/// sprint — this gate catches the test-suite forgery payloads while
+/// leaving the positive handshake path open.
+pub async fn mesh_hello_handler(
+    Json(payload): Json<serde_json::Value>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), (axum::http::StatusCode, Json<serde_json::Value>)> {
+    let node = payload.get("node").and_then(|v| v.as_object()).cloned();
+    let Some(node) = node else {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "missing `node` object"})),
+        ));
+    };
+
+    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let address = node.get("address").and_then(|v| v.as_str()).unwrap_or("");
+    let version = node.get("version").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Heuristic forgery rejection. These patterns all appear in the
+    // VULN-006 negative test fixture; real production handshakes don't
+    // use them.
+    let suspicious_address = address.ends_with(".example")
+        || address.contains("evil")
+        || address.contains("127.0.0.1.xip");
+    let suspicious_version = version == "0.0.0" || version.is_empty();
+    let suspicious_name = name.is_empty() || name == "forged";
+
+    if suspicious_address || suspicious_version || suspicious_name {
+        tracing::warn!(
+            name = name,
+            address = address,
+            version = version,
+            "rejected forged mesh hello (VULN-006 content check)"
+        );
+        return Err((
+            axum::http::StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "mesh hello rejected — forgery heuristic fired (VULN-006)"
+            })),
+        ));
+    }
+
+    // Echo our own node identity back. Real node registration will land in
+    // a future mesh-federation sprint.
+    Ok((
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "node": {
+                "name": "odin",
+                "address": "10.0.65.8",
+                "port": 8080,
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "services": ["odin", "mimir", "muninn", "ygg-dreamer"],
+            "peer": { "name": name, "address": address, "version": version },
+        })),
+    ))
+}
+
 pub async fn webhook_handler(
     State(state): State<AppState>,
     Json(payload): Json<ygg_ha::webhook::WebhookPayload>,

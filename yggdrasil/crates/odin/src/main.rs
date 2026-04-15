@@ -409,6 +409,10 @@ async fn main() -> anyhow::Result<()> {
         // Notification and webhook endpoints (HA integration).
         .route("/api/v1/notify", post(handlers::notify_handler))
         .route("/api/v1/webhook", post(handlers::webhook_handler))
+        // VULN-006 (Sprint 069 Phase C): mesh handshake endpoint. Public
+        // (see PUBLIC_PATHS in ygg_server::auth) — forgery rejection runs
+        // as content-level heuristics inside the handler.
+        .route("/api/v1/mesh/hello", post(handlers::mesh_hello_handler))
         // Sprint 064 P8 — daily E2E hit counter (cron wrapper pings this).
         .route("/api/v1/e2e/hit", post(handlers::e2e_hit_handler))
         .route("/api/v1/e2e/hit", get(handlers::e2e_hit_handler))

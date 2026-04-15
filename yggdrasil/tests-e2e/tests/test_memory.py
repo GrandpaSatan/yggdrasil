@@ -247,10 +247,6 @@ def test_cross_sprint_store_isolation(mimir_client: MimirClient, clean_test_engr
     )
 
 
-@pytest.mark.xfail(
-    reason="VULN-008: Core tier is writable without admin token — fixed by adding write-protection",
-    strict=True,
-)
 @pytest.mark.required_services("mimir")
 def test_core_tier_write_requires_admin_token(clean_test_engrams) -> None:
     """VULN-008: core-tier engrams are injected into every system prompt.

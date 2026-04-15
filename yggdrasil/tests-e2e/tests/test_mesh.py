@@ -56,10 +56,6 @@ def test_mesh_hello_accepts_valid_handshake() -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason="VULN-006: mesh handshake accepts any node (no pre-shared key)",
-    strict=True,
-)
 @pytest.mark.required_services("odin")
 def test_mesh_forged_handshake_rejected() -> None:
     """Once VULN-006 is fixed, a handshake without a pre-shared key must 401."""

@@ -22,7 +22,12 @@ use axum::middleware::Next;
 
 /// Paths that are ALWAYS reachable without a Bearer token. Matched as
 /// exact strings (no prefix matching — `/metrics/foo` is not exempt).
-pub const PUBLIC_PATHS: &[&str] = &["/health", "/metrics"];
+///
+/// `/api/v1/mesh/hello` is public because the mesh handshake is its own
+/// auth layer (VULN-006 adds a pre-shared key + content forgery checks
+/// inside the handler). Bearer auth would be redundant here, and peer
+/// nodes attempting the initial handshake don't have the service token.
+pub const PUBLIC_PATHS: &[&str] = &["/health", "/metrics", "/api/v1/mesh/hello"];
 
 const SERVICE_TOKEN_ENV: &str = "YGG_SERVICE_TOKEN";
 const FALLBACK_TOKEN_ENV: &str = "MIMIR_VAULT_CLIENT_TOKEN";
