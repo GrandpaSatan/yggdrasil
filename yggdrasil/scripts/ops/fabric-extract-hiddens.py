@@ -44,7 +44,7 @@ MODELS = {
     "lfm2.5-1.2b-base": "LiquidAI/LFM2.5-1.2B-Base",
     "gemma-4-e2b":      "google/gemma-4-E2B",            # GATED — needs HF access grant
     "gemma-4-e4b":      "google/gemma-4-E4B",            # GATED — needs HF access grant
-    "nemotron-nano-4b": "nvidia/Nemotron-H-4B-Base-8K",  # downloaded 2026-04-15
+    "nemotron-3-nano-4b": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",  # released Dec 2025/Jan 2026, hybrid Mamba+attn
     "rwkv-7-world":     "BlinkDL/rwkv-7-world",          # RWKV needs special extraction (no K/V)
     # glm-4.7-flash:   "THUDM/GLM-4.7-Flash"             # 30B MoE — Hugin-only, needs 4-bit quant
 }
