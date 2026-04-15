@@ -1,17 +1,43 @@
 # Sprint 069 Phase F — Track B cutover status (2026-04-15)
 
-## What's verified working
+## What's verified working — END-TO-END SMOKE PROVED
 
-- Docker 29.4.0 installed on Hugin and configured with `jhernandez` in the `docker` group.
-- **Real vLLM ROCm image** pulled and runs on Hugin:
-  `rocm/vllm-dev:rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0`
-  (vLLM `0.16.1.dev0+g89a77b108`, PyTorch 2.9, ROCm 7.2.1, Python 3.12.)
-- **gfx1150 (Hugin 890M iGPU) is supported** by this image with no special args.
-  `HSA_OVERRIDE_GFX_VERSION=11.5.0` + `VLLM_USE_TRITON_FLASH_ATTN=0` envs are
-  the right combination for the HX 370 iGPU.
-- ROCm 7.5 + ROCM-SMI 3.0.0 + PyTorch present on the host (the in-image
-  ROCm 7.2.1 stack runs fine on top of the host's 7.5).
-- Hugin host disk: 1.5 TB free on `/`. Plenty of headroom for model staging.
+**vLLM 0.16.1 serves real chat completions on the Hugin gfx1150 iGPU.**
+Tested 2026-04-15 19:45 with `Qwen/Qwen2.5-0.5B-Instruct`:
+
+```
+$ curl -X POST http://localhost:18080/v1/chat/completions ...
+{"id":"chatcmpl-...","model":"Qwen/Qwen2.5-0.5B-Instruct",
+ "choices":[{"message":{"content":"Yes, VLLM ... can be ...
+   deployed on AMD's Iris Graphics Processing Unit (GPU)."}}]}
+```
+
+vLLM startup log confirmed:
+- `Resolved architecture: Qwen2ForCausalLM`
+- `GPU KV cache size: 2,008,880 tokens`
+- `Maximum concurrency for 1,024 tokens per request: 1961.80x`
+- `Application startup complete.`
+
+Working environment combination:
+- Image: `rocm/vllm-dev:rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0`
+- `HIP_VISIBLE_DEVICES=1` (iGPU, GUID 53864, gfx1150)
+- `HSA_OVERRIDE_GFX_VERSION=11.5.0`
+- `VLLM_USE_TRITON_FLASH_ATTN=0`
+- `--gpu-memory-utilization 0.85` (~1.7 GiB on 2 GiB iGPU)
+- `--max-model-len 1024`
+- HF safetensors model format (Qwen2 family)
+
+GPU mapping verified via `rocm-smi` (note: the obvious mapping was REVERSED):
+- **HIP_VISIBLE_DEVICES=0 → RX 9060 XT eGPU (gfx1200, 17 GiB VRAM)**
+  Card model 0x7590, GUID 51017. HSA_OVERRIDE=12.0.0 needed.
+- **HIP_VISIBLE_DEVICES=1 → 890M iGPU (gfx1150, 2 GiB dedicated)**
+  Card model 0x150e (STRIXEMU), GUID 53864. HSA_OVERRIDE=11.5.0 needed.
+
+Other environmental facts:
+- Docker 29.4.0 installed on Hugin, `jhernandez` in docker group (no sudo
+  needed for docker commands).
+- Host ROCm 7.5 + ROCM-SMI 3.0.0; image's in-bundle ROCm 7.2.1 runs cleanly.
+- 1.5 TB free on `/`.
 
 ## What's blocked — and why
 

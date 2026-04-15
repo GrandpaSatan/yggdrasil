@@ -11,12 +11,15 @@
 #   rocm/vllm-dev:rocm7.2.1_navi_ubuntu24.04_py3.12_pytorch_2.9_vllm_0.16.0
 #   Official AMD-published build; targets gfx1150/gfx1151 (Hugin 890M iGPU).
 #
-# GPU routing:
-#   HIP_VISIBLE_DEVICES=0 → 890M iGPU (gfx1150)  — small/medium models, ttl<600
-#   HIP_VISIBLE_DEVICES=1 → RX 9060 XT eGPU (gfx1200, RDNA 4) — large models
+# GPU routing (verified via rocm-smi --showproductname on Hugin 2026-04-15):
+#   HIP_VISIBLE_DEVICES=0 → RX 9060 XT eGPU (gfx1200, 17 GiB VRAM) — large models
 #     HSA_OVERRIDE_GFX_VERSION=12.0.0 forces the runtime to accept gfx1200
-#     despite the image only advertising gfx1150/gfx1151; validated with the
-#     Sprint 069 Phase F smoke test.
+#     despite the image only advertising gfx1150/gfx1151.
+#   HIP_VISIBLE_DEVICES=1 → 890M iGPU (gfx1150, 2 GiB dedicated) — small models
+#     HSA_OVERRIDE_GFX_VERSION=11.5.0 matches the image's gfx1150 build.
+#     Phase F smoke (2026-04-15) confirmed Qwen2.5-0.5B serves end-to-end
+#     on this GPU at gpu_memory_utilization=0.85 with KV cache headroom for
+#     2M tokens / 1961× concurrency.
 #
 # Soak port: :11440 during the 24h dual-serve validation; flipped to :11434
 # at cutover (after Ollama on Hugin is systemctl disabled).
@@ -36,7 +39,7 @@ models:
   "gemma4:e4b":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8001:8000
@@ -53,7 +56,7 @@ models:
   "gemma4:e2b":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8004:8000
@@ -71,7 +74,7 @@ models:
   "glm-4.7-flash:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
+      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8002:8000
@@ -89,7 +92,7 @@ models:
   "nemotron-3-nano:4b":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
+      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8003:8000
@@ -106,7 +109,7 @@ models:
   "hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8005:8000
@@ -121,7 +124,7 @@ models:
   "lfm-1.2b:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8006:8000
@@ -136,7 +139,7 @@ models:
   "lfm25-tools:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8010:8000
@@ -154,7 +157,7 @@ models:
   "saga-350m:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8009:8000
@@ -170,7 +173,7 @@ models:
   "review-1.2b:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8008:8000
@@ -186,7 +189,7 @@ models:
   "fusion-v6:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
+      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=12.0.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8007:8000
@@ -202,7 +205,7 @@ models:
   "code-cleaner-350m:latest":
     cmd: >-
       docker run --rm --device /dev/kfd --device /dev/dri
-      -e HIP_VISIBLE_DEVICES=0 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
+      -e HIP_VISIBLE_DEVICES=1 -e HSA_OVERRIDE_GFX_VERSION=11.5.0
       -e VLLM_USE_TRITON_FLASH_ATTN=0
       -v /opt/yggdrasil/models:/models:ro
       -p 8011:8000

@@ -1,0 +1,95 @@
+# KVCOMM anchor-pool config — Sprint 069 Phase G.
+#
+# KVCOMM (NeurIPS'25, arxiv 2510.12872) is a vLLM plugin that estimates and
+# adjusts KV-caches for shared prompt content by referencing a pool of cached
+# observations called "anchors". When two models in a multi-agent flow process
+# the same prefix tokens, KVCOMM transfers KV state from one to the other
+# instead of redoing the attention computation. Paper measures 7.8× TTFT
+# speedup on 5-agent workflows.
+#
+# Repo: github.com/HankYe/KVCOMM (Apache 2.0). Vendored into
+# external/kvcomm/ with NOTICE entry.
+#
+# Activation: llama-swap loads this as the kvcomm plugin's config when the
+# `KVCOMM_CONFIG` env var points at this file. Each entry maps a flow pair
+# (the two models that exchange KV state) to its anchor pool parameters.
+#
+# Defaults from the paper, validated for our fleet on the Sprint 069 Phase G
+# bench. Per-pair tuning happens after the soak's metric exports.
+
+global:
+  # Cosine-similarity threshold below which an anchor cache is considered
+  # "stale enough" to evict. Paper uses 0.30 as the default.
+  kv_threshold: 0.30
+  # Maximum number of anchor entries kept per pair. Larger = better hit
+  # rate but more VRAM. Paper defaults to 20.
+  kv_max_anchor_num: 20
+  # Sliding window in tokens applied when building the anchor key. Smaller
+  # = more anchors / finer-grained matching. Paper defaults to 5.
+  kv_window_size: 5
+  # Where to persist anchor pools across restarts. Each pair's pool lives in
+  # `<dir>/<pair_name>.bin`. Use a tmpfs path during dev to avoid disk wear;
+  # production points to /var/lib/llama-swap/kvcomm.
+  anchor_dir: /var/lib/llama-swap/kvcomm
+  # Prometheus-side per-pair labels. The plugin emits metrics directly; the
+  # llama-swap eventsFile mirrors them into the JSONL audit trail.
+  prometheus_export: true
+
+# ── Pair definitions ──────────────────────────────────────────────────
+# Each pair lists the two models that exchange KV state during a flow.
+# `producer` runs the early phase (planner / router); `consumer` runs the
+# downstream phase (executor / reviewer). Anchors live in the consumer's
+# format and are projected from the producer's KV at lookup time.
+
+pairs:
+  coding_swarm:
+    producer: nemotron-3-nano:4b
+    consumer: review-1.2b:latest
+    notes: |
+      Coder generates a draft, reviewer scrutinises it. Reviewer's prompt
+      always replays the coder's output verbatim — perfect KV-reuse target.
+
+  memory_consolidate:
+    producer: saga-350m:latest
+    consumer: review-1.2b:latest
+    notes: |
+      Saga summarises an engram batch; reviewer fact-checks the summary
+      against the originals. Same-text-twice pattern is the textbook
+      KVCOMM target.
+
+  perceive:
+    producer: lfm-1.2b:latest
+    consumer: gemma4:e4b
+    notes: |
+      Voice STT output → multimodal reasoning. KV reuse on the
+      transcribed text segment, ~80% of the second model's prefix.
+
+  research:
+    producer: gemma4:e4b
+    consumer: nemotron-3-nano:4b
+    notes: |
+      Reasoning planner → execution. The planner's tool-call list is
+      replayed in the executor's prompt as context.
+
+  dream_exploration:
+    producer: lfm25-tools:latest
+    consumer: review-1.2b:latest
+    notes: |
+      Dreamer issues exploratory queries; reviewer ranks them. Lower
+      hit rate expected (~30%) since dream prompts have higher entropy.
+
+  dream_self_improvement:
+    producer: review-1.2b:latest
+    consumer: code-cleaner-350m:latest
+    notes: |
+      Self-review pipeline. Reviewer's critique feeds the cleaner —
+      cleaner's prefix is ~100% reviewer's output.
+
+# ── Acceptance ────────────────────────────────────────────────────────
+# Phase G acceptance: every pair above has a matching
+# `vllm_kvcomm_anchor_hit_rate{pair="<name>"}` Prometheus series with at
+# least one non-zero sample after 30 minutes of live traffic, and the
+# `kvcomm-bench.py --pair <name>` reports ≥ 2× TTFT improvement vs.
+# baseline (no KVCOMM) on at least 4 of the 6 pairs. Targets are
+# documented per-pair in docs/research/kvcomm-yggdrasil-findings.md
+# after the bench run.
