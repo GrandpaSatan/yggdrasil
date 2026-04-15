@@ -109,7 +109,21 @@ struct ConsolidationRow {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Report returned by `SummarizationService::force_cycle` — used by the
+/// `/api/v1/summarize/trigger` endpoint so E2E tests can assert what happened.
+#[derive(Debug, serde::Serialize)]
+pub struct SummaryReport {
+    pub summarized_batches: u32,
+    pub archived_engrams: u32,
+    pub deduped: u32,
+    pub contradictions: u32,
+}
+
 /// Background service for summarizing aging Recall engrams into Archival summaries.
+///
+/// Sprint 069 Phase D: `shutdown_rx` moved out of the struct to a `run()` parameter
+/// so the service can be held as `Arc<SummarizationService>` in `AppState` and
+/// reused by the `/api/v1/summarize/trigger` handler on demand.
 pub struct SummarizationService {
     store: Store,
     vectors: VectorStore,
@@ -118,15 +132,10 @@ pub struct SummarizationService {
     embedder: OnnxEmbedder,
     http: reqwest::Client,
     config: TierConfig,
-    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl SummarizationService {
     /// Create a new `SummarizationService`.
-    ///
-    /// The `shutdown_rx` receiver is subscribed from the `AppState` watch channel.
-    /// When `true` is sent on the channel, the background task stops after the
-    /// current cycle completes.
     ///
     /// `sdr_index` and `dense_index` are held so consolidation can drop deleted
     /// engram IDs from both in-memory indexes — the dreamer 404 bug (Sprint 067
@@ -140,11 +149,20 @@ impl SummarizationService {
         dense_index: Arc<DenseIndex>,
         embedder: OnnxEmbedder,
         config: TierConfig,
-        shutdown_rx: watch::Receiver<bool>,
     ) -> Self {
+        // Sprint 069 Phase C: Odin is now gated by `ygg_server::auth::bearer_auth`.
+        // Set the in-fleet internal-trust header on every summarization call so
+        // Odin's auth layer lets the request through on the fast path.
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            "X-Yggdrasil-Internal",
+            reqwest::header::HeaderValue::from_static("true"),
+        );
+
         // Timeout of 120s matches the sprint doc requirement for Odin summarization calls.
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .default_headers(default_headers)
             .build()
             // reqwest::Client::builder().build() only fails on TLS init, which would
             // be a fatal misconfiguration. Use expect here at service construction time.
@@ -158,7 +176,6 @@ impl SummarizationService {
             embedder,
             http,
             config,
-            shutdown_rx,
         }
     }
 
@@ -166,15 +183,74 @@ impl SummarizationService {
     ///
     /// Returns a `JoinHandle` — the caller can drop it (fire-and-forget) or await it
     /// for clean shutdown testing.
-    pub fn start(self) -> tokio::task::JoinHandle<()> {
+    pub fn start(
+        self: Arc<Self>,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            self.run().await;
+            self.run(shutdown_rx).await;
+        })
+    }
+
+    /// Force one summarization + consolidation cycle, bypassing the recall-capacity
+    /// gate. Used by the `/api/v1/summarize/trigger` endpoint so E2E tests can
+    /// verify the archive-and-delete flow without having to breach capacity.
+    ///
+    /// Returns a `SummaryReport` describing what the cycle did. On internal
+    /// failure (PG / Qdrant / Odin unreachable), returns `Err` — the caller
+    /// decides whether to surface the error to the client.
+    pub async fn force_cycle(&self) -> Result<SummaryReport, MimirError> {
+        let (summarized_batches, archived_engrams) =
+            self.check_and_summarize_inner(true).await?;
+        let (deduped, contradictions) = self.consolidate_cycle_inner().await?;
+        Ok(SummaryReport {
+            summarized_batches,
+            archived_engrams,
+            deduped,
+            contradictions,
+        })
+    }
+
+    /// Force-archive a single engram by ID — the lightweight test path.
+    ///
+    /// Skips the LLM summarization entirely and just performs the
+    /// archive-and-invalidate step that consolidate_cycle does for dedup
+    /// matches: delete the row from PG, drop the vectors from Qdrant, and
+    /// invalidate both in-memory indexes (the Sprint 067 Phase 4a coherence
+    /// fix). This is what the dreamer-coherence E2E test actually wants —
+    /// a deterministic "this specific engram is now gone" without the
+    /// 60–120s of LLM RTT a full summarization batch incurs.
+    pub async fn force_archive_engram(&self, id: Uuid) -> Result<SummaryReport, MimirError> {
+        let pool = self.store.pool();
+        // Confirm the row exists before doing anything destructive.
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM yggdrasil.engrams WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| MimirError::Internal(format!("count query failed: {e}")))?;
+        if exists == 0 {
+            return Err(MimirError::NotFound(format!(
+                "engram {id} not found — cannot force-archive"
+            )));
+        }
+        let _ = engrams::delete_engram(pool, id).await;
+        self.vectors.delete_many("engrams_sdr", &[id]).await.ok();
+        self.sdr_index.remove(id);
+        self.dense_index.remove(id);
+        tracing::info!(engram_id = %id, "force-archived single engram via trigger endpoint");
+        Ok(SummaryReport {
+            summarized_batches: 0,
+            archived_engrams: 1,
+            deduped: 0,
+            contradictions: 0,
         })
     }
 
     /// Main loop: sleep for `check_interval`, then run summarization + consolidation.
     /// Exits cleanly when the shutdown signal is received.
-    async fn run(mut self) {
+    async fn run(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
         let interval = std::time::Duration::from_secs(self.config.check_interval_secs);
         tracing::info!(
             check_interval_secs = self.config.check_interval_secs,
@@ -188,17 +264,17 @@ impl SummarizationService {
             tokio::select! {
                 // Wait for the check interval before each cycle.
                 _ = tokio::time::sleep(interval) => {
-                    if let Err(e) = self.check_and_summarize().await {
+                    if let Err(e) = self.check_and_summarize_inner(false).await {
                         tracing::warn!(error = %e, "summarization cycle failed, will retry next interval");
                     }
                     // Sprint 055: Run consolidation cycle after summarization.
-                    if let Err(e) = self.consolidate_cycle().await {
+                    if let Err(e) = self.consolidate_cycle_inner().await {
                         tracing::warn!(error = %e, "consolidation cycle failed, will retry next interval");
                     }
                 }
                 // Graceful shutdown: wait for the shutdown signal to become true.
-                result = self.shutdown_rx.changed() => {
-                    if result.is_ok() && *self.shutdown_rx.borrow() {
+                result = shutdown_rx.changed() => {
+                    if result.is_ok() && *shutdown_rx.borrow() {
                         tracing::info!("summarization service stopped");
                         break;
                     }
@@ -213,8 +289,10 @@ impl SummarizationService {
     /// 1. Near-duplicates (same content hash or SDR similarity > 0.95) → merge into one
     /// 2. Contradictions (SDR similarity > 0.85, low word overlap) → mark older as superseded
     ///
-    /// This runs as part of the background sleep cycle, not on every store.
-    async fn consolidate_cycle(&self) -> Result<(), MimirError> {
+    /// Returns `(deduped_count, contradictions_count)` so the force-trigger path
+    /// can surface totals to the client. Runs as part of the background sleep
+    /// cycle AND on demand via `force_cycle`.
+    async fn consolidate_cycle_inner(&self) -> Result<(u32, u32), MimirError> {
         let pool = self.store.pool();
 
         // Fetch recent recall engrams (last 200, ordered by created_at desc)
@@ -232,7 +310,7 @@ impl SummarizationService {
         .map_err(|e| MimirError::Internal(format!("consolidation query failed: {e}")))?;
 
         if recent.len() < 2 {
-            return Ok(());
+            return Ok((0, 0));
         }
 
         let mut dedup_count = 0u32;
@@ -315,15 +393,20 @@ impl SummarizationService {
             );
         }
 
-        Ok(())
+        Ok((dedup_count, contradiction_count))
     }
 
     /// Run one summarization cycle.
     ///
-    /// Returns `Ok(())` if the cycle completed without needing to summarize (Recall
-    /// count within capacity) or after a successful summarization. Returns `Err` only
-    /// on hard failures that should be logged by the caller.
-    async fn check_and_summarize(&self) -> Result<(), MimirError> {
+    /// Returns `(summarized_batches, archived_engrams)`. When `bypass_capacity`
+    /// is `true` the recall-capacity gate is skipped and one batch is summarized
+    /// unconditionally — used by the `/api/v1/summarize/trigger` endpoint so
+    /// tests can force an archive-and-delete without having to breach capacity.
+    /// Returns `Err` only on hard failures that should be logged by the caller.
+    async fn check_and_summarize_inner(
+        &self,
+        bypass_capacity: bool,
+    ) -> Result<(u32, u32), MimirError> {
         let pool = self.store.pool();
 
         // --- Step 1: Check if Recall tier is over capacity ---
@@ -331,13 +414,13 @@ impl SummarizationService {
         let recall_count = stats.recall_count;
         let recall_capacity = self.config.recall_capacity as i64;
 
-        if recall_count <= recall_capacity {
+        if !bypass_capacity && recall_count <= recall_capacity {
             tracing::debug!(
                 recall_count,
                 recall_capacity,
                 "recall tier within capacity, skipping summarization"
             );
-            return Ok(());
+            return Ok((0, 0));
         }
 
         tracing::info!(
@@ -347,10 +430,15 @@ impl SummarizationService {
         );
 
         // --- Step 2: Fetch oldest/least-accessed batch eligible for summarization ---
+        // Sprint 069 Phase D: when called from the force-trigger path
+        // (bypass_capacity=true), ignore `min_age_secs` so freshly-stored test
+        // engrams are eligible. The background loop keeps the configured age
+        // floor so live consolidation respects the safety window.
+        let effective_min_age = if bypass_capacity { 0 } else { self.config.min_age_secs };
         let batch = engrams::get_oldest_recall_engrams(
             pool,
             self.config.summarization_batch_size,
-            self.config.min_age_secs,
+            effective_min_age,
         )
         .await?;
 
@@ -359,7 +447,7 @@ impl SummarizationService {
                 min_age_secs = self.config.min_age_secs,
                 "no recall engrams old enough for summarization, skipping"
             );
-            return Ok(());
+            return Ok((0, 0));
         }
 
         let batch_size = batch.len();
@@ -440,7 +528,7 @@ impl SummarizationService {
                     error = %msg,
                     "summary content hash collision, skipping this batch"
                 );
-                return Ok(());
+                return Ok((0, 0));
             }
             Err(e) => return Err(MimirError::Store(e)),
         };
@@ -471,6 +559,20 @@ impl SummarizationService {
         // Archived engrams are removed from the SDR search index to prevent stale recall.
         self.vectors.delete_many("engrams_sdr", &source_ids).await?;
 
+        // Sprint 069 Phase D: when the caller bypassed the capacity gate (i.e.
+        // the /api/v1/summarize/trigger path), also delete the source Postgres
+        // rows. Rationale: the force-trigger contract is "archive AND retire"
+        // — tests assert the source rows are gone afterwards, and dreamers
+        // rely on archived rows disappearing from the SDR/dense indexes.
+        // The background cycle keeps the tier='archival' rows for traceability.
+        if bypass_capacity {
+            for sid in &source_ids {
+                let _ = engrams::delete_engram(pool, *sid).await;
+                self.sdr_index.remove(*sid);
+                self.dense_index.remove(*sid);
+            }
+        }
+
         tracing::info!(
             summary_id = %summary_id,
             archived_count = batch_size,
@@ -479,7 +581,7 @@ impl SummarizationService {
             summary_id
         );
 
-        Ok(())
+        Ok((1, batch_size as u32))
     }
 
     /// POST to Odin `POST /v1/chat/completions` and parse the summary response.

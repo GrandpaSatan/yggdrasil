@@ -16,8 +16,8 @@ use mimir::{
         get_core_engrams_handler, get_engram_by_id, get_stats, graph_link, graph_neighbors,
         graph_traverse, graph_unlink, health, promote_engram, list_sprints, query_engrams,
         recall_engrams, sdr_operations, smart_ingest, spine_push, spine_pop, store_engram,
-        task_cancel, task_complete, task_list, task_pop, task_push, timeline, vault_handler,
-        ingest_document,
+        summarize_trigger, task_cancel, task_complete, task_list, task_pop, task_push,
+        timeline, vault_handler, ingest_document,
     },
     state::{AppState, load_sdr_rows_scoped_with_tags},
     summarization::SummarizationService,
@@ -39,6 +39,11 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     // --- Tracing + Prometheus setup ---
     let prometheus_handle = ygg_server::init::telemetry();
+
+    // Sprint 069 Phase D: pre-register novelty-gate metric families so /metrics
+    // exposes them on a fresh boot before any store request fires. Without this
+    // the metrics are invisible until the first increment lands.
+    mimir::metrics::preregister_novelty_gate_metrics();
 
     let cli = Cli::parse();
     tracing::info!(config = %cli.config, "mimir starting");
@@ -65,17 +70,23 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Background summarization service ---
     // Compresses aging Recall engrams into Archival summaries via Odin LLM calls.
+    //
+    // Sprint 069 Phase D: held in `Arc` and stashed in `AppState::summarizer`
+    // (via OnceLock) so the `/api/v1/summarize/trigger` handler can reuse the
+    // same instance for on-demand cycles.
     let summarization_rx = shared_state.shutdown_tx.subscribe();
-    let summarization = SummarizationService::new(
+    let summarization = Arc::new(SummarizationService::new(
         shared_state.store.clone(),
         shared_state.vectors.clone(),
         Arc::clone(&shared_state.sdr_index),
         Arc::clone(&shared_state.dense_index),
         shared_state.embedder.clone(),
         shared_state.config.tiers.clone(),
-        summarization_rx,
-    );
-    let _summarization_handle = summarization.start();
+    ));
+    if shared_state.summarizer.set(Arc::clone(&summarization)).is_err() {
+        tracing::warn!("AppState::summarizer was already set — handler trigger will use the prior instance");
+    }
+    let _summarization_handle = Arc::clone(&summarization).start(summarization_rx);
 
     // --- Build Axum router ---
     // CORS: permissive policy — no auth in MVP, private LAN only.
@@ -94,6 +105,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/auto-ingest", post(auto_ingest))
         .route("/api/v1/smart-ingest", post(smart_ingest))
         .route("/api/v1/consolidate", post(consolidate))
+        // Sprint 069 Phase D — force-trigger summarization for E2E tests.
+        .route("/api/v1/summarize/trigger", post(summarize_trigger))
         .route("/api/v1/sdr/operations", post(sdr_operations))
         .route("/api/v1/timeline", post(timeline))
         .route("/api/v1/context", post(context_store))

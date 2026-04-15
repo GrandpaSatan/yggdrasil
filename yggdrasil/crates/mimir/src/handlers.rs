@@ -389,10 +389,329 @@ pub async fn store_engram(
         );
     }
 
-    // Step 4b: Novelty triage (Sprint 064 P1) — server-side New / Update / Old verdict.
-    // Skipped entirely when force=true (operator override).
+    // Step 4b: Three-tier novelty gate (Sprint 069 Phase D — flips the verdict
+    // wire set up by Sprint 067 Phase 0/1 shadow observer + classifier).
+    //
+    // Tier 1 — `classify_dense` over the in-memory `DenseIndex` resolves the
+    //           common case in <2ms with zero LLM calls: Old (skip), Update
+    //           (overwrite in place), Ambiguous (escalate), or New (insert).
+    // Tier 2 — `store_gate::classify` LLM escalation, fires ONLY on Ambiguous.
+    // Tier 0 — SimHash content pre-filter is pre-registered in /metrics but
+    //           not wired in this sprint; Tier 1 catches exact duplicates via
+    //           cosine ~1.0.
+    //
+    // The legacy SDR-based triage below is retained as the explicit rollback
+    // path — set `sdr.dense_novelty.enabled=false` in the Mimir config to
+    // revert to the pre-Phase-D behaviour without a redeploy.
     let novelty_cfg = &state.config.sdr.novelty;
-    if !body.force {
+    let dense_cfg = &state.config.sdr.dense_novelty;
+    let gate_start = std::time::Instant::now();
+    let use_dense_gate = dense_cfg.enabled && !body.force;
+
+    if use_dense_gate {
+        // Dense top-1 lookup honours the same partition/tag scoping the SDR
+        // novelty query uses, so Sprint 065 A·P1 sprint-partitioning still
+        // applies — a "sprint:069" store cannot collide with a "sprint:068"
+        // archival engram even if their cosine similarity is ~1.0.
+        let dense_top1: Option<(Uuid, f64)> = if let Some(ref proj) = body.project {
+            state
+                .dense_index
+                .query_scoped_with_tags(&embedding, proj, true, &partition_tags, 1)
+                .into_iter()
+                .next()
+        } else {
+            state.dense_index.query(&embedding, 1).into_iter().next()
+        };
+
+        if let Some((dup_id, cosine_sim)) = dense_top1 {
+            crate::metrics::record_cosine_similarity(cosine_sim);
+
+            // Fetch existing engram for text comparison + client response body.
+            let dup_ids = vec![dup_id];
+            let empty_sim = std::collections::HashMap::new();
+            let existing = engrams::fetch_engrams_by_ids(
+                state.store.pool(),
+                &dup_ids,
+                &empty_sim,
+            )
+            .await
+            .ok()
+            .and_then(|mut v| v.pop());
+
+            let (existing_cause, existing_effect) = existing
+                .map(|e| (e.cause, e.effect))
+                .unwrap_or_default();
+
+            let dense_verdict = crate::novelty::classify_dense(
+                cosine_sim,
+                &body.effect,
+                dup_id,
+                &existing_cause,
+                &existing_effect,
+                dense_cfg,
+            );
+
+            match dense_verdict {
+                crate::novelty::DenseVerdict::Old { id } => {
+                    crate::metrics::increment_gate_tier("1");
+                    crate::metrics::increment_novelty_verdict("old");
+                    crate::metrics::record_gate_duration(gate_start.elapsed().as_secs_f64());
+                    tracing::info!(
+                        engram_id = %id,
+                        cosine_sim = %cosine_sim,
+                        "tier 1 verdict=old — near-identical exists, skipping write"
+                    );
+                    return Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "verdict": "old",
+                            "id": id,
+                            "similarity": cosine_sim,
+                        })),
+                    ));
+                }
+                crate::novelty::DenseVerdict::Update { id, previous_cause, previous_effect } => {
+                    crate::metrics::increment_gate_tier("1");
+                    let scope = body.scope.as_deref().unwrap_or(
+                        if body.project.is_some() { "project" } else { "global" },
+                    );
+                    let updated = engrams::update_engram_sdr(
+                        state.store.pool(),
+                        id,
+                        &engrams::EngramSdrParams {
+                            cause: &body.cause,
+                            effect: &body.effect,
+                            sdr_bits: &sdr_bytes,
+                            content_hash: &content_hash,
+                            tags: &merged_tags,
+                            trigger_type,
+                            trigger_label: &trigger_label,
+                            project: body.project.as_deref(),
+                            scope,
+                        },
+                    )
+                    .await?;
+
+                    if !updated {
+                        return Err(MimirError::NotFound(format!(
+                            "engram {id} flagged for update but row missing"
+                        )));
+                    }
+
+                    state.sdr_index.remove(id);
+                    state.sdr_index.insert_scoped_with_tags(
+                        body.project.as_deref(),
+                        id,
+                        sdr_val,
+                        &merged_tags,
+                    );
+                    state.dense_index.remove(id);
+                    state.dense_index.insert_scoped_with_tags(
+                        body.project.as_deref(),
+                        id,
+                        embedding.clone(),
+                        &merged_tags,
+                    );
+
+                    let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+                    let payload = build_qdrant_payload(body.project.as_deref(), scope);
+                    state
+                        .vectors
+                        .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+                        .await?;
+                    state
+                        .vectors
+                        .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+                        .await?;
+
+                    crate::metrics::increment_novelty_verdict("update");
+                    crate::metrics::record_gate_duration(gate_start.elapsed().as_secs_f64());
+                    tracing::info!(
+                        engram_id = %id,
+                        cosine_sim = %cosine_sim,
+                        "tier 1 verdict=update — overwrote existing engram in place"
+                    );
+                    return Ok((
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "verdict": "update",
+                            "id": id,
+                            "similarity": cosine_sim,
+                            "previous_cause": previous_cause,
+                            "previous_effect": previous_effect,
+                        })),
+                    ));
+                }
+                crate::novelty::DenseVerdict::Ambiguous { id, cosine_sim: amb_sim } => {
+                    // Escalate to the Tier 2 store-gate LLM. Identical path to
+                    // the Sprint 064 P1.5 flow; counts once as Tier 2.
+                    crate::metrics::increment_gate_tier("2");
+
+                    let mut store_worthy = true;
+                    let llm_verdict = match state.config.store_gate.as_ref() {
+                        Some(gate_cfg) if gate_cfg.enabled => {
+                            match crate::store_gate::classify(
+                                &state.http_client,
+                                gate_cfg,
+                                &body.cause,
+                                &body.effect,
+                                id,
+                                &existing_cause,
+                                &existing_effect,
+                                amb_sim,
+                            )
+                            .await
+                            {
+                                Ok(decision) => {
+                                    store_worthy = decision.store_worthy;
+                                    let backend = gate_cfg
+                                        .backends
+                                        .get(decision.backend_index)
+                                        .map(|b| b.url.as_str())
+                                        .unwrap_or("?");
+                                    tracing::info!(
+                                        duplicate_id = %id,
+                                        cosine_sim = %amb_sim,
+                                        backend,
+                                        reasoning = %decision.reasoning,
+                                        "tier 2 store gate verdict received"
+                                    );
+                                    decision.verdict
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "tier 2 store gate failed — falling back to threshold classifier"
+                                    );
+                                    crate::novelty::classify_novelty(
+                                        amb_sim,
+                                        &body.effect,
+                                        id,
+                                        &existing_cause,
+                                        &existing_effect,
+                                        novelty_cfg,
+                                    )
+                                }
+                            }
+                        }
+                        _ => crate::novelty::classify_novelty(
+                            amb_sim,
+                            &body.effect,
+                            id,
+                            &existing_cause,
+                            &existing_effect,
+                            novelty_cfg,
+                        ),
+                    };
+
+                    let llm_verdict = if !store_worthy {
+                        tracing::info!(
+                            duplicate_id = %id,
+                            "tier 2 store gate flagged store_worthy=false — skipping write"
+                        );
+                        crate::novelty::NoveltyVerdict::Old { id }
+                    } else {
+                        llm_verdict
+                    };
+
+                    match llm_verdict {
+                        crate::novelty::NoveltyVerdict::Old { id } => {
+                            crate::metrics::increment_novelty_verdict("old");
+                            crate::metrics::record_gate_duration(gate_start.elapsed().as_secs_f64());
+                            return Ok((
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "verdict": "old",
+                                    "id": id,
+                                    "similarity": amb_sim,
+                                })),
+                            ));
+                        }
+                        crate::novelty::NoveltyVerdict::Update { id, previous_cause, previous_effect } => {
+                            let scope = body.scope.as_deref().unwrap_or(
+                                if body.project.is_some() { "project" } else { "global" },
+                            );
+                            let updated = engrams::update_engram_sdr(
+                                state.store.pool(),
+                                id,
+                                &engrams::EngramSdrParams {
+                                    cause: &body.cause,
+                                    effect: &body.effect,
+                                    sdr_bits: &sdr_bytes,
+                                    content_hash: &content_hash,
+                                    tags: &merged_tags,
+                                    trigger_type,
+                                    trigger_label: &trigger_label,
+                                    project: body.project.as_deref(),
+                                    scope,
+                                },
+                            )
+                            .await?;
+
+                            if !updated {
+                                return Err(MimirError::NotFound(format!(
+                                    "engram {id} flagged for update but row missing"
+                                )));
+                            }
+
+                            state.sdr_index.remove(id);
+                            state.sdr_index.insert_scoped_with_tags(
+                                body.project.as_deref(),
+                                id,
+                                sdr_val,
+                                &merged_tags,
+                            );
+                            state.dense_index.remove(id);
+                            state.dense_index.insert_scoped_with_tags(
+                                body.project.as_deref(),
+                                id,
+                                embedding.clone(),
+                                &merged_tags,
+                            );
+
+                            let sdr_f32 = sdr::to_bipolar_f32(&sdr_val);
+                            let payload = build_qdrant_payload(body.project.as_deref(), scope);
+                            state
+                                .vectors
+                                .upsert("engrams_sdr", id, sdr_f32.clone(), HashMap::new())
+                                .await?;
+                            state
+                                .vectors
+                                .upsert(crate::state::V2_SDR_COLLECTION, id, sdr_f32, payload)
+                                .await?;
+
+                            crate::metrics::increment_novelty_verdict("update");
+                            crate::metrics::record_gate_duration(gate_start.elapsed().as_secs_f64());
+                            return Ok((
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "verdict": "update",
+                                    "id": id,
+                                    "similarity": amb_sim,
+                                    "previous_cause": previous_cause,
+                                    "previous_effect": previous_effect,
+                                })),
+                            ));
+                        }
+                        crate::novelty::NoveltyVerdict::New => {
+                            // LLM voted New — fall through to the insert path.
+                            // The "new" verdict + gate duration are emitted
+                            // from Step 12 so the metric only increments after
+                            // the row is actually committed.
+                        }
+                    }
+                }
+                crate::novelty::DenseVerdict::New => {
+                    crate::metrics::increment_gate_tier("1");
+                    // Fall through to insert path below.
+                }
+            }
+        } else {
+            // Cold-start: no dense neighbour exists yet. Count as a Tier 1
+            // resolution (the classifier ran, found nothing) and fall through.
+            crate::metrics::increment_gate_tier("1");
+        }
+    } else if !body.force {
         // Sprint 065 A·P1: when the engram carries partition-prefix tags
         // (sprint:NNN, incident:NNN, release:vX), hard-partition the novelty
         // lookup so sprint-archive SDRs at similarity ~1.0 cannot collide
@@ -678,6 +997,14 @@ pub async fn store_engram(
         body.effect.clone(),
         sdr_val,
     );
+
+    // Sprint 069 Phase D — record the "new" verdict + gate duration at commit
+    // time so the counter only moves after the row is actually in PG. Force=true
+    // skips the gate, so we only record when the gate ran.
+    if use_dense_gate || !body.force {
+        crate::metrics::increment_novelty_verdict("new");
+        crate::metrics::record_gate_duration(gate_start.elapsed().as_secs_f64());
+    }
 
     // Step 12: Return 201 Created — include verdict for client consistency (Sprint 064 P1).
     Ok((
@@ -2977,6 +3304,53 @@ pub async fn consolidate(
         engrams_reviewed,
         consolidated_id: Some(id),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/summarize/trigger  (Sprint 069 Phase D)
+// ---------------------------------------------------------------------------
+
+/// Optional body for the trigger endpoint.
+///
+/// - `target_engram_id: Some(id)` — fast path: archive THAT specific engram
+///   (delete from PG/Qdrant/SDR/dense indexes) without an LLM call. Used by
+///   E2E tests that need deterministic "this exact row is now gone".
+/// - `target_engram_id: None` — full cycle: summarize the oldest recall batch
+///   via Odin LLM and archive it. Slow (~60–120s); not recommended in tests.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SummarizeTriggerRequest {
+    pub target_engram_id: Option<Uuid>,
+}
+
+/// Force a summarization-style archive-and-delete, bypassing the recall-capacity
+/// gate. Exists so E2E tests can verify the dreamer-coherence invariant
+/// (Sprint 067 Phase 4a) — that deleting an engram also drops it from the
+/// in-memory SDR + dense indexes — without having to first breach capacity
+/// or wait on a real Odin LLM call.
+pub async fn summarize_trigger(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<SummarizeTriggerRequest>>,
+) -> Result<Json<crate::summarization::SummaryReport>, MimirError> {
+    let summarizer = state.summarizer.get().ok_or_else(|| {
+        MimirError::Internal(
+            "SummarizationService not initialised in AppState — main.rs wiring bug".to_string(),
+        )
+    })?;
+    let target = body.and_then(|Json(b)| b.target_engram_id);
+    let report = match target {
+        Some(id) => summarizer.force_archive_engram(id).await?,
+        None => summarizer.force_cycle().await?,
+    };
+    tracing::info!(
+        target = ?target,
+        summarized_batches = report.summarized_batches,
+        archived_engrams = report.archived_engrams,
+        deduped = report.deduped,
+        contradictions = report.contradictions,
+        "force-trigger summarization complete"
+    );
+    Ok(Json(report))
 }
 
 /// Row type for consolidation query.

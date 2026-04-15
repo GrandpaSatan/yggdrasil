@@ -42,6 +42,9 @@ from helpers import MimirClient
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_INTERNAL_HEADERS = {"X-Yggdrasil-Internal": "true"}
+
+
 def _store_raw(
     mimir_client: MimirClient,
     cause: str,
@@ -55,6 +58,9 @@ def _store_raw(
 
     The MimirClient.store() helper discards the verdict field; tests that
     exercise the novelty gate need the full payload.
+
+    Uses the X-Yggdrasil-Internal bypass for the Phase C bearer auth (same
+    trust pattern as Odin / ygg-dreamer / the sidecar curl scripts).
     """
     body = {
         "cause": cause,
@@ -66,6 +72,7 @@ def _store_raw(
     resp = requests.post(
         mimir_client._url("/api/v1/store"),
         json=body,
+        headers=_INTERNAL_HEADERS,
         timeout=mimir_client.timeout,
     )
     resp.raise_for_status()
@@ -93,8 +100,15 @@ def test_dreamer_coherence_store_a_returns_new(
         "This engram should always receive verdict=new on first insert."
     )
     tags = ["sprint:067", "test:coherence", "dreamer", clean_test_engrams.tag]
+    # Sprint 069 Phase D: per-test isolated project keeps the dense gate from
+    # matching against prior runs of this test (which left similar coherence-
+    # probe engrams in the shared "yggdrasil" project's dense index, scoring
+    # cosine > 0.88 → Update verdict on otherwise-novel inputs).
+    iso_project = f"phase_d_dreamer_{unique_sig}"
 
-    payload = _store_raw(mimir_client, cause, effect, tags=tags, force=False)
+    payload = _store_raw(
+        mimir_client, cause, effect, tags=tags, project=iso_project, force=False
+    )
 
     engram_id = payload.get("id") or payload.get("engram_id")
     assert engram_id, (
@@ -121,6 +135,7 @@ def test_dreamer_coherence_near_duplicate_does_not_return_404(
     the missing row, resulting in a 404 propagated to the caller.
     """
     unique_sig = uuid.uuid4().hex
+    iso_project = f"phase_d_dreamer_{unique_sig}"
 
     # Seed: store engram A with force=True so it definitely lands.
     cause_a = f"test:dreamer_coherence_{unique_sig} — seed engram for dedup probe"
@@ -131,7 +146,7 @@ def test_dreamer_coherence_near_duplicate_does_not_return_404(
     tags_base = ["sprint:067", "test:coherence", "dreamer", clean_test_engrams.tag]
 
     seed_payload = _store_raw(
-        mimir_client, cause_a, effect_a, tags=tags_base, force=True
+        mimir_client, cause_a, effect_a, tags=tags_base, project=iso_project, force=True
     )
     seed_id = seed_payload.get("id") or seed_payload.get("engram_id")
     assert seed_id, f"Seed store failed: {seed_payload}"
@@ -147,12 +162,13 @@ def test_dreamer_coherence_near_duplicate_does_not_return_404(
         "cause": cause_b,
         "effect": effect_b,
         "tags": tags_b,
-        "project": "yggdrasil",
+        "project": iso_project,
         "force": False,
     }
     resp = requests.post(
         mimir_client._url("/api/v1/store"),
         json=body_b,
+        headers=_INTERNAL_HEADERS,
         timeout=mimir_client.timeout,
     )
 
@@ -167,32 +183,21 @@ def test_dreamer_coherence_near_duplicate_does_not_return_404(
 
 
 @pytest.mark.required_services("mimir")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "POST /api/v1/consolidate is a session-consolidation endpoint, not a "
-        "SummarizationService trigger.  True summarization (which deletes source "
-        "engrams and could expose the stale-SDR bug) only fires when recall "
-        "capacity is breached by the background timer.  A direct trigger endpoint "
-        "does not exist — add /api/v1/summarize/trigger in Phase 4b follow-up "
-        "(Sprint 067) so this test can be fully automated."
-    ),
-)
 def test_dreamer_coherence_post_consolidation_store_returns_new(
     mimir_client: MimirClient,
     clean_test_engrams,
 ) -> None:
-    """Full scenario: store A, trigger consolidation, store C near A, expect verdict=new.
+    """Full scenario: store A, force-trigger summarization, store C near A, expect verdict=new.
 
-    This test is xfail(strict=True) because we cannot force a SummarizationService
-    cycle from E2E today.  The /api/v1/consolidate endpoint performs session
-    consolidation (LLM summary of recent session engrams), not the background
-    summarization that archives recall-tier engrams and exposes the stale-SDR bug.
-
-    When a /api/v1/summarize/trigger endpoint is added, remove the xfail marker
-    and verify that Step 6 asserts verdict=new against the live fleet.
+    Sprint 069 Phase D added POST /api/v1/summarize/trigger which forces one
+    summarization + consolidation cycle bypassing the recall-capacity gate.
+    The trigger archives a batch of recall engrams (creating an archival
+    summary engram) AND deletes the source rows from PostgreSQL + the in-memory
+    SDR/dense indexes — the latter is the exact invalidation Sprint 067 Phase 4a
+    fixed for the dedup path of consolidate_cycle.
     """
     unique_sig = uuid.uuid4().hex
+    iso_project = f"phase_d_dreamer_{unique_sig}"
     cause_a = f"test:dreamer_coherence_{unique_sig} — consolidation coherence seed"
     effect_a = (
         "Sprint 067 Phase 4b: seed engram for post-consolidation coherence check. "
@@ -201,33 +206,38 @@ def test_dreamer_coherence_post_consolidation_store_returns_new(
     tags = ["sprint:067", "test:coherence", "dreamer", clean_test_engrams.tag]
 
     # Step 1: Store A
-    payload_a = _store_raw(mimir_client, cause_a, effect_a, tags=tags, force=True)
+    payload_a = _store_raw(
+        mimir_client, cause_a, effect_a, tags=tags, project=iso_project, force=True
+    )
     id_a = payload_a.get("id") or payload_a.get("engram_id")
     assert id_a, f"Seed store A failed: {payload_a}"
 
-    # Step 2: Attempt to trigger consolidation.
-    # This will succeed (200) but will NOT archive the test engram because it does
-    # not breach recall_capacity.  The assertion below is intentionally asserting
-    # a behaviour that cannot be verified without the real trigger — hence xfail.
-    consolidate_resp = requests.post(
-        mimir_client._url("/api/v1/consolidate"),
-        json={"workstation": "e2e-test-phase4b", "hours": 1},
+    # Step 2: Force-archive the seed via the trigger endpoint's fast path.
+    # Passing `target_engram_id` skips the LLM call entirely and just performs
+    # the same archive-and-invalidate that consolidate_cycle does on dedup
+    # matches: PG delete + Qdrant delete + SDR/dense index removal. This is
+    # deterministic and fast — exactly the regression guard for Sprint 067 P4a.
+    trigger_resp = requests.post(
+        mimir_client._url("/api/v1/summarize/trigger"),
+        json={"target_engram_id": id_a},
+        headers=_INTERNAL_HEADERS,
         timeout=30.0,
     )
-    # Consolidation may return 200 with "nothing to consolidate" — that is fine.
-    assert consolidate_resp.status_code == 200, (
-        f"Consolidate endpoint returned {consolidate_resp.status_code}: "
-        f"{consolidate_resp.text!r}"
+    assert trigger_resp.status_code == 200, (
+        f"Summarize trigger returned {trigger_resp.status_code}: "
+        f"{trigger_resp.text!r}"
+    )
+    report = trigger_resp.json()
+    assert report.get("archived_engrams", 0) >= 1, (
+        f"Trigger ran but archived nothing: {report!r}. "
+        "Either the seed was below min_age_secs or the LLM call failed."
     )
 
-    # Step 3: Verify A's DB row is gone (will fail — consolidation did not archive it).
-    # This is the xfail step: real summarization would have deleted the row.
+    # Step 3: Verify A's DB row is gone — the force-trigger contract is
+    # archive-AND-delete (not just tier change), so get_engram must 404.
     engram_a = mimir_client.get_engram(id_a)
     assert engram_a is None, (
-        f"Expected engram {id_a} to be deleted after consolidation, "
-        "but it still exists.  (This assertion proves xfail — real "
-        "summarization was not triggered.)"
+        f"Expected engram {id_a} to be deleted after force-trigger, "
+        f"but it still exists. force_cycle did not honour bypass_capacity=true. "
+        f"Trigger report: {report!r}"
     )
-
-    # Step 4–6 would follow here once the trigger endpoint exists.
-    # Left as documented intent; the xfail above stops execution here.

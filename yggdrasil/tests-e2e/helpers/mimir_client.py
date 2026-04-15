@@ -31,12 +31,17 @@ class MimirClient:
         self.base_url = base_url.rstrip("/")
         self.vault_token = vault_token
         self.timeout = timeout
+        # Sprint 069 Phase C: Mimir's bearer auth bypasses on the internal-trust
+        # header. The E2E suite runs from a trusted LAN host, same trust pattern
+        # as Odin / ygg-dreamer / the sidecar curl scripts.
+        self.session = requests.Session()
+        self.session.headers.update({"X-Yggdrasil-Internal": "true"})
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
     def health(self) -> requests.Response:
-        return requests.get(self._url("/health"), timeout=5.0)
+        return self.session.get(self._url("/health"), timeout=5.0)
 
     @retry_policy()
     def store(
@@ -63,7 +68,7 @@ class MimirClient:
         if project:
             body["project"] = project
         resp = check_response(
-            requests.post(self._url("/api/v1/store"), json=body, timeout=self.timeout)
+            self.session.post(self._url("/api/v1/store"), json=body, timeout=self.timeout)
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -87,14 +92,14 @@ class MimirClient:
         if project:
             body["project"] = project
         resp = check_response(
-            requests.post(self._url("/api/v1/recall"), json=body, timeout=self.timeout)
+            self.session.post(self._url("/api/v1/recall"), json=body, timeout=self.timeout)
         )
         resp.raise_for_status()
         payload = resp.json()
         return _extract_list(payload, _LIST_KEYS)
 
     def get_engram(self, engram_id: str) -> dict[str, Any] | None:
-        resp = requests.get(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
+        resp = self.session.get(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -109,7 +114,7 @@ class MimirClient:
         doing idempotent cleanup should tolerate ``False`` explicitly via
         :meth:`delete_engram_idempotent`.
         """
-        resp = requests.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
+        resp = self.session.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
         return resp.status_code in (200, 204)
 
     def delete_engram_idempotent(self, engram_id: str) -> bool:
@@ -117,13 +122,19 @@ class MimirClient:
 
         Used by bulk tag-purge on teardown where "already gone" is fine.
         """
-        resp = requests.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
+        resp = self.session.delete(self._url(f"/api/v1/engrams/{engram_id}"), timeout=10.0)
         return resp.status_code in (200, 204, 404)
 
     def delete_supported(self) -> bool:
-        """Probe whether DELETE /api/v1/engrams/{id} is implemented (some builds 405)."""
+        """Probe whether DELETE /api/v1/engrams/{id} is implemented (some builds 405).
+
+        Sprint 069 Phase C added bearer auth, which intercepts unauthenticated
+        requests with 401 BEFORE the router can return 405 — so this probe
+        must use the auth-bearing session, not raw requests, or it falsely
+        reports DELETE as supported on builds that actually return 405.
+        """
         # Use a syntactically-valid but non-existent UUID; we only care about 405 vs 404.
-        resp = requests.delete(
+        resp = self.session.delete(
             self._url("/api/v1/engrams/00000000-0000-0000-0000-000000000000"),
             timeout=5.0,
         )
@@ -144,7 +155,7 @@ class MimirClient:
             return 0
         body = {"text": tag, "limit": 100, "project": project, "include_global": True}
         try:
-            resp = requests.post(self._url("/api/v1/recall"), json=body, timeout=10.0)
+            resp = self.session.post(self._url("/api/v1/recall"), json=body, timeout=10.0)
             resp.raise_for_status()
             engrams = _extract_list(resp.json(), _LIST_KEYS)
         except requests.RequestException:
@@ -176,12 +187,12 @@ class MimirClient:
             body["after"] = after
         if before:
             body["before"] = before
-        resp = requests.post(self._url("/api/v1/timeline"), json=body, timeout=self.timeout)
+        resp = self.session.post(self._url("/api/v1/timeline"), json=body, timeout=self.timeout)
         resp.raise_for_status()
         return _extract_list(resp.json(), _LIST_KEYS)
 
     def stats(self) -> dict[str, Any]:
-        resp = requests.get(self._url("/api/v1/stats"), timeout=5.0)
+        resp = self.session.get(self._url("/api/v1/stats"), timeout=5.0)
         resp.raise_for_status()
         return resp.json()
 

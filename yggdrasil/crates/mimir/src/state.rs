@@ -67,6 +67,11 @@ pub struct AppState {
     /// Shared HTTP client for outbound requests (Saga enrichment, etc.).
     /// Reuses connection pool across all fire-and-forget tasks.
     pub http_client: reqwest::Client,
+    /// Sprint 069 Phase D — shared handle to the background `SummarizationService`
+    /// so the `/api/v1/summarize/trigger` handler can fire an on-demand cycle
+    /// without duplicating the archive-and-delete logic. Populated by `main.rs`
+    /// after `AppState::new` returns (via `OnceLock::set`).
+    pub summarizer: std::sync::OnceLock<Arc<crate::summarization::SummarizationService>>,
 }
 
 impl AppState {
@@ -191,6 +196,7 @@ impl AppState {
             template_sdrs,
             template_embeddings,
             http_client,
+            summarizer: std::sync::OnceLock::new(),
         })
     }
 }

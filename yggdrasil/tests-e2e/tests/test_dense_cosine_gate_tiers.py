@@ -38,6 +38,9 @@ from helpers import MimirClient
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_INTERNAL_HEADERS = {"X-Yggdrasil-Internal": "true"}
+
+
 def _store_raw(
     mimir_client: MimirClient,
     cause: str,
@@ -47,7 +50,12 @@ def _store_raw(
     project: str = "yggdrasil",
     force: bool = False,
 ) -> dict:
-    """POST /api/v1/store and return the full response body including verdict."""
+    """POST /api/v1/store and return the full response body including verdict.
+
+    Sprint 069 Phase C added bearer auth on Mimir; the E2E suite runs from a
+    trusted LAN host, so we use the same `X-Yggdrasil-Internal: true` bypass
+    that internal services (Odin, ygg-dreamer, sidecar) use.
+    """
     body = {
         "cause": cause,
         "effect": effect,
@@ -58,6 +66,7 @@ def _store_raw(
     resp = requests.post(
         mimir_client._url("/api/v1/store"),
         json=body,
+        headers=_INTERNAL_HEADERS,
         timeout=mimir_client.timeout,
     )
     resp.raise_for_status()
@@ -106,15 +115,6 @@ def _parse_counter(metrics_text: str, metric_name: str, label_filter: str) -> fl
 # ──────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.required_services("mimir")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2 three-tier cascade not yet deployed — "
-        "ygg_novelty_gate_tier_total metric does not exist in /metrics yet. "
-        "Remove this xfail marker once the Phase 2 Mimir binary is live on Munin "
-        "and ygg_novelty_gate_tier_total{tier='2'} appears in the Prometheus scrape."
-    ),
-)
 def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
     mimir_client: MimirClient,
     clean_test_engrams,
@@ -138,6 +138,10 @@ def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
     using the shadow log data to find a pair that reliably produces 0.80–0.88.
     """
     unique_sig = uuid.uuid4().hex
+    # Per-test unique project isolates the dense index from prior runs of this
+    # test (which leave tier2_probe-tagged engrams behind in the shared
+    # "yggdrasil" project, making cosine matches non-deterministic).
+    iso_project = f"phase_d_test_{unique_sig}"
 
     # Seed engram: specific technical statement.
     seed_cause = (
@@ -152,7 +156,7 @@ def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
     tags_base = ["sprint:067", "tier2_probe", clean_test_engrams.tag]
 
     seed_payload = _store_raw(
-        mimir_client, seed_cause, seed_effect, tags=tags_base, force=True
+        mimir_client, seed_cause, seed_effect, tags=tags_base, project=iso_project, force=True
     )
     seed_id = seed_payload.get("id") or seed_payload.get("engram_id")
     assert seed_id, f"Seed store failed: {seed_payload}"
@@ -168,11 +172,17 @@ def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
         "Phase 2 has not been deployed yet.  This xfail is expected."
     )
 
-    # Ambiguous probe: paraphrase of the seed — similar but not identical.
+    # Ambiguous probe: paraphrase of the seed CAUSE — the dense index keys on
+    # cause text only (handlers.rs:226-228), not on the cause+effect combo, so
+    # tweaking the effect alone leaves cosine near 1.0. We rephrase the cause
+    # itself to land in the [ambiguous_floor=0.80, update_threshold=0.88) band.
+    # Calibrated via /api/v1/embed on 2026-04-15: cosine ≈ 0.8527 against the
+    # Munin ONNX MiniLM-L6-v2 weights. If the embedder model changes, re-tune
+    # this pair using the live /api/v1/embed endpoint.
     ambiguous_cause = (
         f"tier2_ambiguous_probe_{unique_sig}: "
-        "Mimir employs neural embedding vectors at 384 dimensions with ONNX "
-        "to evaluate novelty of new memory entries before storage."
+        "Mimir in Yggdrasil applies ONNX-derived 384-dim embeddings to assess "
+        "novelty for arriving engrams prior to commit."
     )
     ambiguous_effect = (
         "Dense embedding-based novelty evaluation in the Sprint 067 memory service "
@@ -181,7 +191,8 @@ def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
     tags_probe = ["sprint:067", "tier2_probe", "ambiguous", clean_test_engrams.tag]
 
     _store_raw(
-        mimir_client, ambiguous_cause, ambiguous_effect, tags=tags_probe, force=False
+        mimir_client, ambiguous_cause, ambiguous_effect,
+        tags=tags_probe, project=iso_project, force=False,
     )
 
     # Verify Tier 2 counter incremented.
@@ -203,14 +214,6 @@ def test_dense_cosine_gate_tier2_fires_on_ambiguous_cosine(
 
 
 @pytest.mark.required_services("mimir")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2 three-tier cascade not yet deployed — "
-        "ygg_novelty_gate_tier_total metric does not exist in /metrics yet. "
-        "Remove this xfail marker once the Phase 2 Mimir binary is live on Munin."
-    ),
-)
 def test_dense_cosine_gate_tier1_resolves_obvious_duplicate(
     mimir_client: MimirClient,
     clean_test_engrams,
@@ -288,14 +291,6 @@ def test_dense_cosine_gate_tier1_resolves_obvious_duplicate(
 
 
 @pytest.mark.required_services("mimir")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2 three-tier cascade not yet deployed — "
-        "ygg_novelty_gate_tier_total metric does not exist in /metrics yet. "
-        "Remove this xfail marker once the Phase 2 Mimir binary is live on Munin."
-    ),
-)
 def test_dense_cosine_gate_metrics_exist_in_prometheus_scrape(
     mimir_client: MimirClient,
 ) -> None:
