@@ -1,0 +1,36 @@
+# Text Embeddings Inference (TEI) on Munin 780M iGPU (gfx1103).
+#
+# Sprint 069 Phase F — relocates the Mimir embedding path off Ollama onto a
+# dedicated TEI container. Runs on Munin (not Hugin) so the Hugin vLLM fleet
+# keeps its VRAM for generation. Munin's otherwise-idle 780M iGPU has enough
+# capacity for all-MiniLM-L6-v2 (384-dim, 70-500 doc/s on gfx1103 per
+# Sprint 054 bench notes).
+#
+# Soak port: :11438 during dual-serve (the existing ollama-b.service owns
+# :11435 until the final cutover step). Post-cutover, stop ollama-b,
+# update the port mapping below to 11435, and re-up this compose.
+
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    # NOTE: TEI doesn't have an official ROCm gfx1103 image yet. CPU path
+    # still gives ~150 doc/s on Munin's AMD Ryzen 7 255 which is plenty for
+    # Mimir's current write volume. Switch to a custom ROCm image when AMD
+    # publishes one targeting gfx1103 (track: huggingface/text-embeddings-inference#XXX).
+    container_name: ygg-tei
+    restart: unless-stopped
+    ports:
+      - "11438:80"
+    volumes:
+      - /opt/yggdrasil/models/all-MiniLM-L6-v2:/data:ro
+    command:
+      - --model-id=/data
+      - --port=80
+      - --max-batch-tokens=16384
+      - --max-concurrent-requests=256
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
