@@ -15,6 +15,14 @@ HUGIN_OLLAMA="http://${HUGIN_IP}:11434"
 RWKV_MODEL="mollysama/rwkv-7-g1e:2.9b"
 EVENTS_FILE="/tmp/ygg-hooks/memory-events.jsonl"
 
+# Sprint 069 Phase C (VULN-001): Mimir now requires Bearer auth on every
+# non-public endpoint. The sidecar IS internal infrastructure (installed by
+# the Yggdrasil VS Code extension, runs on trusted host), so the simplest
+# contract is to mark every call with `X-Yggdrasil-Internal: true`. The
+# BearerAuthLayer on Mimir's side bypasses the token check when this header
+# is present.
+MIMIR_AUTH_HEADER="X-Yggdrasil-Internal: true"
+
 # Per-project session file (hash of $PWD)
 PROJECT_HASH=$(echo "$PWD" | md5sum | cut -c1-8)
 SESSION_FILE="/tmp/ygg-hooks/session-${PROJECT_HASH}.jsonl"
@@ -133,6 +141,7 @@ Reply with ONLY a JSON object like: {\"category\": \"infra\", \"queries\": [\"od
         local fallback_query="$tool_summary"
         local fallback_resp=$(curl -sf --max-time 0.5 \
             -H "Content-Type: application/json" \
+            -H "$MIMIR_AUTH_HEADER" \
             -d "{\"text\":$(echo "$fallback_query" | jq -Rs .),\"limit\":3,\"include_text\":true}" \
             "${MIMIR_URL}/api/v1/recall" 2>/dev/null) || exit 0
 
@@ -192,6 +201,7 @@ Reply with ONLY a JSON object like: {\"category\": \"infra\", \"queries\": [\"od
         (
             local resp=$(curl -sf --max-time 0.5 \
                 -H "Content-Type: application/json" \
+                -H "$MIMIR_AUTH_HEADER" \
                 -d "{\"text\":$(echo "$query" | jq -Rs .),\"limit\":3,\"include_text\":true}" \
                 "${MIMIR_URL}/api/v1/recall" 2>/dev/null) || exit 0
 
@@ -269,6 +279,7 @@ do_post() {
     if [ "$tool_name" = "Bash" ] && [ ${#stderr_text} -gt 20 ]; then
         local error_resp=$(curl -sf --max-time 0.5 \
             -H "Content-Type: application/json" \
+            -H "$MIMIR_AUTH_HEADER" \
             -d "{\"text\":$(echo "$stderr_text" | tail -c 500 | jq -Rs .),\"limit\":3,\"include_text\":true}" \
             "${MIMIR_URL}/api/v1/recall" 2>/dev/null) || true
 
@@ -330,6 +341,7 @@ do_post() {
 
         local response=$(curl -sf --max-time 5 \
             -H "Content-Type: application/json" \
+            -H "$MIMIR_AUTH_HEADER" \
             -d "{\"content\":$(echo "$content" | jq -Rs .),\"file_path\":$(echo "${file_path:-bash}" | jq -Rs .),\"workstation\":\"$(hostname)\",\"source\":\"sidecar\"}" \
             "${MIMIR_URL}/api/v1/smart-ingest" 2>/dev/null)
 
@@ -359,6 +371,7 @@ do_sleep() {
     local response
     response=$(curl -sf --max-time 10 \
         -H "Content-Type: application/json" \
+        -H "$MIMIR_AUTH_HEADER" \
         -d "{\"workstation\":\"$(hostname)\",\"hours\":12}" \
         "${MIMIR_URL}/api/v1/consolidate" 2>/dev/null) || { log "sleep: mimir unreachable"; exit 0; }
 
