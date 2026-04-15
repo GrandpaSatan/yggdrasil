@@ -34,18 +34,19 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Fleet roster — BASE models only. Projections trained here generalize
-# across every LoRA fine-tuned variant derived from the same base:
-#
-#   LFM2-350M       → covers saga-350m (distilled to 350M params)
-#   LFM2.5-1.2B-Base → covers review-1.2b, lfm25-tools, lfm-saga-tool (LoRA'd)
-#   Qwen2.5-0.5B    → cross-architecture anchor (separate family entirely)
+# Fleet roster — BASE models only. Yggdrasil production fleet is
+# LFM2/LFM2.5 + Gemma + Nemotron + GLM + RWKV. NO Qwen. See
+# memory/project_model_fleet.md and memory/feedback_never_qwen.md.
 #
 # Loaded from Morrigan's HuggingFace cache (~/.cache/huggingface/hub/).
 MODELS = {
     "lfm2-350m":        "LiquidAI/LFM2-350M",
     "lfm2.5-1.2b-base": "LiquidAI/LFM2.5-1.2B-Base",
-    "qwen2.5-0.5b":     "Qwen/Qwen2.5-0.5B-Instruct",
+    "gemma-4-e2b":      "google/gemma-4-E2B",            # GATED — needs HF access grant
+    "gemma-4-e4b":      "google/gemma-4-E4B",            # GATED — needs HF access grant
+    "nemotron-nano-4b": "nvidia/Nemotron-H-4B-Base-8K",  # downloaded 2026-04-15
+    "rwkv-7-world":     "BlinkDL/rwkv-7-world",          # RWKV needs special extraction (no K/V)
+    # glm-4.7-flash:   "THUDM/GLM-4.7-Flash"             # 30B MoE — Hugin-only, needs 4-bit quant
 }
 
 
