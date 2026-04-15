@@ -154,17 +154,19 @@ export async function activate(context: vscode.ExtensionContext) {
       modelsTree.refresh();
     }),
 
+    // Sprint 068 Phase 3: `yggdrasil.useModelInChat` is gone. Fergus is one
+    // persona; Odin's intent router picks the backend. The Models tree click
+    // now opens a friendly info toast via `yggdrasil.modelInfo` — Phase 5
+    // will rewrite the tree to show live status (busy/dreaming/loaded) and
+    // this command can be removed then.
     vscode.commands.registerCommand(
-      "yggdrasil.useModelInChat",
+      "yggdrasil.modelInfo",
       (modelId: string) => {
-        const panel = ChatPanel.show(context, odin, chatHistory);
-        // The chat panel UI reads model via the picker — post a seed that
-        // pre-pends /model <id> so the user just adds their question.
-        panel; // silence unused if minor
         vscode.window.showInformationMessage(
-          `Model "${modelId}" — use /model ${modelId} <your prompt> or select it in the chat picker.`
+          `Model "${modelId}" — Fergus routes to the best backend per message. ` +
+            `No manual selection needed.`,
         );
-      }
+      },
     ),
 
     vscode.commands.registerCommand("yggdrasil.showLog", () => {

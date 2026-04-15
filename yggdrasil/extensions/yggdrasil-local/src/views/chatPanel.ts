@@ -19,6 +19,7 @@ import { ChatHistory, ChatMsg, ChatThread } from "../chat/history";
 import { preprocess } from "../chat/slashCommands";
 import { ChatSeed, getSelectionContext } from "../chat/codeActions";
 import { ThreadStore } from "../threads/threadStore";
+import { resolveFergusPrompt } from "../chat/fergus";
 
 export class ChatPanel {
   static instance: ChatPanel | undefined;
@@ -294,46 +295,47 @@ export class ChatPanel {
 
   private async handleSend(msg: Record<string, unknown>): Promise<void> {
     const rawText = String(msg.text ?? "");
-    const modelOverride = typeof msg.model === "string" && msg.model ? (msg.model as string) : undefined;
-    const flowOverride = typeof msg.flow === "string" && msg.flow ? (msg.flow as string) : undefined;
     const rawAttachments = Array.isArray(msg.attachments) ? (msg.attachments as { content: string }[]) : [];
 
-    // Preprocess slash commands
-    const slash = await preprocess(rawText, this.odin);
+    // Sprint 068 Phase 3: fetch the live flow registry so `preprocess` can
+    // dispatch `/flow_name` slashes and the UI's SlashMenu contract is
+    // enforced server-side of the webview. A lookup failure falls back to
+    // no flows known — unknown slashes pass through to Odin, which would
+    // reject with a 400 only for genuinely wrong names.
+    let knownFlows: Array<{ name: string; trigger?: unknown }> = [];
+    try {
+      const flows = await this.odin.listFlows();
+      knownFlows = flows.map((f) => ({ name: f.name, trigger: f.trigger }));
+    } catch {
+      // Leave knownFlows empty; preprocess passes the raw slash through.
+    }
+
+    const slash = await preprocess(rawText, this.odin, knownFlows);
 
     if (slash.notice) {
       this.panel.webview.postMessage({ type: "notice", text: slash.notice });
     }
-    if (slash.cleanedText === "" && !slash.flowOverride && !slash.modelOverride) {
-      // Pure info command (/help) — no completion request
+    if (slash.cleanedText === "" && !slash.flowOverride) {
+      // Pure info command (/help, /clear directive, empty arg to /memory) —
+      // no completion request.
       return;
     }
 
-    const effectiveModel = slash.modelOverride ?? modelOverride ?? (await this.defaultModel());
-    const effectiveFlow = slash.flowOverride ?? flowOverride;
+    const effectiveFlow = slash.flowOverride;
 
     // Compose user content with attachments + memory prefix
     const attachmentText = rawAttachments
       .map((a) => a.content)
       .filter(Boolean)
       .join("\n\n");
-    const systemPrefix = slash.systemContextPrefix ?? "";
+    const memoryPrefix = slash.systemContextPrefix ?? "";
     const userContent = [attachmentText, slash.cleanedText].filter(Boolean).join("\n\n");
-
-    if (!effectiveModel) {
-      this.panel.webview.postMessage({
-        type: "streamError",
-        error: "No model available. Configure Odin URL and ensure models are loaded.",
-      });
-      return;
-    }
 
     // Persist user turn
     const userMsg: ChatMsg = {
       role: "user",
       content: userContent,
       ts: Date.now(),
-      model: effectiveModel,
       flow: effectiveFlow,
     };
     const updated = this.history.appendMessage(this.thread.id, userMsg);
@@ -341,15 +343,22 @@ export class ChatPanel {
     this.pushMessages();
     await this.pushState(); // thread title may have changed
 
-    // Build message list for Odin (include prior history + optional memory prefix)
-    const messages: ChatMessage[] = [];
-    if (systemPrefix) {
-      messages.push({ role: "system", content: systemPrefix });
-    }
+    // Build message list for Odin:
+    //   [0] Fergus persona (unless /memory injected its own context prefix, in
+    //       which case Fergus prepends the memory block).
+    //   [1..] full prior thread history (system / user / assistant).
+    const fergusPrompt = resolveFergusPrompt();
+    const systemContent = memoryPrefix
+      ? `${fergusPrompt}\n\n${memoryPrefix}`
+      : fergusPrompt;
+    const messages: ChatMessage[] = [{ role: "system", content: systemContent }];
     for (const m of this.thread.messages) {
-      if (m.role === "system" || m.role === "user" || m.role === "assistant") {
+      if (m.role === "user" || m.role === "assistant") {
         messages.push({ role: m.role, content: m.content });
       }
+      // Historical system messages are intentionally dropped — Fergus is
+      // re-injected fresh each turn. Stored system turns from pre-068
+      // threads are therefore inert (they don't override Fergus).
     }
 
     // Inject empty assistant placeholder we'll fill as tokens arrive
@@ -357,7 +366,6 @@ export class ChatPanel {
       role: "assistant",
       content: "",
       ts: Date.now(),
-      model: effectiveModel,
       flow: effectiveFlow,
     };
     const afterPlaceholder = this.history.appendMessage(this.thread.id, assistantPlaceholder);
@@ -365,7 +373,6 @@ export class ChatPanel {
 
     this.panel.webview.postMessage({
       type: "streamStart",
-      model: effectiveModel,
       flow: effectiveFlow,
     });
 
@@ -376,9 +383,12 @@ export class ChatPanel {
     };
 
     try {
+      // Sprint 068 Phase 3: `model` intentionally omitted. Odin's intent
+      // router picks the backend; Fergus is one persona, no client-side
+      // selection. `streamChat()` strips the undefined key from the body
+      // (odinClient.ts), so the outbound JSON has no `"model"` field at all.
       const full = await this.odin.streamChat(
         {
-          model: effectiveModel,
           messages,
           temperature: 0.3,
           max_tokens: 4096,
@@ -393,20 +403,18 @@ export class ChatPanel {
         (swarmEvent: SwarmEvent) => {
           if (aborted) return;
           this.panel.webview.postMessage({ type: "swarmEvent", event: swarmEvent });
-        }
+        },
       );
       if (!aborted) {
         this.history.replaceLastAssistant(this.thread.id, full);
         this.panel.webview.postMessage({
           type: "streamEnd",
-          model: effectiveModel,
           flow: effectiveFlow,
         });
       } else {
         this.history.replaceLastAssistant(this.thread.id, full + "\n[stopped]");
         this.panel.webview.postMessage({
           type: "streamEnd",
-          model: effectiveModel,
           failed: false,
         });
       }
@@ -418,25 +426,31 @@ export class ChatPanel {
     }
   }
 
-  private async defaultModel(): Promise<string | undefined> {
-    const models = await this.odin.listModels();
-    const loaded = models.find((m) => m.loaded);
-    return (loaded ?? models[0])?.id;
-  }
-
   private async pushState(): Promise<void> {
-    const [models, flows] = await Promise.all([
-      this.odin.listModels(),
-      this.odin.listFlows(),
-    ]);
+    // Sprint 068 Phase 3: no `models` or `defaultModel` in the state payload.
+    // Fergus doesn't let users pick; the SlashMenu needs `flows` (with trigger
+    // metadata so it can filter cron-only) and the header needs `threads`.
+    let flows: Array<{ name: string; description?: string; trigger?: unknown }> = [];
+    try {
+      const raw = await this.odin.listFlows();
+      flows = raw.map((f) => ({
+        name: f.name,
+        trigger: f.trigger,
+        // Use the flow's `_comment` if any as a lightweight description.
+        description:
+          (f as unknown as { _comment?: string })._comment ??
+          (f.steps?.[0]?.system_prompt?.split("\n")[0] ?? undefined),
+      }));
+    } catch {
+      // Odin unreachable — ship empty flows; SlashMenu falls back to
+      // builtins only.
+    }
     this.panel.webview.postMessage({
       type: "state",
       state: {
         threads: this.history.listThreads(),
         currentThreadId: this.thread.id,
-        models,
-        flows: flows.map((f) => ({ name: f.name })),
-        defaultModel: models.find((m) => m.loaded)?.id ?? models[0]?.id ?? null,
+        flows,
       },
     });
   }

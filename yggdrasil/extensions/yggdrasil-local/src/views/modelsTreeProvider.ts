@@ -70,9 +70,12 @@ export class ModelsTreeProvider implements vscode.TreeDataProvider<ModelsNode>, 
         .join("\n\n")
     );
     item.contextValue = "model";
+    // Sprint 068 Phase 3: "Use in chat" is gone — Fergus picks via Odin's
+    // intent classifier. Click now surfaces an info toast; Phase 5 rewrites
+    // this whole provider with live status badges (busy/dreaming/loaded).
     item.command = {
-      command: "yggdrasil.useModelInChat",
-      title: "Use model in chat",
+      command: "yggdrasil.modelInfo",
+      title: "Show model info",
       arguments: [node.model.id],
     };
     return item;

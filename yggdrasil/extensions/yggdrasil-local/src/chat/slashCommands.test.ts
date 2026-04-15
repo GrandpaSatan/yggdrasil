@@ -1,13 +1,16 @@
 /**
- * Unit tests for slashCommands.ts — Sprint 063 P7b.
+ * Unit tests for slashCommands.ts — Sprint 068 Phase 3.
  *
- * Coverage:
- *   /flow, /model, /memory, /help, /clear, /new, /reload, /voice
- *   + edge cases: empty arg, unknown cmd, whitespace variations
+ * Coverage of the Fergus slash contract:
+ *   - Builtins: /memory, /help, /clear
+ *   - Flow-name dispatch against a live `knownFlows` list
+ *   - Cron-only flows rejected at the client boundary (guards 400 path)
+ *   - Unknown slashes pass through verbatim
+ *   - `/model` and `/flow` are gone (no dedicated cases exist)
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { preprocess } from "./slashCommands";
+import { describe, it, expect, vi } from "vitest";
+import { preprocess, isCronOnlyFlow, type KnownFlow } from "./slashCommands";
 import type { OdinClient } from "../api/odinClient";
 
 // ── OdinClient mock ──────────────────────────────────────────
@@ -17,70 +20,83 @@ function makeOdin(memoryHits: Array<{ cause: string; effect: string; similarity:
   } as unknown as OdinClient;
 }
 
+// ── Fixtures ──
+const FLOW_CODING: KnownFlow = { name: "coding_swarm", trigger: { Manual: {} } };
+const FLOW_RESEARCH: KnownFlow = { name: "research", trigger: { Intent: "research" } };
+const FLOW_NIGHTLY: KnownFlow = { name: "nightly_dream", trigger: { Cron: "0 2 * * *" } };
+const KNOWN = [FLOW_CODING, FLOW_RESEARCH, FLOW_NIGHTLY];
+
+describe("isCronOnlyFlow", () => {
+  it("returns true for cron-only triggers", () => {
+    expect(isCronOnlyFlow(FLOW_NIGHTLY)).toBe(true);
+  });
+
+  it("returns false for Manual and Intent triggers", () => {
+    expect(isCronOnlyFlow(FLOW_CODING)).toBe(false);
+    expect(isCronOnlyFlow(FLOW_RESEARCH)).toBe(false);
+  });
+
+  it("returns false when trigger is absent", () => {
+    expect(isCronOnlyFlow({ name: "loose" })).toBe(false);
+  });
+});
+
 describe("preprocess — non-slash passthrough", () => {
   it("returns raw text unchanged when input has no leading slash", async () => {
-    const result = await preprocess("hello world", makeOdin());
+    const result = await preprocess("hello world", makeOdin(), KNOWN);
     expect(result.cleanedText).toBe("hello world");
-    expect(result.modelOverride).toBeUndefined();
     expect(result.flowOverride).toBeUndefined();
   });
 
-  it("handles empty string", async () => {
-    const result = await preprocess("", makeOdin());
+  it("empty string passes through", async () => {
+    const result = await preprocess("", makeOdin(), KNOWN);
     expect(result.cleanedText).toBe("");
   });
 
-  it("handles whitespace-only string", async () => {
-    const result = await preprocess("   ", makeOdin());
+  it("whitespace-only string passes through", async () => {
+    const result = await preprocess("   ", makeOdin(), KNOWN);
     expect(result.cleanedText).toBe("   ");
   });
 });
 
-describe("/flow command", () => {
-  it("sets flowOverride and strips flow name from cleanedText", async () => {
-    const result = await preprocess("/flow coding_swarm write a cache module", makeOdin());
+describe("flow-name dispatcher", () => {
+  it("pins a known Manual flow and strips the name from cleanedText", async () => {
+    const result = await preprocess("/coding_swarm write a cache module", makeOdin(), KNOWN);
     expect(result.flowOverride).toBe("coding_swarm");
     expect(result.cleanedText).toBe("write a cache module");
     expect(result.notice).toContain("coding_swarm");
   });
 
-  it("empty arg returns usage notice with empty cleanedText", async () => {
-    const result = await preprocess("/flow", makeOdin());
-    expect(result.notice).toMatch(/usage/i);
-    expect(result.cleanedText).toBe("");
-    expect(result.flowOverride).toBeUndefined();
+  it("pins a known Intent flow", async () => {
+    const result = await preprocess("/research DOM diffing algorithms", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBe("research");
+    expect(result.cleanedText).toBe("DOM diffing algorithms");
   });
 
-  it("flow name only (no message) produces fallback cleanedText", async () => {
-    const result = await preprocess("/flow my-flow", makeOdin());
-    expect(result.flowOverride).toBe("my-flow");
-    expect(result.cleanedText).toBeTruthy(); // fallback text
-  });
-
-  it("preserves multi-word message after flow name", async () => {
-    const result = await preprocess("/flow review-flow please review this PR", makeOdin());
-    expect(result.flowOverride).toBe("review-flow");
-    expect(result.cleanedText).toBe("please review this PR");
-  });
-});
-
-describe("/model command", () => {
-  it("sets modelOverride and strips model id from cleanedText", async () => {
-    const result = await preprocess("/model qwen3:30b-a3b explain async Rust", makeOdin());
-    expect(result.modelOverride).toBe("qwen3:30b-a3b");
-    expect(result.cleanedText).toBe("explain async Rust");
-  });
-
-  it("empty arg returns usage notice", async () => {
-    const result = await preprocess("/model", makeOdin());
-    expect(result.notice).toMatch(/usage/i);
-    expect(result.modelOverride).toBeUndefined();
-  });
-
-  it("model only (no message) produces fallback cleanedText", async () => {
-    const result = await preprocess("/model gemma4:e4b", makeOdin());
-    expect(result.modelOverride).toBe("gemma4:e4b");
+  it("flow name only (no message) produces a fallback cleanedText", async () => {
+    const result = await preprocess("/coding_swarm", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBe("coding_swarm");
     expect(result.cleanedText).toBeTruthy();
+  });
+
+  it("rejects cron-only flows with a notice (guards the 400 unknown-flow path)", async () => {
+    const result = await preprocess("/nightly_dream trigger me", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBeUndefined();
+    expect(result.notice).toMatch(/cron-only/i);
+    // Passes raw through so the user sees what they typed.
+    expect(result.cleanedText).toBe("/nightly_dream trigger me");
+  });
+
+  it("unknown slash passes through verbatim", async () => {
+    const result = await preprocess("/wibble xyz", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBeUndefined();
+    expect(result.cleanedText).toBe("/wibble xyz");
+  });
+
+  it("empty knownFlows falls back to builtins-only + passthrough", async () => {
+    const result = await preprocess("/coding_swarm hello", makeOdin(), []);
+    expect(result.flowOverride).toBeUndefined();
+    expect(result.cleanedText).toBe("/coding_swarm hello");
   });
 });
 
@@ -89,7 +105,7 @@ describe("/memory command", () => {
     const odin = makeOdin([
       { cause: "sprint 063 vault UI", effect: "built mimirClient", similarity: 0.9 },
     ]);
-    const result = await preprocess("/memory vault UI sprint 063", odin);
+    const result = await preprocess("/memory vault UI sprint 063", odin, KNOWN);
     expect(odin.queryMemory).toHaveBeenCalledWith("vault UI sprint 063", 5);
     expect(result.systemContextPrefix).toContain("sprint 063 vault UI");
     expect(result.notice).toContain("1 memory hit");
@@ -98,7 +114,7 @@ describe("/memory command", () => {
 
   it("returns notice when no hits found", async () => {
     const odin = makeOdin([]);
-    const result = await preprocess("/memory nonexistent topic", odin);
+    const result = await preprocess("/memory nonexistent topic", odin, KNOWN);
     expect(result.notice).toMatch(/no matching/i);
     expect(result.systemContextPrefix).toBeUndefined();
   });
@@ -107,70 +123,57 @@ describe("/memory command", () => {
     const odin = {
       queryMemory: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
     } as unknown as OdinClient;
-    const result = await preprocess("/memory test query", odin);
+    const result = await preprocess("/memory test query", odin, KNOWN);
     expect(result.notice).toMatch(/failed/i);
     expect(result.cleanedText).toBe("test query");
   });
 
   it("empty arg returns usage notice", async () => {
-    const result = await preprocess("/memory", makeOdin());
+    const result = await preprocess("/memory", makeOdin(), KNOWN);
     expect(result.notice).toMatch(/usage/i);
   });
 });
 
 describe("/help command", () => {
-  it("returns non-empty notice listing commands", async () => {
-    const result = await preprocess("/help", makeOdin());
-    expect(result.notice).toContain("/flow");
-    expect(result.notice).toContain("/model");
+  it("lists user-invocable flows and all three builtins", async () => {
+    const result = await preprocess("/help", makeOdin(), KNOWN);
+    expect(result.notice).toContain("/coding_swarm");
+    expect(result.notice).toContain("/research");
     expect(result.notice).toContain("/memory");
+    expect(result.notice).toContain("/clear");
+    expect(result.notice).toContain("/help");
+    expect(result.cleanedText).toBe("");
+  });
+
+  it("omits cron-only flows from /help output", async () => {
+    const result = await preprocess("/help", makeOdin(), KNOWN);
+    expect(result.notice).not.toContain("/nightly_dream");
+  });
+
+  it("still works with no flows known", async () => {
+    const result = await preprocess("/help", makeOdin(), []);
+    expect(result.notice).toContain("/memory");
+    expect(result.notice).toContain("/help");
+  });
+});
+
+describe("/clear command", () => {
+  it("returns a directive notice pointing at the header button", async () => {
+    const result = await preprocess("/clear", makeOdin(), KNOWN);
+    expect(result.notice).toMatch(/header/i);
     expect(result.cleanedText).toBe("");
   });
 });
 
-describe("unknown / passthrough commands", () => {
-  it("unknown command passes raw text through unchanged", async () => {
-    const result = await preprocess("/clear", makeOdin());
-    // /clear is handled by chatPanel, not here — returns raw
-    // OR if slashCommands handles it, cleanedText is empty
-    // Either way: no error
-    expect(result).toBeDefined();
-  });
-
-  it("/new passes through", async () => {
-    const result = await preprocess("/new", makeOdin());
-    expect(result).toBeDefined();
-  });
-
-  it("/reload passes through", async () => {
-    const result = await preprocess("/reload", makeOdin());
-    expect(result).toBeDefined();
-  });
-
-  it("/voice passes through", async () => {
-    const result = await preprocess("/voice on", makeOdin());
-    expect(result).toBeDefined();
-  });
-
-  it("truly unknown command returns raw text", async () => {
-    const result = await preprocess("/xyzzy unknown", makeOdin());
-    expect(result.cleanedText).toBe("/xyzzy unknown");
-  });
-});
-
 describe("whitespace edge cases", () => {
-  it("leading whitespace before slash is not treated as slash command", async () => {
-    const result = await preprocess("  /flow my-flow msg", makeOdin());
-    // trim() is called inside preprocess; the raw input has leading space
-    // The actual text starts with space, so it does NOT start with "/" as-is
-    // After trim it does — implementation calls text = raw.trim()
-    // This means it WILL parse as a flow command
-    expect(result.flowOverride).toBe("my-flow");
+  it("leading whitespace is trimmed and the slash is still parsed", async () => {
+    const result = await preprocess("  /coding_swarm msg", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBe("coding_swarm");
   });
 
-  it("slash command with extra spaces between parts", async () => {
-    const result = await preprocess("/model   qwen3:30b    some message here", makeOdin());
-    expect(result.modelOverride).toBe("qwen3:30b");
-    expect(result.cleanedText).toContain("some message here");
+  it("extra spaces between name and arg are collapsed via arg trim", async () => {
+    const result = await preprocess("/coding_swarm    some message here", makeOdin(), KNOWN);
+    expect(result.flowOverride).toBe("coding_swarm");
+    expect(result.cleanedText).toBe("some message here");
   });
 });

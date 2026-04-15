@@ -175,8 +175,8 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "yggdrasil.useModelInChat",
-        "title": "Yggdrasil: Use Model in Chat"
+        "command": "yggdrasil.modelInfo",
+        "title": "Yggdrasil: Show Model Info"
       },
       {
         "command": "yggdrasil.openDashboard",
@@ -273,7 +273,7 @@
       ],
       "commandPalette": [
         {
-          "command": "yggdrasil.useModelInChat",
+          "command": "yggdrasil.modelInfo",
           "when": "false"
         }
       ]
@@ -413,6 +413,12 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically send the active editor filename and language to the chat panel when you switch files."
+        },
+        "yggdrasil.fergus.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Override Fergus's default system prompt. Empty uses the bundled Yggdrasil persona; any non-empty string replaces it verbatim for every chat turn."
         },
         "yggdrasil.voice.enabled": {
           "type": "boolean",

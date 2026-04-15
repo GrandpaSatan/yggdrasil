@@ -37,7 +37,13 @@ export interface ChatMessage {
 }
 
 export interface ChatRequest {
-  model: string;
+  /**
+   * Sprint 068 Phase 3 (Fergus): `model` is now OPTIONAL. When omitted, Odin
+   * runs its intent-based router and picks a backend automatically. Sending
+   * an explicit model is supported but not used by the Fergus chat path —
+   * it's preserved for tooling callers that want backend pinning.
+   */
+  model?: string;
   messages: ChatMessage[];
   temperature?: number;
   max_tokens?: number;
@@ -190,7 +196,13 @@ export class OdinClient {
     onSwarmEvent?: (ev: SwarmEvent) => void
   ): Promise<string> {
     const url = new URL(`${this.odinUrl}/v1/chat/completions`);
-    const body = JSON.stringify({ ...req, stream: true });
+    // Sprint 068 Phase 3: omit `model` entirely when undefined so Odin's
+    // intent router picks the backend. Sending `model: ""` or `null` would
+    // trip the upstream proxy's validation; omitting the key is what the
+    // Fergus chat path intends.
+    const { model, ...rest } = req;
+    const payload = model ? { ...rest, model, stream: true } : { ...rest, stream: true };
+    const body = JSON.stringify(payload);
 
     return new Promise((resolve, reject) => {
       const client = url.protocol === "https:" ? https : http;
