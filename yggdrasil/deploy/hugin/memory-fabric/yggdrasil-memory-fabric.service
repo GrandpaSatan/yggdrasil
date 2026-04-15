@@ -1,0 +1,36 @@
+[Unit]
+Description=Yggdrasil Shared Memory Fabric (Sprint 069 Phase G)
+Documentation=file:///opt/yggdrasil/docs/research/shared-memory-fabric.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/bin/ygg-memory-fabric
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=3
+TimeoutStartSec=30
+
+# L3 semantic tier config. Overridable via /opt/yggdrasil/.env.
+Environment="FABRIC_BIND_ADDR=0.0.0.0:11450"
+Environment="FABRIC_VALKEY_URL=redis://10.0.65.8:6479"
+Environment="FABRIC_TEI_URL=http://10.0.65.8:11438"
+Environment="FABRIC_EMBED_DIM=384"
+Environment="FABRIC_FLOW_TTL_SECS=86400"
+Environment="FABRIC_MAX_RECORDS_PER_FLOW=64"
+Environment="RUST_LOG=info,ygg_memory_fabric=debug"
+
+EnvironmentFile=-/opt/yggdrasil/.env
+
+# Reasonable resource bounds — service is mostly I/O to Valkey + TEI.
+# Embedding cache + in-flight flows fit well under 1 GB.
+LimitNOFILE=65536
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

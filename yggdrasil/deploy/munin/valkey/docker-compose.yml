@@ -1,0 +1,52 @@
+# Valkey — open-source Redis fork, warm-remote KV tier for the
+# Yggdrasil Shared Memory Fabric (Sprint 069 Phase G) and the
+# Phase I LMCache 4-tier stack.
+#
+# Runs on Munin so Hugin can reach it over USB4 (~100 µs RTT,
+# cheaper than Hugin's local NVMe for random reads). Bind to the
+# USB4-side IP via host network mode.
+#
+# Persistence OFF by design: warm-remote tier is volatile.
+# Cold persistence is Hugin-local NVMe (Phase I).
+
+services:
+  valkey:
+    image: valkey/valkey:8.0-alpine
+    container_name: ygg-valkey
+    restart: unless-stopped
+    # Host network so the service is reachable on the USB4 interface
+    # (Munin has IPs on both the main VLAN and the USB4 bridge).
+    network_mode: host
+    command:
+      - valkey-server
+      - --port
+      - "6479"
+      - --bind
+      - "0.0.0.0"
+      - --maxmemory
+      - "32gb"
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""                    # disable RDB snapshots (volatile tier)
+      - --appendonly
+      - "no"                  # disable AOF
+      - --tcp-backlog
+      - "4096"
+      - --timeout
+      - "0"
+      - --tcp-keepalive
+      - "60"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # No volumes — volatile tier. If Munin reboots, the fabric's
+    # warm-remote cache is simply cold until it refills from live
+    # traffic (graceful degradation).
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-p", "6479", "PING"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

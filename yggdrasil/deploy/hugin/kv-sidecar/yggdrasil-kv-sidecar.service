@@ -1,0 +1,32 @@
+[Unit]
+Description=Yggdrasil L1 KV Projection Sidecar (Sprint 069 Phase G.4)
+Documentation=file:///opt/yggdrasil/docs/research/shared-memory-fabric.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yggdrasil
+Group=yggdrasil
+WorkingDirectory=/opt/yggdrasil
+ExecStart=/opt/yggdrasil/venv/bin/python3 /opt/yggdrasil/bin/ygg-kv-sidecar.py \
+  --projections-dir /opt/yggdrasil/fabric-projections \
+  --host 0.0.0.0 \
+  --port 11451 \
+  --device cpu
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=3
+TimeoutStartSec=30
+
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-/opt/yggdrasil/.env
+
+# Projection MLPs are tiny (~10 MB each); bank of a few hundred
+# fits comfortably under 500 MB.
+LimitNOFILE=4096
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
