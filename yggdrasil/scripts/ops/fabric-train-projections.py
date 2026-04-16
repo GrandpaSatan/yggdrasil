@@ -87,9 +87,15 @@ class PairedHiddensDataset(Dataset):
 
         # Target: K/V at tgt_attn_layer from attn_kv list.
         tgt_k, tgt_v = _find_layer_kv(tgt["attn_kv"], self.tgt_attn_layer)
-        # K/V shape: (1, heads, seq, head_dim) → reshape to (seq, heads*head_dim)
-        tgt_k = tgt_k.squeeze(0).transpose(0, 1).reshape(tgt_k.shape[2], -1).contiguous()
-        tgt_v = tgt_v.squeeze(0).transpose(0, 1).reshape(tgt_v.shape[2], -1).contiguous()
+        # Two shapes:
+        #   4D (1, heads, seq, head_dim) → reshape to (seq, heads*head_dim)
+        #   3D (1, seq, heads*head_dim)  → squeeze batch → (seq, heads*head_dim)
+        if tgt_k.dim() == 4:
+            tgt_k = tgt_k.squeeze(0).transpose(0, 1).reshape(tgt_k.shape[2], -1).contiguous()
+            tgt_v = tgt_v.squeeze(0).transpose(0, 1).reshape(tgt_v.shape[2], -1).contiguous()
+        else:  # 3D
+            tgt_k = tgt_k.squeeze(0).contiguous()
+            tgt_v = tgt_v.squeeze(0).contiguous()
 
         # Align sequence length (may differ slightly across tokenizers)
         min_seq = min(src_h.shape[0], tgt_k.shape[0])
@@ -141,15 +147,27 @@ def discover_model_meta(hiddens_dir: Path, model: str) -> Optional[Dict]:
     if not attn_layers:
         return {"kind": "no_attention", "hidden_dim": sample["hidden_states"][-1].shape[-1]}
 
-    first_k = sample["attn_kv"][0][1]  # (1, heads, seq, head_dim)
+    first_k = sample["attn_kv"][0][1]
+    # Two shapes coexist:
+    #   4D (batch, heads, seq, head_dim)  — cache-based extraction (LFM2, Gemma-4)
+    #   3D (batch, seq, heads*head_dim)  — hook-based extraction (Nemotron)
+    if first_k.dim() == 4:
+        heads, head_dim = first_k.shape[1], first_k.shape[3]
+        kv_flat_dim = heads * head_dim
+    elif first_k.dim() == 3:
+        heads, head_dim = 1, first_k.shape[2]  # unknown split; flat fits
+        kv_flat_dim = first_k.shape[2]
+    else:
+        return None
     return {
         "kind": "transformer_or_hybrid",
         "n_hidden_states": len(sample["hidden_states"]),
         "hidden_dim": sample["hidden_states"][-1].shape[-1],
         "attn_layers": attn_layers,
-        "heads": first_k.shape[1],
-        "head_dim": first_k.shape[3],
-        "kv_flat_dim": first_k.shape[1] * first_k.shape[3],
+        "heads": heads,
+        "head_dim": head_dim,
+        "kv_flat_dim": kv_flat_dim,
+        "k_dim": first_k.dim(),
         "n_prompts": len(files),
     }
 

@@ -32,15 +32,25 @@ extractions unblock):
 | google/gemma-4-E2B | ⏳ blocked on transformers git-main | ⏳ | — | — | — | — |
 | google/gemma-4-E4B | ⏳ same | ⏳ | — | — | — | — |
 | nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 | ⏳ blocked on mamba-ssm | ⏳ | — | — | — | — |
-| BlinkDL/rwkv-7-world | ⏳ no-K/V extraction path pending | ⏳ | — | — | — | — |
+| BlinkDL/rwkv7-g1 (g1e-2.9b) | **N/A — intentionally excluded** | — | — | — | — | — |
 
-**Same-family shortcut discovered in extraction:** LFM2-350M and
-LFM2.5-1.2B-Base share IDENTICAL attention topology (same 6 attn
-layer indices, same 8 heads × 64 head_dim). Their K/V tensors are
-SHAPE-compatible — so the projection is a pure linear map between
-the two models' value spaces at corresponding layers, not a
-reshape-plus-project. This makes LFM2 ↔ LFM2 the easiest pair in
-the fleet.
+**RWKV-7-G1e intentionally excluded from L1/L2** (2026-04-15 design refinement). RWKV serves as the memory sidecar's classifier — producing categorization + Mimir queries that populate the fabric's L3 tier indirectly via engram ingestion. It never participates in generative flows where KV-reuse would matter, so there's nothing to project to/from. This is not a deferral; RWKV's fabric role is "L3 producer" only, by design.
+
+**Critical reclassification (2026-04-15 empirical finding):** Despite
+sharing identical attention topology (same 6 attn layer indices,
+same 8 heads × 64 head_dim), LFM2-350M and LFM2.5-1.2B-Base are
+NOT "same-family" for L1 purposes. Their avg MSE of 0.65 is 160×
+worse than the true same-family pair (Gemma-4-E2B → E4B at 0.004).
+
+The ".5" version bump between LFM2 and LFM2.5 indicates a model
+GENERATION change, not just a scale change. Liquid AI likely
+modified SSM parameterization, training recipe, or initialization
+between v2 and v2.5. Shape-compatibility ≠ value-compatibility.
+
+**Tier reclassification:**
+- **L1 (direct KV, near-identity projection):** Gemma-4-E2B ↔ Gemma-4-E4B ONLY
+- **L2 (learned projection, moderate MSE):** LFM2 ↔ LFM2.5, all cross-family pairs
+- **L3 (semantic text, universal):** everything, including RWKV (L3-producer role)
 
 ## Per-pair training results
 

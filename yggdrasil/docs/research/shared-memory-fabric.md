@@ -90,33 +90,53 @@ Zero cost to architectures — works for every model in the fleet,
 including vendors that will never have projection MLPs (hypothetical
 GPT-OSS endpoints, Anthropic, etc).
 
-## 4. L1 — Direct KV (LFM2 family)
+## 4. L1 — Direct KV (true same-architecture pairs only)
 
-For saga-350m, review-1.2b, lfm25-tools — all `Lfm2ForCausalLM` with the
-Liquid tokenizer. Hidden-dim differences:
+> **Reclassification (2026-04-15):** L1 requires models that are true
+> scale variants of ONE architecture release — identical macro AND micro
+> structure, differing only in width/depth. LFM2 ↔ LFM2.5 was
+> originally placed here but empirical results proved it belongs in L2:
+> their 0.65 avg MSE is 160× worse than the only true L1 pair
+> (Gemma-4-E2B ↔ E4B at 0.004 MSE). The ".5" version bump indicates
+> architectural changes, not just scale.
 
-| Model | hidden_dim | heads | head_dim | layers |
+**Current L1 pair (the ONLY one in the fleet):**
+
+Gemma-4-E2B ↔ Gemma-4-E4B — both released 2026-04-02 by Google as
+simultaneous scale variants of Gemma 4. Same tokenizer, same
+sliding/full attention pattern, same head_dim (256), same training.
+
+| Model | hidden_dim | kv_heads | head_dim | cache layers |
 |---|---|---|---|---|
-| saga-350m | 1024 | 16 | 64 | 16 |
-| review-1.2b | 1536 | 16 | 96 | 24 |
-| lfm25-tools | 1536 | 16 | 96 | 24 |
+| Gemma-4-E2B | 1536 | 1 (MQA) | 256 | 15 |
+| Gemma-4-E4B | 2560 | 2 (GQA) | 256 | 24 |
 
-Since tokenizer is identical and architecture is identical, the projection
-is a simple **linear scaling matrix** `P: ℝ^{64} → ℝ^{96}` per-head for
-saga↔review/lfm25, and identity for review↔lfm25 (same shape, different
-LoRA). Review↔lfm25 is even simpler — direct byte copy works.
+Projection MSE: **0.004 avg** — near-identity. Direct KV injection
+will preserve >99% of attention behavior. The only projection needed
+is a learned width adaptation (1536→2560 hidden space); the K/V
+geometry is already aligned.
 
-**Saga→review layer projection:** trained in G.6 alongside L2 projections
-but initialized to a Kaiming-uniform scaling. Paired LFM2 models have
-similar layer semantics because they share a base checkpoint, so the
-initialization itself should be ~70% as good as the trained projection.
+**Why LFM2 ↔ LFM2.5 is NOT L1:**
 
-**Implementation:** Python sidecar `ygg-kv-sidecar.py` that runs
-inside each vLLM container. Exposes a Unix socket `/tmp/ygg-kv.sock`
-for the fabric coordinator to ship KV blobs in/out. The sidecar monkey-
-patches vLLM's `PagedAttention` block allocator to accept preseeded KV
-blocks (only on explicit request — opt-in per query via an HTTP header
-`X-Ygg-KV-Preseed: <blob_id>`).
+Despite sharing the same macro layout (16 layers, 6 attention at
+identical indices, 8 heads × 64 head_dim), LFM2 (v2, ~2025) and
+LFM2.5 (v2.5, ~late 2025) are different MODEL GENERATIONS from
+Liquid AI. The ".5" version bump signals:
+- Different training data/recipe
+- Potential SSM parameterization changes in the conv blocks
+- Different weight initialization
+
+Empirical evidence: LFM2-350M → LFM2.5-1.2B-Base averages **0.65 MSE**
+(20% variance explained at early layers, 68% at deep layers). For
+comparison, Gemma-4 same-family averages 0.004 (99.6%). The 160×
+gap proves these are cross-architecture, not same-architecture.
+
+LFM2 ↔ LFM2.5 pairs are served by **L2 (projected activation).**
+
+**Implementation:** Python sidecar `ygg-kv-sidecar.py` on Hugin :11451.
+Loads trained projection .pt files, exposes `POST /project` for KV
+shape translation. For L1 pairs (Gemma only), the projection is
+near-identity; sidecar overhead is negligible.
 
 ## 5. L2 — Projected Activation
 
